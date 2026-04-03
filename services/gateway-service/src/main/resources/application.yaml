@@ -1,0 +1,21 @@
+server:
+  port: 9000
+spring:
+  application:
+    name: index12306-gateway${unique-name:}-service
+  profiles:
+#    active: aggregation
+     active: dev
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 192.168.126.100:8848
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'
+  metrics:
+    tags:
+      application: ${spring.application.name}
