@@ -45,28 +45,30 @@ public class TrainStationServiceImpl implements TrainStationService {
     @Override
     public List<TrainStationQueryRespDTO> listTrainStationQuery(String trainId) {
         LambdaQueryWrapper<TrainStationDO> queryWrapper = Wrappers.lambdaQuery(TrainStationDO.class)
-                .eq(TrainStationDO::getTrainId, trainId);
+                .eq(TrainStationDO::getTrainId, trainId)
+                .orderByAsc(TrainStationDO::getSequence);
         List<TrainStationDO> trainStationDOList = trainStationMapper.selectList(queryWrapper);
         return BeanUtil.convert(trainStationDOList, TrainStationQueryRespDTO.class);
     }
 
     @Override
-    public List<RouteDTO> listTrainStationRoute(String trainId, String departure, String arrival) {
+    public List<String> listTrainStationNameByTrainId(String trainId) {
         LambdaQueryWrapper<TrainStationDO> queryWrapper = Wrappers.lambdaQuery(TrainStationDO.class)
                 .eq(TrainStationDO::getTrainId, trainId)
-                .select(TrainStationDO::getDeparture);
-        List<TrainStationDO> trainStationDOList = trainStationMapper.selectList(queryWrapper);
-        List<String> trainStationAllList = trainStationDOList.stream().map(TrainStationDO::getDeparture).collect(Collectors.toList());
-        return StationCalculateUtil.throughStation(trainStationAllList, departure, arrival);
+                .select(TrainStationDO::getDeparture)
+                .orderByAsc(TrainStationDO::getSequence);
+        return trainStationMapper.selectList(queryWrapper).stream()
+                .map(TrainStationDO::getDeparture)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<RouteDTO> listTrainStationRoute(String trainId, String departure, String arrival) {
+        return StationCalculateUtil.throughStation(listTrainStationNameByTrainId(trainId), departure, arrival);
     }
 
     @Override
     public List<RouteDTO> listTakeoutTrainStationRoute(String trainId, String departure, String arrival) {
-        LambdaQueryWrapper<TrainStationDO> queryWrapper = Wrappers.lambdaQuery(TrainStationDO.class)
-                .eq(TrainStationDO::getTrainId, trainId)
-                .select(TrainStationDO::getDeparture);
-        List<TrainStationDO> trainStationDOList = trainStationMapper.selectList(queryWrapper);
-        List<String> trainStationAllList = trainStationDOList.stream().map(TrainStationDO::getDeparture).collect(Collectors.toList());
-        return StationCalculateUtil.takeoutStation(trainStationAllList, departure, arrival);
+        return StationCalculateUtil.takeoutStation(listTrainStationNameByTrainId(trainId), departure, arrival);
     }
 }

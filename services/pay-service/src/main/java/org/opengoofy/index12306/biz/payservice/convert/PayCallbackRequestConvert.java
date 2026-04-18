@@ -41,6 +41,7 @@ public final class PayCallbackRequestConvert {
         PayCallbackRequest payCallbackRequest = null;
         if (Objects.equals(payCallbackCommand.getChannel(), PayChannelEnum.ALI_PAY.getCode())) {
             payCallbackRequest = BeanUtil.convert(payCallbackCommand, AliPayCallbackRequest.class);
+            ((AliPayCallbackRequest) payCallbackRequest).setOrderSn(payCallbackCommand.getOrderSn());
             ((AliPayCallbackRequest) payCallbackRequest).setOrderRequestId(payCallbackCommand.getOrderRequestId());
         }
         return payCallbackRequest;

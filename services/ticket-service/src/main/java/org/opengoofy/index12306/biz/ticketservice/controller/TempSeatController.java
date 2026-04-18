@@ -20,7 +20,6 @@ package org.opengoofy.index12306.biz.ticketservice.controller;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
-import org.opengoofy.index12306.biz.ticketservice.common.enums.SeatStatusEnum;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.SeatDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainStationRelationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.SeatMapper;
@@ -40,8 +39,8 @@ import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKe
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
 
 /**
- * 联调临时解决方案，不在主流程中
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 鑱旇皟涓存椂瑙ｅ喅鏂规锛屼笉鍦ㄤ富娴佺▼涓?
+ * 鍏紬鍙凤細椹竵鐜╃紪绋嬶紝鍥炲锛氬姞缇わ紝娣诲姞椹摜寰俊锛堝娉細12306锛夎幏鍙栭」鐩祫鏂?
  */
 @Deprecated
 @RestController
@@ -53,12 +52,12 @@ public class TempSeatController {
     private final DistributedCache distributedCache;
 
     /**
-     * 座位重置
+     * 搴т綅閲嶇疆
      */
     @PostMapping("/api/ticket-service/temp/seat/reset")
     public Result<Void> purchaseTickets(@RequestParam String trainId) {
         SeatDO seatDO = new SeatDO();
-        seatDO.setSeatStatus(SeatStatusEnum.AVAILABLE.getCode());
+        seatDO.setOccupyBitmap(0L);
         seatMapper.update(seatDO, Wrappers.lambdaUpdate(SeatDO.class).eq(SeatDO::getTrainId, trainId));
         ThreadUtil.sleep(5000);
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();

@@ -17,12 +17,22 @@
 
 package org.opengoofy.index12306.biz.payservice.service.impl;
 
+import cn.hutool.core.date.DateUtil;
+import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson2.JSON;
+import com.alipay.api.AlipayApiException;
+import com.alipay.api.AlipayClient;
+import com.alipay.api.AlipayConfig;
+import com.alipay.api.DefaultAlipayClient;
+import com.alipay.api.domain.AlipayTradeQueryModel;
+import com.alipay.api.request.AlipayTradeQueryRequest;
+import com.alipay.api.response.AlipayTradeQueryResponse;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.opengoofy.index12306.biz.payservice.config.AliPayProperties;
 import org.opengoofy.index12306.biz.payservice.common.enums.TradeStatusEnum;
 import org.opengoofy.index12306.biz.payservice.convert.RefundRequestConvert;
 import org.opengoofy.index12306.biz.payservice.dao.entity.PayDO;
@@ -53,6 +63,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
@@ -71,6 +82,7 @@ public class PayServiceImpl implements PayService {
     private final AbstractStrategyChoose abstractStrategyChoose;
     private final PayResultCallbackOrderSendProduce payResultCallbackOrderSendProduce;
     private final DistributedCache distributedCache;
+    private final AliPayProperties aliPayProperties;
 
     @Idempotent(
             type = IdempotentTypeEnum.SPEL,
@@ -135,6 +147,9 @@ public class PayServiceImpl implements PayService {
         LambdaQueryWrapper<PayDO> queryWrapper = Wrappers.lambdaQuery(PayDO.class)
                 .eq(PayDO::getOrderSn, orderSn);
         PayDO payDO = payMapper.selectOne(queryWrapper);
+        if (payDO != null && Objects.equals(payDO.getStatus(), TradeStatusEnum.WAIT_BUYER_PAY.tradeCode())) {
+            payDO = syncAliPayTradeStatus(payDO);
+        }
         return BeanUtil.convert(payDO, PayInfoRespDTO.class);
     }
 
@@ -171,5 +186,51 @@ public class PayServiceImpl implements PayService {
             throw new ServiceException("修改支付单退款结果失败");
         }
         return null;
+    }
+
+    private PayDO syncAliPayTradeStatus(PayDO payDO) {
+        try {
+            AlipayTradeQueryResponse response = queryAliPayTrade(payDO.getOrderSn());
+            if (response == null || !response.isSuccess() || StrUtil.isBlank(response.getTradeStatus())) {
+                return payDO;
+            }
+            Integer actualTradeStatus = TradeStatusEnum.queryActualTradeStatusCode(response.getTradeStatus());
+            if (!Objects.equals(actualTradeStatus, TradeStatusEnum.TRADE_SUCCESS.tradeCode())) {
+                return payDO;
+            }
+            PayCallbackReqDTO callbackReqDTO = PayCallbackReqDTO.builder()
+                    .orderSn(payDO.getOrderSn())
+                    .channel(payDO.getChannel())
+                    .tradeNo(response.getTradeNo())
+                    .payAmount(resolvePayAmount(response.getBuyerPayAmount()))
+                    .gmtPayment(response.getSendPayDate())
+                    .status(actualTradeStatus)
+                    .build();
+            callbackPay(callbackReqDTO);
+            return payMapper.selectOne(Wrappers.lambdaQuery(PayDO.class).eq(PayDO::getOrderSn, payDO.getOrderSn()));
+        } catch (Exception ex) {
+            log.warn("[支付单查询] 主动查询支付宝交易状态失败，订单号：{}", payDO.getOrderSn(), ex);
+            return payDO;
+        }
+    }
+
+    private AlipayTradeQueryResponse queryAliPayTrade(String orderSn) throws AlipayApiException {
+        AlipayConfig alipayConfig = BeanUtil.convert(aliPayProperties, AlipayConfig.class);
+        AlipayClient alipayClient = new DefaultAlipayClient(alipayConfig);
+        AlipayTradeQueryModel model = new AlipayTradeQueryModel();
+        model.setOutTradeNo(orderSn);
+        AlipayTradeQueryRequest request = new AlipayTradeQueryRequest();
+        request.setBizModel(model);
+        return alipayClient.execute(request);
+    }
+
+    private Integer resolvePayAmount(String buyerPayAmount) {
+        if (StrUtil.isBlank(buyerPayAmount)) {
+            return null;
+        }
+        return new BigDecimal(buyerPayAmount)
+                .multiply(new BigDecimal("100"))
+                .setScale(0, RoundingMode.HALF_UP)
+                .intValue();
     }
 }

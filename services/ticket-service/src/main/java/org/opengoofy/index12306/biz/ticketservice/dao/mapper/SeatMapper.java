@@ -33,10 +33,39 @@ public interface SeatMapper extends BaseMapper<SeatDO> {
     /**
      * 获取列车车厢余票集合
      */
-    List<Integer> listSeatRemainingTicket(@Param("seatDO") SeatDO seatDO, @Param("trainCarriageList") List<String> trainCarriageList);
+    List<Integer> listSeatRemainingTicket(@Param("trainId") Long trainId, @Param("requestMask") Long requestMask, @Param("trainCarriageList") List<String> trainCarriageList);
 
     /**
-     * 获取列车 startStation 到 endStation 区间可用座位数量
+     * 获取列车区间可用座位数量
      */
-    List<SeatTypeCountDTO> listSeatTypeCount(@Param("trainId") Long trainId, @Param("startStation") String startStation, @Param("endStation") String endStation, @Param("seatTypes") List<Integer> seatTypes);
+    List<SeatTypeCountDTO> listSeatTypeCount(@Param("trainId") Long trainId, @Param("requestMask") Long requestMask, @Param("seatTypes") List<Integer> seatTypes);
+
+    /**
+     * 获取可用座位（按车厢）
+     */
+    List<SeatDO> listAvailableSeatByCarriage(@Param("trainId") Long trainId,
+                                             @Param("carriageNumber") String carriageNumber,
+                                             @Param("seatType") Integer seatType,
+                                             @Param("requestMask") Long requestMask,
+                                             @Param("limit") Integer limit);
+
+    /**
+     * 获取可用车厢号集合
+     */
+    List<String> listUsableCarriageNumber(@Param("trainId") Long trainId,
+                                          @Param("seatType") Integer seatType,
+                                          @Param("requestMask") Long requestMask);
+
+    /**
+     * 单座位原子占位
+     */
+    int tryLockSeatByBitmap(@Param("seatId") Long seatId,
+                            @Param("version") Long version,
+                            @Param("requestMask") Long requestMask);
+
+    /**
+     * 单座位原子解锁（幂等）
+     */
+    int unlockSeatByBitmap(@Param("seatId") Long seatId,
+                           @Param("requestMask") Long requestMask);
 }

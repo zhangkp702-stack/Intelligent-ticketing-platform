@@ -37,6 +37,11 @@ public interface TrainStationService {
     List<TrainStationQueryRespDTO> listTrainStationQuery(String trainId);
 
     /**
+     * 根据列车 ID 查询按顺序排列的站点名称
+     */
+    List<String> listTrainStationNameByTrainId(String trainId);
+
+    /**
      * 计算列车站点路线关系
      * 获取开始站点和目的站点及中间站点信息
      *

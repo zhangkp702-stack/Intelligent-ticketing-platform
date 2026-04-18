@@ -48,16 +48,19 @@ public class PayCallbackController {
      * 调用支付宝支付后，支付宝会调用此接口发送支付结果
      */
     @PostMapping("/api/pay-service/callback/alipay")
-    public void callbackAlipay(@RequestParam Map<String, Object> requestParam) {
+    public String callbackAlipay(@RequestParam Map<String, Object> requestParam) {
         PayCallbackCommand payCallbackCommand = BeanUtil.mapToBean(requestParam, PayCallbackCommand.class, true, CopyOptions.create());
         payCallbackCommand.setChannel(PayChannelEnum.ALI_PAY.getCode());
-        payCallbackCommand.setOrderRequestId(requestParam.get("out_trade_no").toString());
+        String outTradeNo = requestParam.get("out_trade_no").toString();
+        payCallbackCommand.setOrderSn(outTradeNo);
+        payCallbackCommand.setOrderRequestId(outTradeNo);
         payCallbackCommand.setGmtPayment(DateUtil.parse(requestParam.get("gmt_payment").toString()));
         PayCallbackRequest payCallbackRequest = PayCallbackRequestConvert.command2PayCallbackRequest(payCallbackCommand);
-        /**
-         * {@link AliPayCallbackHandler}
+        /*
+          {@link AliPayCallbackHandler}
          */
         // 策略模式：通过策略模式封装支付回调渠道，支付回调时动态选择对应的支付回调组件
         abstractStrategyChoose.chooseAndExecute(payCallbackRequest.buildMark(), payCallbackRequest);
+        return "success";
     }
 }

@@ -221,7 +221,7 @@
       <Button type="default" @click="() => router.push('/ticketList')"
         >支付遇到问题</Button
       >
-      <Button type="primary" @click="() => router.push('/ticketList')"
+      <Button type="primary" @click="handlePayResultConfirm"
         >支付完成</Button
       >
     </Space>
@@ -258,6 +258,7 @@ import {
 } from '@/constants'
 import { getWeekNumber } from '@/utils'
 let timer = undefined
+const PAID_STATUS_LIST = [20, 30]
 
 const { query } = useRoute()
 const router = useRouter()
@@ -337,7 +338,7 @@ const handlePay = (channel) => {
     tradeType: 0,
     orderSn: query.sn,
     totalAmount: totalAmount.value,
-    outOrderSn: query.orderSn,
+    outOrderSn: query.sn,
     subject: `${state.currentInfo.departure}-${state.currentInfo.arrival}`
   }
   fetchPay(body).then((res) => {
@@ -350,12 +351,29 @@ const handlePay = (channel) => {
   })
 }
 
+const handlePayResultConfirm = () => {
+  fetchOrderStatus({ orderSn: query?.sn })
+    .then((res) => {
+      const status = res?.data?.status
+      if (PAID_STATUS_LIST.includes(status)) {
+        router.push(`/paySuccess?orderSn=${res.data.orderSn}`)
+        return
+      }
+      message.warning('支付结果还在同步中，请稍候再试')
+    })
+    .catch((error) => {
+      console.log('error:::', error)
+      message.error('支付结果查询失败，请稍后重试')
+    })
+}
+
 const getOrderStatus = () => {
   state.isInitiatePayment &&
     fetchOrderStatus({ orderSn: query?.sn })
       .then((res) => {
-        state.isPaying = res.data.status === 0
-        res.data.status === 20 &&
+        const status = res?.data?.status
+        state.isPaying = status === 0
+        PAID_STATUS_LIST.includes(status) &&
           router.push(`/paySuccess?orderSn=${res.data.orderSn}`)
       })
       .catch((error) => {

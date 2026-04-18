@@ -104,6 +104,16 @@ public final class RedisKeyConstant {
     public static final String LOCK_PURCHASE_TICKETS_V2 = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_%s_%d";
 
     /**
+     * 用户购票位图锁 Key v2（车次 + 座位类型）
+     */
+    public static final String LOCK_PURCHASE_TICKETS_V2_BITMAP = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_bitmap_%s_%d";
+
+    /**
+     * 用户购票分布式锁 Key v2（区间粒度）
+     */
+    public static final String LOCK_PURCHASE_TICKETS_V2_SEGMENT = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_%s_%d_%s_%s";
+
+    /**
      * 获取全部地点集合 Key
      */
     public static final String QUERY_ALL_REGION_LIST = "index12306-ticket-service:query_all_region_list";

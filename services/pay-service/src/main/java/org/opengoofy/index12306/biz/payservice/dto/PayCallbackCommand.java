@@ -19,7 +19,7 @@ package org.opengoofy.index12306.biz.payservice.dto;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import lombok.Data;
-import org.opengoofy.index12306.biz.payservice.dto.base.AbstractPayRequest;
+import org.opengoofy.index12306.biz.payservice.dto.base.AbstractPayCallbackRequest;
 
 import java.math.BigDecimal;
 import java.util.Date;
@@ -29,7 +29,7 @@ import java.util.Date;
  * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
 @Data
-public final class PayCallbackCommand extends AbstractPayRequest {
+public final class PayCallbackCommand extends AbstractPayCallbackRequest {
 
     /**
      * 支付渠道

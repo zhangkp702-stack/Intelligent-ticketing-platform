@@ -44,11 +44,12 @@ public final class AliPayCallbackHandler extends AbstractPayCallbackHandler impl
     public void callback(PayCallbackRequest payCallbackRequest) {
         AliPayCallbackRequest aliPayCallBackRequest = payCallbackRequest.getAliPayCallBackRequest();
         PayCallbackReqDTO payCallbackRequestParam = PayCallbackReqDTO.builder()
+                .channel(PayChannelEnum.ALI_PAY.getCode())
                 .status(TradeStatusEnum.queryActualTradeStatusCode(aliPayCallBackRequest.getTradeStatus()))
                 .payAmount(aliPayCallBackRequest.getBuyerPayAmount())
                 .tradeNo(aliPayCallBackRequest.getTradeNo())
                 .gmtPayment(aliPayCallBackRequest.getGmtPayment())
-                .orderSn(aliPayCallBackRequest.getOrderRequestId())
+                .orderSn(aliPayCallBackRequest.getOrderSn())
                 .build();
         payService.callbackPay(payCallbackRequestParam);
     }

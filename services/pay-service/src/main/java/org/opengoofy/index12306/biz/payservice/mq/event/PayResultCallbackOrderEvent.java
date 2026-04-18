@@ -51,7 +51,7 @@ public final class PayResultCallbackOrderEvent {
     /**
      * 支付渠道
      */
-    private String channel;
+    private Integer channel;
 
     /**
      * 支付环境

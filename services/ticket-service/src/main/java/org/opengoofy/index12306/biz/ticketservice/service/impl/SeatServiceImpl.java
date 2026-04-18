@@ -17,129 +17,122 @@
 
 package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
-import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.RequiredArgsConstructor;
-import org.opengoofy.index12306.biz.ticketservice.common.enums.SeatStatusEnum;
+import lombok.extern.slf4j.Slf4j;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.SeatDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.SeatMapper;
-import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
-import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.StationSegmentBitmapUtil;
 import org.springframework.stereotype.Service;
 
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_CARRIAGE_REMAINING_TICKET;
-
 /**
  * 座位接口层实现
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements SeatService {
 
     private final SeatMapper seatMapper;
     private final TrainStationService trainStationService;
-    private final DistributedCache distributedCache;
 
     @Override
     public List<String> listAvailableSeat(String trainId, String carriageNumber, Integer seatType, String departure, String arrival) {
-        LambdaQueryWrapper<SeatDO> queryWrapper = Wrappers.lambdaQuery(SeatDO.class)
-                .eq(SeatDO::getTrainId, trainId)
-                .eq(SeatDO::getCarriageNumber, carriageNumber)
-                .eq(SeatDO::getSeatType, seatType)
-                .eq(SeatDO::getStartStation, departure)
-                .eq(SeatDO::getEndStation, arrival)
-                .eq(SeatDO::getSeatStatus, SeatStatusEnum.AVAILABLE.getCode())
-                .select(SeatDO::getSeatNumber);
-        List<SeatDO> seatDOList = seatMapper.selectList(queryWrapper);
-        return seatDOList.stream().map(SeatDO::getSeatNumber).collect(Collectors.toList());
+        long requestMask = buildRequestMask(trainId, departure, arrival);
+        List<SeatDO> availableSeats = seatMapper.listAvailableSeatByCarriage(
+                Long.parseLong(trainId), carriageNumber, seatType, requestMask, 1000);
+        return availableSeats.stream().map(SeatDO::getSeatNumber).collect(Collectors.toList());
     }
 
     @Override
     public List<Integer> listSeatRemainingTicket(String trainId, String departure, String arrival, List<String> trainCarriageList) {
-        String keySuffix = StrUtil.join("_", trainId, departure, arrival);
-        if (distributedCache.hasKey(TRAIN_STATION_CARRIAGE_REMAINING_TICKET + keySuffix)) {
-            StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-            List<Object> trainStationCarriageRemainingTicket =
-                    stringRedisTemplate.opsForHash().multiGet(TRAIN_STATION_CARRIAGE_REMAINING_TICKET + keySuffix, Arrays.asList(trainCarriageList.toArray()));
-            if (CollUtil.isNotEmpty(trainStationCarriageRemainingTicket)) {
-                return trainStationCarriageRemainingTicket.stream().map(each -> Integer.parseInt(each.toString())).collect(Collectors.toList());
-            }
-        }
-        SeatDO seatDO = SeatDO.builder()
-                .trainId(Long.parseLong(trainId))
-                .startStation(departure)
-                .endStation(arrival)
-                .build();
-        return seatMapper.listSeatRemainingTicket(seatDO, trainCarriageList);
+        long requestMask = buildRequestMask(trainId, departure, arrival);
+        return seatMapper.listSeatRemainingTicket(Long.parseLong(trainId), requestMask, trainCarriageList);
     }
 
     @Override
     public List<String> listUsableCarriageNumber(String trainId, Integer carriageType, String departure, String arrival) {
-        LambdaQueryWrapper<SeatDO> queryWrapper = Wrappers.lambdaQuery(SeatDO.class)
-                .eq(SeatDO::getTrainId, trainId)
-                .eq(SeatDO::getSeatType, carriageType)
-                .eq(SeatDO::getStartStation, departure)
-                .eq(SeatDO::getEndStation, arrival)
-                .eq(SeatDO::getSeatStatus, SeatStatusEnum.AVAILABLE.getCode())
-                .groupBy(SeatDO::getCarriageNumber)
-                .select(SeatDO::getCarriageNumber);
-        List<SeatDO> seatDOList = seatMapper.selectList(queryWrapper);
-        return seatDOList.stream().map(SeatDO::getCarriageNumber).collect(Collectors.toList());
+        long requestMask = buildRequestMask(trainId, departure, arrival);
+        return seatMapper.listUsableCarriageNumber(Long.parseLong(trainId), carriageType, requestMask);
     }
 
     @Override
     public List<SeatTypeCountDTO> listSeatTypeCount(Long trainId, String startStation, String endStation, List<Integer> seatTypes) {
-        return seatMapper.listSeatTypeCount(trainId, startStation, endStation, seatTypes);
+        long requestMask = buildRequestMask(String.valueOf(trainId), startStation, endStation);
+        return seatMapper.listSeatTypeCount(trainId, requestMask, seatTypes);
     }
 
     @Override
-    public void lockSeat(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketRespList) {
-        // 获取当前购票区间对应的所有冲突区间
-        List<RouteDTO> routeList = trainStationService.listTakeoutTrainStationRoute(trainId, departure, arrival);
-        // trainPurchaseTicketRespList 里面存的是这次已经选出来的座位结果
-        trainPurchaseTicketRespList.forEach(each -> routeList.forEach(item -> {
-            // 对当前这个座位，把它在所有冲突区间上的记录都更新掉
-            LambdaUpdateWrapper<SeatDO> updateWrapper = Wrappers.lambdaUpdate(SeatDO.class)
-                    .eq(SeatDO::getTrainId, trainId)
-                    .eq(SeatDO::getCarriageNumber, each.getCarriageNumber())
-                    .eq(SeatDO::getStartStation, item.getStartStation())
-                    .eq(SeatDO::getEndStation, item.getEndStation())
-                    .eq(SeatDO::getSeatNumber, each.getSeatNumber());
-            SeatDO updateSeatDO = SeatDO.builder()
-                    .seatStatus(SeatStatusEnum.LOCKED.getCode())
-                    .build();
-            seatMapper.update(updateSeatDO, updateWrapper);
-        }));
+    public boolean tryLockSeat(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
+        long requestMask = buildRequestMask(trainId, departure, arrival);
+        List<Long> lockedSeatIds = new ArrayList<>();
+        Long trainIdLong = Long.parseLong(trainId);
+        for (TrainPurchaseTicketRespDTO ticket : tickets) {
+            SeatDO seat = seatMapper.selectOne(Wrappers.lambdaQuery(SeatDO.class)
+                    .eq(SeatDO::getTrainId, trainIdLong)
+                    .eq(SeatDO::getCarriageNumber, ticket.getCarriageNumber())
+                    .eq(SeatDO::getSeatNumber, ticket.getSeatNumber())
+                    .eq(SeatDO::getSeatType, ticket.getSeatType()));
+            if (seat == null) {
+                rollbackLockedSeats(lockedSeatIds, requestMask);
+                return false;
+            }
+            int updated = seatMapper.tryLockSeatByBitmap(seat.getId(), seat.getVersion(), requestMask);
+            if (updated <= 0) {
+                rollbackLockedSeats(lockedSeatIds, requestMask);
+                return false;
+            }
+            lockedSeatIds.add(seat.getId());
+        }
+        return true;
     }
 
     @Override
-    public void unlock(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults) {
-        List<RouteDTO> routeList = trainStationService.listTakeoutTrainStationRoute(trainId, departure, arrival);
-        trainPurchaseTicketResults.forEach(each -> routeList.forEach(item -> {
-            LambdaUpdateWrapper<SeatDO> updateWrapper = Wrappers.lambdaUpdate(SeatDO.class)
-                    .eq(SeatDO::getTrainId, trainId)
-                    .eq(SeatDO::getCarriageNumber, each.getCarriageNumber())
-                    .eq(SeatDO::getStartStation, item.getStartStation())
-                    .eq(SeatDO::getEndStation, item.getEndStation())
-                    .eq(SeatDO::getSeatNumber, each.getSeatNumber());
-            SeatDO updateSeatDO = SeatDO.builder()
-                    .seatStatus(SeatStatusEnum.AVAILABLE.getCode())
-                    .build();
-            seatMapper.update(updateSeatDO, updateWrapper);
-        }));
+    public void lockSeat(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
+        if (!tryLockSeat(trainId, departure, arrival, tickets)) {
+            throw new IllegalStateException("座位锁定失败");
+        }
+    }
+
+    @Override
+    public void unlock(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
+        long requestMask = buildRequestMask(trainId, departure, arrival);
+        Long trainIdLong = Long.parseLong(trainId);
+        for (TrainPurchaseTicketRespDTO ticket : tickets) {
+            LambdaQueryWrapper<SeatDO> queryWrapper = Wrappers.lambdaQuery(SeatDO.class)
+                    .eq(SeatDO::getTrainId, trainIdLong)
+                    .eq(SeatDO::getCarriageNumber, ticket.getCarriageNumber())
+                    .eq(SeatDO::getSeatNumber, ticket.getSeatNumber())
+                    .eq(SeatDO::getSeatType, ticket.getSeatType());
+            SeatDO seat = seatMapper.selectOne(queryWrapper);
+            if (seat != null) {
+                seatMapper.unlockSeatByBitmap(seat.getId(), requestMask);
+            }
+        }
+    }
+
+    private long buildRequestMask(String trainId, String departure, String arrival) {
+        List<String> stationNames = trainStationService.listTrainStationNameByTrainId(trainId);
+        return StationSegmentBitmapUtil.buildRequestMask(stationNames, departure, arrival);
+    }
+
+    private void rollbackLockedSeats(List<Long> lockedSeatIds, long requestMask) {
+        for (Long seatId : lockedSeatIds) {
+            try {
+                seatMapper.unlockSeatByBitmap(seatId, requestMask);
+            } catch (Exception ex) {
+                log.error("回滚已锁定座位失败 seatId={}", seatId, ex);
+            }
+        }
     }
 }

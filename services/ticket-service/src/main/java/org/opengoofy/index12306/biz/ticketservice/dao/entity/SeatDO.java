@@ -61,22 +61,27 @@ public class SeatDO extends BaseDO {
     private Integer seatType;
 
     /**
-     * 起始站
-     */
-    private String startStation;
-
-    /**
-     * 终点站
-     */
-    private String endStation;
-
-    /**
-     * 座位状态
-     */
-    private Integer seatStatus;
-
-    /**
      * 车票价格
      */
     private Integer price;
+
+    /**
+     * 区间占用位图，位 1 表示对应运行区段已占用
+     */
+    private Long occupyBitmap;
+
+    /**
+     * 乐观锁版本号
+     */
+    private Long version;
+
+    /**
+     * 座位布局编码（预留）
+     */
+    private String seatLayoutCode;
+
+    /**
+     * 座位特征位掩码（预留：靠窗/靠过道等）
+     */
+    private Long seatFeatureMask;
 }

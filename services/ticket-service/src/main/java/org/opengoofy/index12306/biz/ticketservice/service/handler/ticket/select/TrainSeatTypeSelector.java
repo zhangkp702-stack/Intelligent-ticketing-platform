@@ -18,6 +18,7 @@
 package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.select;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
@@ -27,93 +28,136 @@ import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainStationPriceDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.UserRemoteService;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PassengerRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
+import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.SelectSeatDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
+import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.RemoteException;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractStrategyChoose;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.stream.Collectors;
 
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
+import static org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEnum.findNameByCode;
+import static org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum.findNameByCode;
+
 /**
  * 购票时列车座位选择器
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public final class TrainSeatTypeSelector {
 
+    private static final int MAX_SELECT_RETRY_TIMES = 8;
+
     private final SeatService seatService;
     private final UserRemoteService userRemoteService;
     private final TrainStationPriceMapper trainStationPriceMapper;
     private final AbstractStrategyChoose abstractStrategyChoose;
     private final ThreadPoolExecutor selectSeatThreadPoolExecutor;
+    private final DistributedCache distributedCache;
+    private final TrainStationService trainStationService;
 
-    // 根据列车类型以及用户的相关信息，选择座位
+    @Value("${ticket.availability.cache-update.type:}")
+    private String ticketAvailabilityCacheUpdateType;
+
     public List<TrainPurchaseTicketRespDTO> select(Integer trainType, PurchaseTicketReqDTO requestParam) {
         List<PurchaseTicketPassengerDetailDTO> passengerDetails = requestParam.getPassengers();
         // 按照座位类型分组
         Map<Integer, List<PurchaseTicketPassengerDetailDTO>> seatTypeMap = passengerDetails.stream()
                 .collect(Collectors.groupingBy(PurchaseTicketPassengerDetailDTO::getSeatType));
-        // 创建汇总容器，线程安全
-        List<TrainPurchaseTicketRespDTO> actualResult = Collections.synchronizedList(new ArrayList<>(seatTypeMap.size()));
-        // 如果有多种 seatType，就并发分配座位，不同的座位之间不会影响到对方
+        List<TrainPurchaseTicketRespDTO> actualResult = Collections.synchronizedList(new ArrayList<>(passengerDetails.size()));
         if (seatTypeMap.size() > 1) {
             // 这里并发执行
             List<Future<List<TrainPurchaseTicketRespDTO>>> futureResults = new ArrayList<>(seatTypeMap.size());
-
-            seatTypeMap.forEach((seatType, passengerSeatDetails) -> {
-                // 这里根据不同的座位类型，分配不同的线程池
-                Future<List<TrainPurchaseTicketRespDTO>> completableFuture = selectSeatThreadPoolExecutor
-                        // 针对某一种座位类型，完成真实的选座分配
-                        .submit(() -> distributeSeats(trainType, seatType, requestParam, passengerSeatDetails));
-                futureResults.add(completableFuture);
-            });
-            // 并行流极端情况下有坑，详情参考：https://nageoffer.com/12306/question
-            // 异步收集结果，等待所有任务执行完成
-            futureResults.parallelStream().forEach(completableFuture -> {
+            seatTypeMap.forEach((seatType, passengerSeatDetails) -> futureResults.add(selectSeatThreadPoolExecutor
+                    .submit(() -> distributeSeats(trainType, seatType, requestParam, passengerSeatDetails))));
+            futureResults.parallelStream().forEach(future -> {
                 try {
-                    // 等待每一个任务执行完成,这个任务还没跑完，就阻塞等待
-                    actualResult.addAll(completableFuture.get());
+                    actualResult.addAll(future.get());
                 } catch (Exception e) {
                     // 只要有一组数据不对就直接报错
                     throw new ServiceException("站点余票不足，请尝试更换座位类型或选择其它站点");
                 }
             });
         } else {
-            // 如果只有一个座位就串行选择座位
-            seatTypeMap.forEach((seatType, passengerSeatDetails) -> {
-                List<TrainPurchaseTicketRespDTO> aggregationResult = distributeSeats(trainType, seatType, requestParam, passengerSeatDetails);
-                actualResult.addAll(aggregationResult);
-            });
+            seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(distributeSeats(trainType, seatType, requestParam, passengerSeatDetails)));
         }
         // 校验选座结果是否完整
         if (CollUtil.isEmpty(actualResult) || !Objects.equals(actualResult.size(), passengerDetails.size())) {
             throw new ServiceException("站点余票不足，请尝试更换座位类型或选择其它站点");
         }
-        // 先抽取出所有用户的id
-        List<String> passengerIds = actualResult.stream()
-                .map(TrainPurchaseTicketRespDTO::getPassengerId)
-                .collect(Collectors.toList());
+        enrichPassengerAndPrice(actualResult, requestParam);
+        return actualResult;
+    }
+
+    private List<TrainPurchaseTicketRespDTO> distributeSeats(Integer trainType, Integer seatType, PurchaseTicketReqDTO requestParam, List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+        String buildStrategyKey = VehicleTypeEnum.findNameByCode(trainType)
+                + VehicleSeatTypeEnum.findNameByCode(seatType);
+        Set<String> excludedSeatNumbers = new LinkedHashSet<>();
+        for (int retry = 0; retry < MAX_SELECT_RETRY_TIMES; retry++) {
+            SelectSeatDTO selectSeatDTO = SelectSeatDTO.builder()
+                    .seatType(seatType)
+                    .passengerSeatDetails(passengerSeatDetails)
+                    .requestParam(requestParam)
+                    .excludeSeatNumbers(new ArrayList<>(excludedSeatNumbers))
+                    .build();
+            List<TrainPurchaseTicketRespDTO> selectedSeats;
+            try {
+                selectedSeats = abstractStrategyChoose.chooseAndExecuteResp(buildStrategyKey, selectSeatDTO);
+            } catch (ServiceException ex) {
+                throw new ServiceException("当前车次列车类型暂未适配，请购买G35或G39车次");
+            }
+            if (CollUtil.isEmpty(selectedSeats)) {
+                break;
+            }
+            if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
+                decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
+                return selectedSeats;
+            }
+            selectedSeats.stream().map(TrainPurchaseTicketRespDTO::getSeatNumber).forEach(excludedSeatNumbers::add);
+        }
+        throw new ServiceException("余票不足或座位冲突，请重试");
+    }
+
+    private void decrementRemainingTicketAfterLock(PurchaseTicketReqDTO requestParam, Integer seatType, int count) {
+        if (StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
+            return;
+        }
+        StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
+        List<RouteDTO> routeDTOList = trainStationService.listTakeoutTrainStationRoute(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
+        routeDTOList.forEach(each -> {
+            String keySuffix = StrUtil.join("_", requestParam.getTrainId(), each.getStartStation(), each.getEndStation());
+            stringRedisTemplate.opsForHash().increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), -count);
+        });
+    }
+
+    private void enrichPassengerAndPrice(List<TrainPurchaseTicketRespDTO> actualResult, PurchaseTicketReqDTO requestParam) {
+        List<String> passengerIds = actualResult.stream().map(TrainPurchaseTicketRespDTO::getPassengerId).toList();
         Result<List<PassengerRespDTO>> passengerRemoteResult;
         List<PassengerRespDTO> passengerRemoteResultList;
         try {
-            // 调用远程服务获取用户相关的详细信息
             passengerRemoteResult = userRemoteService.listPassengerQueryByIds(UserContext.getUsername(), passengerIds);
             if (!passengerRemoteResult.isSuccess() || CollUtil.isEmpty(passengerRemoteResultList = passengerRemoteResult.getData())) {
                 throw new RemoteException("用户服务远程调用查询乘车人相关信息错误");
@@ -126,11 +170,9 @@ public final class TrainSeatTypeSelector {
             }
             throw ex;
         }
-        // 补充用户的详细信息
         actualResult.forEach(each -> {
-            String passengerId = each.getPassengerId();
             passengerRemoteResultList.stream()
-                    .filter(item -> Objects.equals(item.getId(), passengerId))
+                    .filter(item -> Objects.equals(item.getId(), each.getPassengerId()))
                     .findFirst()
                     .ifPresent(passenger -> {
                         each.setIdCard(passenger.getIdCard());
@@ -139,7 +181,6 @@ public final class TrainSeatTypeSelector {
                         each.setIdType(passenger.getIdType());
                         each.setRealName(passenger.getRealName());
                     });
-            // 获取票价信息
             LambdaQueryWrapper<TrainStationPriceDO> lambdaQueryWrapper = Wrappers.lambdaQuery(TrainStationPriceDO.class)
                     .eq(TrainStationPriceDO::getTrainId, requestParam.getTrainId())
                     .eq(TrainStationPriceDO::getDeparture, requestParam.getDeparture())
@@ -149,24 +190,5 @@ public final class TrainSeatTypeSelector {
             TrainStationPriceDO trainStationPriceDO = trainStationPriceMapper.selectOne(lambdaQueryWrapper);
             each.setAmount(trainStationPriceDO.getPrice());
         });
-        // 购买列车中间站点余票如何更新？详细查看：https://nageoffer.com/12306/question
-        // 最后锁住座位,修改数据库
-        seatService.lockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), actualResult);
-        return actualResult;
-    }
-
-    private List<TrainPurchaseTicketRespDTO> distributeSeats(Integer trainType, Integer seatType, PurchaseTicketReqDTO requestParam, List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
-        String buildStrategyKey = VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
-        SelectSeatDTO selectSeatDTO = SelectSeatDTO.builder()
-                .seatType(seatType)
-                .passengerSeatDetails(passengerSeatDetails)
-                .requestParam(requestParam)
-                .build();
-        try {
-            // 扣减redis库存
-            return abstractStrategyChoose.chooseAndExecuteResp(buildStrategyKey, selectSeatDTO);
-        } catch (ServiceException ex) {
-            throw new ServiceException("当前车次列车类型暂未适配，请购买G35或G39车次");
-        }
     }
 }

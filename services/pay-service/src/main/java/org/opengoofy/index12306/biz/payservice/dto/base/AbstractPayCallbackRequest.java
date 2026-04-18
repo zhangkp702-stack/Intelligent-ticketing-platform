@@ -28,6 +28,10 @@ public abstract class AbstractPayCallbackRequest implements PayCallbackRequest {
 
     @Getter
     @Setter
+    private String orderSn;
+
+    @Getter
+    @Setter
     private String orderRequestId;
 
     @Override

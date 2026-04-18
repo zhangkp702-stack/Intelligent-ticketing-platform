@@ -19,16 +19,12 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="org.opengoofy.index12306.biz.ticketservice.dao.mapper.SeatMapper">
 
-    <!-- 获取列车车厢余票集合 -->
-    <select id="listSeatRemainingTicket" parameterType="org.opengoofy.index12306.biz.ticketservice.dao.entity.SeatDO"
-            resultType="Integer">
+    <select id="listSeatRemainingTicket" resultType="Integer">
         select count(*) as count
         from t_seat
-        where train_id = #{seatDO.trainId}
-        and start_station = #{seatDO.startStation}
-        and end_station = #{seatDO.endStation}
-        and seat_status = '0'
-        and carriage_number in
+        where train_id = #{trainId}
+          and (occupy_bitmap &amp; #{requestMask}) = 0
+          and carriage_number in
         <foreach collection="trainCarriageList" item="carriage" open="(" separator="," close=")">
             #{carriage}
         </foreach>
@@ -39,14 +35,58 @@
         select seat_type as seatType, count(*) as seatCount
         from t_seat
         where train_id = #{trainId}
-        and start_station = #{startStation}
-        and end_station = #{endStation}
-        and seat_status = '0'
-        and seat_type in
+          and (occupy_bitmap &amp; #{requestMask}) = 0
+          and seat_type in
         <foreach collection="seatTypes" item="seatType" open="(" separator="," close=")">
             #{seatType}
         </foreach>
         group by seat_type
-        having seatCount > 0
+        having seatCount &gt; 0
     </select>
+
+    <select id="listAvailableSeatByCarriage" resultType="org.opengoofy.index12306.biz.ticketservice.dao.entity.SeatDO">
+        select id,
+               train_id,
+               carriage_number,
+               seat_number,
+               seat_type,
+               price,
+               occupy_bitmap,
+               version,
+               seat_layout_code,
+               seat_feature_mask
+        from t_seat
+        where train_id = #{trainId}
+          and carriage_number = #{carriageNumber}
+          and seat_type = #{seatType}
+          and (occupy_bitmap &amp; #{requestMask}) = 0
+        order by seat_number asc
+        limit #{limit}
+    </select>
+
+    <select id="listUsableCarriageNumber" resultType="String">
+        select carriage_number
+        from t_seat
+        where train_id = #{trainId}
+          and seat_type = #{seatType}
+          and (occupy_bitmap &amp; #{requestMask}) = 0
+        group by carriage_number
+        order by carriage_number asc
+    </select>
+
+    <update id="tryLockSeatByBitmap">
+        update t_seat
+        set occupy_bitmap = occupy_bitmap | #{requestMask},
+            version = version + 1
+        where id = #{seatId}
+          and version = #{version}
+          and (occupy_bitmap &amp; #{requestMask}) = 0
+    </update>
+
+    <update id="unlockSeatByBitmap">
+        update t_seat
+        set occupy_bitmap = occupy_bitmap &amp; ~#{requestMask}
+        where id = #{seatId}
+          and (occupy_bitmap &amp; #{requestMask}) != 0
+    </update>
 </mapper>

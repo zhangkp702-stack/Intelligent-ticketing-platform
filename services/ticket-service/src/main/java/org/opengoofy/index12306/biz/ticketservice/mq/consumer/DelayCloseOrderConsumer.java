@@ -53,7 +53,6 @@ import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKe
 
 /**
  * 延迟关闭订单消费者
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
 @Slf4j
 @Component
@@ -84,8 +83,8 @@ public class DelayCloseOrderConsumer implements RocketMQListener<MessageWrapper<
     @Override
     public void onMessage(MessageWrapper<DelayCloseOrderEvent> delayCloseOrderEventMessageWrapper) {
         log.info("[延迟关闭订单] 开始消费：{}", JSON.toJSONString(delayCloseOrderEventMessageWrapper));
-        DelayCloseOrderEvent delayCloseOrderEvent = delayCloseOrderEventMessageWrapper.getMessage();
-        String orderSn = delayCloseOrderEvent.getOrderSn();
+        DelayCloseOrderEvent event = delayCloseOrderEventMessageWrapper.getMessage();
+        String orderSn = event.getOrderSn();
         Result<Boolean> closedTickOrder;
         try {
             closedTickOrder = ticketOrderRemoteService.closeTickOrder(new CancelTicketOrderReqDTO(orderSn));
@@ -93,41 +92,42 @@ public class DelayCloseOrderConsumer implements RocketMQListener<MessageWrapper<
             log.error("[延迟关闭订单] 订单号：{} 远程调用订单服务失败", orderSn, ex);
             throw ex;
         }
-        // 判断是否是非binlog缓存更新策略
-        if (closedTickOrder.isSuccess() && !StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
-            if (!closedTickOrder.getData()) {
-                log.info("[延迟关闭订单] 订单号：{} 用户已支付订单", orderSn);
-                return;
-            }
-            String trainId = delayCloseOrderEvent.getTrainId();
-            String departure = delayCloseOrderEvent.getDeparture();
-            String arrival = delayCloseOrderEvent.getArrival();
-            List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults = delayCloseOrderEvent.getTrainPurchaseTicketResults();
-            try {
-                seatService.unlock(trainId, departure, arrival, trainPurchaseTicketResults);
-            } catch (Throwable ex) {
-                log.error("[延迟关闭订单] 订单号：{} 回滚列车DB座位状态失败", orderSn, ex);
-                throw ex;
-            }
+        if (!closedTickOrder.isSuccess() || !Boolean.TRUE.equals(closedTickOrder.getData())) {
+            log.info("[延迟关闭订单] 订单号：{} 用户已支付订单或关闭失败", orderSn);
+            return;
+        }
+        rollbackSeatAndCache(event);
+    }
+
+    private void rollbackSeatAndCache(DelayCloseOrderEvent event) {
+        String trainId = event.getTrainId();
+        String departure = event.getDeparture();
+        String arrival = event.getArrival();
+        List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults = event.getTrainPurchaseTicketResults();
+        try {
+            seatService.unlock(trainId, departure, arrival, trainPurchaseTicketResults);
+        } catch (Throwable ex) {
+            log.error("[延迟关闭订单] 订单号：{} 回滚列车DB座位状态失败", event.getOrderSn(), ex);
+            throw ex;
+        }
+        if (!StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
             try {
                 StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-                Map<Integer, List<TrainPurchaseTicketRespDTO>> seatTypeMap = trainPurchaseTicketResults.stream()
-                        .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType));
+                Map<Integer, Long> seatTypeCountMap = trainPurchaseTicketResults.stream()
+                        .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType, Collectors.counting()));
                 List<RouteDTO> routeDTOList = trainStationService.listTakeoutTrainStationRoute(trainId, departure, arrival);
                 routeDTOList.forEach(each -> {
                     String keySuffix = StrUtil.join("_", trainId, each.getStartStation(), each.getEndStation());
-                    seatTypeMap.forEach((seatType, trainPurchaseTicketRespDTOList) -> {
-                        stringRedisTemplate.opsForHash()
-                                .increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), trainPurchaseTicketRespDTOList.size());
-                    });
+                    seatTypeCountMap.forEach((seatType, count) -> stringRedisTemplate.opsForHash()
+                            .increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), count));
                 });
-                TicketOrderDetailRespDTO ticketOrderDetail = BeanUtil.convert(delayCloseOrderEvent, TicketOrderDetailRespDTO.class);
-                ticketOrderDetail.setPassengerDetails(BeanUtil.convert(delayCloseOrderEvent.getTrainPurchaseTicketResults(), TicketOrderPassengerDetailRespDTO.class));
-                ticketAvailabilityTokenBucket.rollbackInBucket(ticketOrderDetail);
             } catch (Throwable ex) {
-                log.error("[延迟关闭订单] 订单号：{} 回滚列车Cache余票失败", orderSn, ex);
+                log.error("[延迟关闭订单] 订单号：{} 回滚列车Cache余票失败", event.getOrderSn(), ex);
                 throw ex;
             }
         }
+        TicketOrderDetailRespDTO ticketOrderDetail = BeanUtil.convert(event, TicketOrderDetailRespDTO.class);
+        ticketOrderDetail.setPassengerDetails(BeanUtil.convert(event.getTrainPurchaseTicketResults(), TicketOrderPassengerDetailRespDTO.class));
+        ticketAvailabilityTokenBucket.rollbackInBucket(ticketOrderDetail);
     }
 }

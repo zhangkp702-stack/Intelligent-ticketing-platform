@@ -18,44 +18,34 @@
 package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket;
 
 import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.collection.ListUtil;
-import cn.hutool.core.lang.Pair;
-import com.google.common.collect.Lists;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
-import org.opengoofy.index12306.biz.ticketservice.dto.domain.TrainSeatBaseDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.base.AbstractTrainPurchaseTicketTemplate;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.SelectSeatDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.select.SeatSelection;
-import org.opengoofy.index12306.biz.ticketservice.toolkit.SeatNumberUtil;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.SeatLayoutBitmapUtil;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 高铁二等座购票组件
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 完整版布局选座：优先精确选座，其次同排组合，再按窗口/过道偏好与邻近性回退。
  */
 @Component
 @RequiredArgsConstructor
 public class TrainSecondClassPurchaseTicketHandler extends AbstractTrainPurchaseTicketTemplate {
 
     private final SeatService seatService;
-
-    private static final Map<Character, Integer> SEAT_Y_INT = Map.of('A', 0, 'B', 1, 'C', 2, 'D', 3, 'F', 4);
 
     @Override
     public String mark() {
@@ -64,441 +54,136 @@ public class TrainSecondClassPurchaseTicketHandler extends AbstractTrainPurchase
 
     @Override
     protected List<TrainPurchaseTicketRespDTO> selectSeats(SelectSeatDTO requestParam) {
+        return selectByLayout(requestParam, SeatLayoutBitmapUtil.profileBySeatType(VehicleSeatTypeEnum.SECOND_CLASS.getCode()));
+    }
+
+    private List<TrainPurchaseTicketRespDTO> selectByLayout(SelectSeatDTO requestParam, SeatLayoutBitmapUtil.LayoutProfile profile) {
         String trainId = requestParam.getRequestParam().getTrainId();
         String departure = requestParam.getRequestParam().getDeparture();
         String arrival = requestParam.getRequestParam().getArrival();
-        List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails = requestParam.getPassengerSeatDetails();
-        List<String> trainCarriageList = seatService.listUsableCarriageNumber(trainId, requestParam.getSeatType(), departure, arrival);
-        List<Integer> trainStationCarriageRemainingTicket = seatService.listSeatRemainingTicket(trainId, departure, arrival, trainCarriageList);
-        int remainingTicketSum = trainStationCarriageRemainingTicket.stream().mapToInt(Integer::intValue).sum();
-        if (remainingTicketSum < passengerSeatDetails.size()) {
-            throw new ServiceException("站点余票不足，请尝试更换座位类型或选择其它站点");
-        }
-        if (passengerSeatDetails.size() < 6) {
-            if (CollUtil.isNotEmpty(requestParam.getRequestParam().getChooseSeats())) {
-                return findMatchSeats(requestParam, trainCarriageList, trainStationCarriageRemainingTicket).getKey();
-            }
-            return selectSeats(requestParam, trainCarriageList, trainStationCarriageRemainingTicket);
-        } else {
-            if (CollUtil.isNotEmpty(requestParam.getRequestParam().getChooseSeats())) {
-                return findMatchSeats(requestParam, trainCarriageList, trainStationCarriageRemainingTicket).getKey();
-            }
-            return selectComplexSeats(requestParam, trainCarriageList, trainStationCarriageRemainingTicket);
-        }
-    }
-
-    private List<Pair<Integer, Integer>> calcChooseSeatLevelPairList(int[][] actualSeats, List<String> chooseSeatList) {
-        String firstChooseSeat = chooseSeatList.get(0);
-        int firstSeatX = Integer.parseInt(firstChooseSeat.substring(1));
-        int firstSeatY = SEAT_Y_INT.get(firstChooseSeat.charAt(0));
-        List<Pair<Integer, Integer>> chooseSeatLevelPairList = new ArrayList<>();
-        chooseSeatLevelPairList.add(new Pair<>(firstSeatX, firstSeatY));
-        int minLevelX = 0;
-        for (int i = 1; i < chooseSeatList.size(); i++) {
-            String chooseSeat = chooseSeatList.get(i);
-            int chooseSeatX = Integer.parseInt(chooseSeat.substring(1));
-            int chooseSeatY = SEAT_Y_INT.get(chooseSeat.charAt(0));
-            minLevelX = Math.min(minLevelX, chooseSeatX - firstSeatX);
-            chooseSeatLevelPairList.add(new Pair<>(chooseSeatX - firstSeatX, chooseSeatY - firstSeatY));
-        }
-        for (int i = Math.abs(minLevelX); i < 18; i++) {
-            List<Pair<Integer, Integer>> sureSeatList = new ArrayList<>();
-            if (actualSeats[i][firstSeatY] == 0) {
-                sureSeatList.add(new Pair<>(i, firstSeatY));
-                for (int j = 1; j < chooseSeatList.size(); j++) {
-                    Pair<Integer, Integer> pair = chooseSeatLevelPairList.get(j);
-                    int chooseSeatX = pair.getKey();
-                    int chooseSeatY = pair.getValue();
-                    int x = i + chooseSeatX;
-                    if (x >= 18) {
-                        return Collections.emptyList();
-                    }
-                    if (actualSeats[i + chooseSeatX][firstSeatY + chooseSeatY] == 0) {
-                        sureSeatList.add(new Pair<>(i + chooseSeatX, firstSeatY + chooseSeatY));
-                    } else {
-                        break;
-                    }
-                }
-            }
-            if (sureSeatList.size() == chooseSeatList.size()) {
-                return sureSeatList;
-            }
-        }
-        return Collections.emptyList();
-    }
-
-    private Pair<List<TrainPurchaseTicketRespDTO>, Boolean> findMatchSeats(SelectSeatDTO requestParam, List<String> trainCarriageList, List<Integer> trainStationCarriageRemainingTicket) {
-        TrainSeatBaseDTO trainSeatBaseDTO = buildTrainSeatBaseDTO(requestParam);
-        List<TrainPurchaseTicketRespDTO> actualResult = Lists.newArrayListWithCapacity(trainSeatBaseDTO.getPassengerSeatDetails().size());
-        HashMap<String, List<Pair<Integer, Integer>>> carriagesSeatMap = new HashMap<>(16);
-        int passengersNumber = trainSeatBaseDTO.getPassengerSeatDetails().size();
-        for (int i = 0; i < trainStationCarriageRemainingTicket.size(); i++) {
-            String carriagesNumber = trainCarriageList.get(i);
-            List<String> listAvailableSeat = seatService.listAvailableSeat(trainSeatBaseDTO.getTrainId(), carriagesNumber, requestParam.getSeatType(), trainSeatBaseDTO.getDeparture(), trainSeatBaseDTO.getArrival());
-            int[][] actualSeats = new int[18][5];
-            List<Pair<Integer, Integer>> carriagesVacantSeat = new ArrayList<>();
-            for (int j = 1; j < 19; j++) {
-                for (int k = 1; k < 6; k++) {
-                    if (j <= 9) {
-                        actualSeats[j - 1][k - 1] = listAvailableSeat.contains("0" + j + SeatNumberUtil.convert(2, k)) ? 0 : 1;
-                    } else {
-                        actualSeats[j - 1][k - 1] = listAvailableSeat.contains("" + j + SeatNumberUtil.convert(2, k)) ? 0 : 1;
-                    }
-                    if (actualSeats[j - 1][k - 1] == 0) {
-                        carriagesVacantSeat.add(new Pair<>(j - 1, k - 1));
-                    }
-                }
-            }
-            List<String> selectSeats = new ArrayList<>(passengersNumber);
-            List<Pair<Integer, Integer>> sureSeatList = calcChooseSeatLevelPairList(actualSeats, trainSeatBaseDTO.getChooseSeatList());
-            if (CollUtil.isNotEmpty(sureSeatList) && carriagesVacantSeat.size() >= passengersNumber) {
-                List<Pair<Integer, Integer>> vacantSeatList = new ArrayList<>();
-                if (sureSeatList.size() != passengersNumber) {
-                    for (int i1 = 0; i1 < sureSeatList.size(); i1++) {
-                        Pair<Integer, Integer> pair = sureSeatList.get(i1);
-                        actualSeats[pair.getKey()][pair.getValue()] = 1;
-                    }
-                    for (int i1 = 0; i1 < 18; i1++) {
-                        for (int j = 0; j < 5; j++) {
-                            if (actualSeats[i1][j] == 0) {
-                                vacantSeatList.add(new Pair<>(i1, j));
-                            }
-                        }
-                    }
-                    int needSeatSize = passengersNumber - sureSeatList.size();
-                    sureSeatList.addAll(vacantSeatList.subList(0, needSeatSize));
-                }
-                for (Pair<Integer, Integer> each : sureSeatList) {
-                    if (each.getKey() <= 8) {
-                        selectSeats.add("0" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                    } else {
-                        selectSeats.add("" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                    }
-                }
-                AtomicInteger countNum = new AtomicInteger(0);
-                for (String selectSeat : selectSeats) {
-                    TrainPurchaseTicketRespDTO result = new TrainPurchaseTicketRespDTO();
-                    PurchaseTicketPassengerDetailDTO currentTicketPassenger = trainSeatBaseDTO.getPassengerSeatDetails().get(countNum.getAndIncrement());
-                    result.setSeatNumber(selectSeat);
-                    result.setSeatType(currentTicketPassenger.getSeatType());
-                    result.setCarriageNumber(carriagesNumber);
-                    result.setPassengerId(currentTicketPassenger.getPassengerId());
-                    actualResult.add(result);
-                }
-                return new Pair<>(actualResult, Boolean.TRUE);
-            } else {
-                if (CollUtil.isNotEmpty(carriagesVacantSeat)) {
-                    carriagesSeatMap.put(carriagesNumber, carriagesVacantSeat);
-                    if (i == trainStationCarriageRemainingTicket.size() - 1) {
-                        Pair<String, List<Pair<Integer, Integer>>> findSureCarriageSeat = null;
-                        for (Map.Entry<String, List<Pair<Integer, Integer>>> entry : carriagesSeatMap.entrySet()) {
-                            if (entry.getValue().size() >= passengersNumber) {
-                                findSureCarriageSeat = new Pair<>(entry.getKey(), entry.getValue().subList(0, passengersNumber));
-                                break;
-                            }
-                        }
-                        if (findSureCarriageSeat != null) {
-                            for (Pair<Integer, Integer> each : findSureCarriageSeat.getValue()) {
-                                if (each.getKey() <= 8) {
-                                    selectSeats.add("0" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                                } else {
-                                    selectSeats.add("" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                                }
-                            }
-                            AtomicInteger countNum = new AtomicInteger(0);
-                            for (String selectSeat : selectSeats) {
-                                TrainPurchaseTicketRespDTO result = new TrainPurchaseTicketRespDTO();
-                                PurchaseTicketPassengerDetailDTO currentTicketPassenger = trainSeatBaseDTO.getPassengerSeatDetails().get(countNum.getAndIncrement());
-                                result.setSeatNumber(selectSeat);
-                                result.setSeatType(currentTicketPassenger.getSeatType());
-                                result.setCarriageNumber(findSureCarriageSeat.getKey());
-                                result.setPassengerId(currentTicketPassenger.getPassengerId());
-                                actualResult.add(result);
-                            }
-                            return new Pair<>(actualResult, Boolean.TRUE);
-                        } else {
-                            int sureSeatListSize = 0;
-                            AtomicInteger countNum = new AtomicInteger(0);
-                            for (Map.Entry<String, List<Pair<Integer, Integer>>> entry : carriagesSeatMap.entrySet()) {
-                                if (sureSeatListSize < passengersNumber) {
-                                    if (sureSeatListSize + entry.getValue().size() < passengersNumber) {
-                                        sureSeatListSize = sureSeatListSize + entry.getValue().size();
-                                        List<String> actualSelectSeats = new ArrayList<>();
-                                        for (Pair<Integer, Integer> each : entry.getValue()) {
-                                            if (each.getKey() <= 8) {
-                                                actualSelectSeats.add("0" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                                            } else {
-                                                actualSelectSeats.add("" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                                            }
-                                        }
-                                        for (String selectSeat : actualSelectSeats) {
-                                            TrainPurchaseTicketRespDTO result = new TrainPurchaseTicketRespDTO();
-                                            PurchaseTicketPassengerDetailDTO currentTicketPassenger = trainSeatBaseDTO.getPassengerSeatDetails().get(countNum.getAndIncrement());
-                                            result.setSeatNumber(selectSeat);
-                                            result.setSeatType(currentTicketPassenger.getSeatType());
-                                            result.setCarriageNumber(entry.getKey());
-                                            result.setPassengerId(currentTicketPassenger.getPassengerId());
-                                            actualResult.add(result);
-                                        }
-                                    } else {
-                                        int needSeatSize = entry.getValue().size() - (sureSeatListSize + entry.getValue().size() - passengersNumber);
-                                        sureSeatListSize = sureSeatListSize + needSeatSize;
-                                        if (sureSeatListSize >= passengersNumber) {
-                                            List<String> actualSelectSeats = new ArrayList<>();
-                                            for (Pair<Integer, Integer> each : entry.getValue().subList(0, needSeatSize)) {
-                                                if (each.getKey() <= 8) {
-                                                    actualSelectSeats.add("0" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                                                } else {
-                                                    actualSelectSeats.add("" + (each.getKey() + 1) + SeatNumberUtil.convert(2, each.getValue() + 1));
-                                                }
-                                            }
-                                            for (String selectSeat : actualSelectSeats) {
-                                                TrainPurchaseTicketRespDTO result = new TrainPurchaseTicketRespDTO();
-                                                PurchaseTicketPassengerDetailDTO currentTicketPassenger = trainSeatBaseDTO.getPassengerSeatDetails().get(countNum.getAndIncrement());
-                                                result.setSeatNumber(selectSeat);
-                                                result.setSeatType(currentTicketPassenger.getSeatType());
-                                                result.setCarriageNumber(entry.getKey());
-                                                result.setPassengerId(currentTicketPassenger.getPassengerId());
-                                                actualResult.add(result);
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            return new Pair<>(actualResult, Boolean.TRUE);
-                        }
-                    }
-                }
-            }
-        }
-        return new Pair<>(null, Boolean.FALSE);
-    }
-
-    private List<TrainPurchaseTicketRespDTO> selectSeats(SelectSeatDTO requestParam, List<String> trainCarriageList, List<Integer> trainStationCarriageRemainingTicket) {
-        String trainId = requestParam.getRequestParam().getTrainId();
-        String departure = requestParam.getRequestParam().getDeparture();
-        String arrival = requestParam.getRequestParam().getArrival();
-        List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails = requestParam.getPassengerSeatDetails();
-        List<TrainPurchaseTicketRespDTO> actualResult = new ArrayList<>();
-        Map<String, Integer> demotionStockNumMap = new LinkedHashMap<>();
-        Map<String, int[][]> actualSeatsMap = new HashMap<>();
-        Map<String, int[][]> carriagesNumberSeatsMap = new HashMap<>();
-        String carriagesNumber;
-        for (int i = 0; i < trainStationCarriageRemainingTicket.size(); i++) {
-            carriagesNumber = trainCarriageList.get(i);
-            List<String> listAvailableSeat = seatService.listAvailableSeat(trainId, carriagesNumber, requestParam.getSeatType(), departure, arrival);
-            int[][] actualSeats = new int[18][5];
-            for (int j = 1; j < 19; j++) {
-                for (int k = 1; k < 6; k++) {
-                    // 当前默认按照复兴号商务座排序，后续这里需要按照简单工厂对车类型进行获取 y 轴
-                    if (j <= 9) {
-                        actualSeats[j - 1][k - 1] = listAvailableSeat.contains("0" + j + SeatNumberUtil.convert(2, k)) ? 0 : 1;
-                    } else {
-                        actualSeats[j - 1][k - 1] = listAvailableSeat.contains("" + j + SeatNumberUtil.convert(2, k)) ? 0 : 1;
-                    }
-                }
-            }
-            int[][] select = SeatSelection.adjacent(passengerSeatDetails.size(), actualSeats);
-            if (select != null) {
-                carriagesNumberSeatsMap.put(carriagesNumber, select);
-                break;
-            }
-            int demotionStockNum = 0;
-            for (int[] actualSeat : actualSeats) {
-                for (int i1 : actualSeat) {
-                    if (i1 == 0) {
-                        demotionStockNum++;
-                    }
-                }
-            }
-            demotionStockNumMap.putIfAbsent(carriagesNumber, demotionStockNum);
-            actualSeatsMap.putIfAbsent(carriagesNumber, actualSeats);
-            if (i < trainStationCarriageRemainingTicket.size() - 1) {
+        List<PurchaseTicketPassengerDetailDTO> passengers = requestParam.getPassengerSeatDetails();
+        List<String> carriageNumbers = seatService.listUsableCarriageNumber(trainId, requestParam.getSeatType(), departure, arrival);
+        Set<String> excludedSeatNumbers = CollUtil.isEmpty(requestParam.getExcludeSeatNumbers())
+                ? Set.of()
+                : new LinkedHashSet<>(requestParam.getExcludeSeatNumbers());
+        for (String carriageNumber : carriageNumbers) {
+            List<String> availableSeats = seatService.listAvailableSeat(trainId, carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
+                    .filter(each -> !excludedSeatNumbers.contains(each))
+                    .toList();
+            if (availableSeats.size() < passengers.size()) {
                 continue;
             }
-            // 如果邻座算法无法匹配，尝试对用户进行降级分配：同车厢不邻座
-            for (Map.Entry<String, Integer> entry : demotionStockNumMap.entrySet()) {
-                String carriagesNumberBack = entry.getKey();
-                int demotionStockNumBack = entry.getValue();
-                if (demotionStockNumBack > passengerSeatDetails.size()) {
-                    int[][] seats = actualSeatsMap.get(carriagesNumberBack);
-                    int[][] nonAdjacentSeats = SeatSelection.nonAdjacent(passengerSeatDetails.size(), seats);
-                    if (Objects.equals(nonAdjacentSeats.length, passengerSeatDetails.size())) {
-                        select = nonAdjacentSeats;
-                        carriagesNumberSeatsMap.put(carriagesNumberBack, select);
-                        break;
-                    }
-                }
-            }
-            // 如果同车厢也已无法匹配，则对用户座位再次降级：不同车厢不邻座
-            if (Objects.isNull(select)) {
-                for (Map.Entry<String, Integer> entry : demotionStockNumMap.entrySet()) {
-                    String carriagesNumberBack = entry.getKey();
-                    int demotionStockNumBack = entry.getValue();
-                    int[][] seats = actualSeatsMap.get(carriagesNumberBack);
-                    int[][] nonAdjacentSeats = SeatSelection.nonAdjacent(demotionStockNumBack, seats);
-                    carriagesNumberSeatsMap.put(entry.getKey(), nonAdjacentSeats);
+            List<List<String>> candidates = buildSeatCandidates(availableSeats, requestParam.getRequestParam().getChooseSeats(), passengers.size(), profile);
+            for (List<String> candidate : candidates) {
+                if (candidate.size() == passengers.size()) {
+                    return buildResult(passengers, carriageNumber, candidate);
                 }
             }
         }
-        // 乘车人员在单一车厢座位不满足，触发乘车人元分布在不同车厢
-        int count = (int) carriagesNumberSeatsMap.values().stream()
-                .flatMap(Arrays::stream)
-                .count();
-        if (CollUtil.isNotEmpty(carriagesNumberSeatsMap) && passengerSeatDetails.size() == count) {
-            int countNum = 0;
-            for (Map.Entry<String, int[][]> entry : carriagesNumberSeatsMap.entrySet()) {
-                List<String> selectSeats = new ArrayList<>();
-                for (int[] ints : entry.getValue()) {
-                    if (ints[0] <= 9) {
-                        selectSeats.add("0" + ints[0] + SeatNumberUtil.convert(2, ints[1]));
-                    } else {
-                        selectSeats.add("" + ints[0] + SeatNumberUtil.convert(2, ints[1]));
-                    }
-                }
-                for (String selectSeat : selectSeats) {
-                    TrainPurchaseTicketRespDTO result = new TrainPurchaseTicketRespDTO();
-                    PurchaseTicketPassengerDetailDTO currentTicketPassenger = passengerSeatDetails.get(countNum++);
-                    result.setSeatNumber(selectSeat);
-                    result.setSeatType(currentTicketPassenger.getSeatType());
-                    result.setCarriageNumber(entry.getKey());
-                    result.setPassengerId(currentTicketPassenger.getPassengerId());
-                    actualResult.add(result);
-                }
-            }
-        }
-        return actualResult;
+        throw new ServiceException("站点余票不足，请尝试更换座位类型或选择其它站点");
     }
 
-    private List<TrainPurchaseTicketRespDTO> selectComplexSeats(SelectSeatDTO requestParam, List<String> trainCarriageList, List<Integer> trainStationCarriageRemainingTicket) {
-        String trainId = requestParam.getRequestParam().getTrainId();
-        String departure = requestParam.getRequestParam().getDeparture();
-        String arrival = requestParam.getRequestParam().getArrival();
-        List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails = requestParam.getPassengerSeatDetails();
-        List<TrainPurchaseTicketRespDTO> actualResult = new ArrayList<>();
-        Map<String, Integer> demotionStockNumMap = new LinkedHashMap<>();
-        Map<String, int[][]> actualSeatsMap = new HashMap<>();
-        Map<String, int[][]> carriagesNumberSeatsMap = new HashMap<>();
-        String carriagesNumber;
-        // 多人分配同一车厢邻座
-        for (int i = 0; i < trainStationCarriageRemainingTicket.size(); i++) {
-            carriagesNumber = trainCarriageList.get(i);
-            List<String> listAvailableSeat = seatService.listAvailableSeat(trainId, carriagesNumber, requestParam.getSeatType(), departure, arrival);
-            int[][] actualSeats = new int[18][5];
-            for (int j = 1; j < 19; j++) {
-                for (int k = 1; k < 6; k++) {
-                    // 当前默认按照复兴号商务座排序，后续这里需要按照简单工厂对车类型进行获取 y 轴
-                    if (j <= 9) {
-                        actualSeats[j - 1][k - 1] = listAvailableSeat.contains("0" + j + SeatNumberUtil.convert(2, k)) ? 0 : 1;
-                    } else {
-                        actualSeats[j - 1][k - 1] = listAvailableSeat.contains("" + j + SeatNumberUtil.convert(2, k)) ? 0 : 1;
-                    }
-                }
-            }
-            int[][] actualSeatsTranscript = deepCopy(actualSeats);
-            List<int[][]> actualSelects = new ArrayList<>();
-            List<List<PurchaseTicketPassengerDetailDTO>> splitPassengerSeatDetails = ListUtil.split(passengerSeatDetails, 3);
-            for (List<PurchaseTicketPassengerDetailDTO> each : splitPassengerSeatDetails) {
-                int[][] select = SeatSelection.adjacent(each.size(), actualSeatsTranscript);
-                if (select != null) {
-                    for (int[] ints : select) {
-                        actualSeatsTranscript[ints[0] - 1][ints[1] - 1] = 1;
-                    }
-                    actualSelects.add(select);
-                }
-            }
-            if (actualSelects.size() == splitPassengerSeatDetails.size()) {
-                int[][] actualSelect = null;
-                for (int j = 0; j < actualSelects.size(); j++) {
-                    if (j == 0) {
-                        actualSelect = mergeArrays(actualSelects.get(j), actualSelects.get(j + 1));
-                    }
-                    if (j != 0 && actualSelects.size() > 2) {
-                        actualSelect = mergeArrays(actualSelect, actualSelects.get(j + 1));
-                    }
-                }
-                carriagesNumberSeatsMap.put(carriagesNumber, actualSelect);
+    private List<List<String>> buildSeatCandidates(List<String> availableSeats, List<String> chooseSeats, int seatCount, SeatLayoutBitmapUtil.LayoutProfile profile) {
+        Set<String> distinctAvailableSeats = new LinkedHashSet<>(availableSeats);
+        List<List<String>> result = new ArrayList<>();
+        List<String> exactChooseSeats = pickExactChooseSeats(distinctAvailableSeats, chooseSeats, seatCount);
+        if (exactChooseSeats.size() == seatCount) {
+            result.add(exactChooseSeats);
+        }
+        long availableMask = SeatLayoutBitmapUtil.buildAvailableMask(new ArrayList<>(distinctAvailableSeats), profile);
+        List<SeatLayoutBitmapUtil.SeatCoordinate> sortedCoordinates = SeatLayoutBitmapUtil.decodeAvailableSeats(availableMask, profile).stream()
+                .sorted(candidateComparator(profile))
+                .toList();
+        List<String> choosePlusFallback = mergeChooseAndFallback(distinctAvailableSeats, chooseSeats, sortedCoordinates, seatCount, profile);
+        if (choosePlusFallback.size() == seatCount) {
+            result.add(choosePlusFallback);
+        }
+        List<List<SeatLayoutBitmapUtil.SeatCoordinate>> adjacentCombos = SeatLayoutBitmapUtil.buildAdjacentCombos(availableMask, seatCount, profile).stream()
+                .sorted(Comparator.comparingInt((List<SeatLayoutBitmapUtil.SeatCoordinate> each) -> score(each, profile)).reversed()
+                        .thenComparingInt(each -> each.get(0).rowIndex())
+                        .thenComparingInt(each -> each.get(0).colIndex()))
+                .toList();
+        adjacentCombos.forEach(each -> result.add(SeatLayoutBitmapUtil.toSeatNumbers(each, profile)));
+        buildSameRowCombos(sortedCoordinates, seatCount).forEach(each -> result.add(SeatLayoutBitmapUtil.toSeatNumbers(each, profile)));
+        buildGlobalCombos(sortedCoordinates, seatCount).forEach(each -> result.add(SeatLayoutBitmapUtil.toSeatNumbers(each, profile)));
+        return result.stream()
+                .filter(each -> each.size() == seatCount)
+                .map(ArrayList::new)
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    private List<String> pickExactChooseSeats(Set<String> availableSeats, List<String> chooseSeats, int seatCount) {
+        if (CollUtil.isEmpty(chooseSeats)) {
+            return List.of();
+        }
+        return chooseSeats.stream().filter(availableSeats::contains).distinct().limit(seatCount).toList();
+    }
+
+    private List<String> mergeChooseAndFallback(Set<String> availableSeats, List<String> chooseSeats,
+                                                List<SeatLayoutBitmapUtil.SeatCoordinate> sortedCoordinates,
+                                                int seatCount, SeatLayoutBitmapUtil.LayoutProfile profile) {
+        LinkedHashSet<String> result = new LinkedHashSet<>(pickExactChooseSeats(availableSeats, chooseSeats, seatCount));
+        for (SeatLayoutBitmapUtil.SeatCoordinate coordinate : sortedCoordinates) {
+            if (result.size() >= seatCount) {
                 break;
             }
-            int demotionStockNum = 0;
-            for (int[] actualSeat : actualSeats) {
-                for (int i1 : actualSeat) {
-                    if (i1 == 0) {
-                        demotionStockNum++;
-                    }
-                }
-            }
-            demotionStockNumMap.putIfAbsent(carriagesNumber, demotionStockNum);
-            actualSeatsMap.putIfAbsent(carriagesNumber, actualSeats);
+            result.add(SeatLayoutBitmapUtil.toSeatNumber(coordinate, profile));
         }
-        // 如果邻座算法无法匹配，尝试对用户进行降级分配：同车厢不邻座
-        if (CollUtil.isEmpty(carriagesNumberSeatsMap)) {
-            for (Map.Entry<String, Integer> entry : demotionStockNumMap.entrySet()) {
-                String carriagesNumberBack = entry.getKey();
-                int demotionStockNumBack = entry.getValue();
-                if (demotionStockNumBack > passengerSeatDetails.size()) {
-                    int[][] seats = actualSeatsMap.get(carriagesNumberBack);
-                    int[][] nonAdjacentSeats = SeatSelection.nonAdjacent(passengerSeatDetails.size(), seats);
-                    if (Objects.equals(nonAdjacentSeats.length, passengerSeatDetails.size())) {
-                        carriagesNumberSeatsMap.put(carriagesNumberBack, nonAdjacentSeats);
-                        break;
-                    }
-                }
-            }
-        }
-        // 如果同车厢也已无法匹配，则对用户座位再次降级：不同车厢不邻座
-        if (CollUtil.isEmpty(carriagesNumberSeatsMap)) {
-            int undistributedPassengerSize = passengerSeatDetails.size();
-            for (Map.Entry<String, Integer> entry : demotionStockNumMap.entrySet()) {
-                String carriagesNumberBack = entry.getKey();
-                int demotionStockNumBack = entry.getValue();
-                int[][] seats = actualSeatsMap.get(carriagesNumberBack);
-                int[][] nonAdjacentSeats = SeatSelection.nonAdjacent(Math.min(undistributedPassengerSize, demotionStockNumBack), seats);
-                undistributedPassengerSize = undistributedPassengerSize - demotionStockNumBack;
-                carriagesNumberSeatsMap.put(entry.getKey(), nonAdjacentSeats);
-            }
-        }
-        // 乘车人员在单一车厢座位不满足，触发乘车人元分布在不同车厢
-        int count = (int) carriagesNumberSeatsMap.values().stream()
-                .flatMap(Arrays::stream)
-                .count();
-        if (CollUtil.isNotEmpty(carriagesNumberSeatsMap) && passengerSeatDetails.size() == count) {
-            int countNum = 0;
-            for (Map.Entry<String, int[][]> entry : carriagesNumberSeatsMap.entrySet()) {
-                List<String> selectSeats = new ArrayList<>();
-                for (int[] ints : entry.getValue()) {
-                    if (ints[0] <= 9) {
-                        selectSeats.add("0" + ints[0] + SeatNumberUtil.convert(2, ints[1]));
-                    } else {
-                        selectSeats.add("" + ints[0] + SeatNumberUtil.convert(2, ints[1]));
-                    }
-                }
-                for (String selectSeat : selectSeats) {
-                    TrainPurchaseTicketRespDTO result = new TrainPurchaseTicketRespDTO();
-                    PurchaseTicketPassengerDetailDTO currentTicketPassenger = passengerSeatDetails.get(countNum++);
-                    result.setSeatNumber(selectSeat);
-                    result.setSeatType(currentTicketPassenger.getSeatType());
-                    result.setCarriageNumber(entry.getKey());
-                    result.setPassengerId(currentTicketPassenger.getPassengerId());
-                    actualResult.add(result);
-                }
-            }
-        }
-        return actualResult;
+        return new ArrayList<>(result).subList(0, Math.min(result.size(), seatCount));
     }
 
-    public static int[][] mergeArrays(int[][] array1, int[][] array2) {
-        List<int[]> list = new ArrayList<>(Arrays.asList(array1));
-        list.addAll(Arrays.asList(array2));
-        return list.toArray(new int[0][]);
+    private List<List<SeatLayoutBitmapUtil.SeatCoordinate>> buildSameRowCombos(List<SeatLayoutBitmapUtil.SeatCoordinate> sortedCoordinates, int seatCount) {
+        return sortedCoordinates.stream()
+                .collect(Collectors.groupingBy(SeatLayoutBitmapUtil.SeatCoordinate::rowIndex))
+                .values().stream()
+                .filter(each -> each.size() >= seatCount)
+                .map(each -> each.stream().limit(seatCount).toList())
+                .toList();
     }
 
-    public static int[][] deepCopy(int[][] originalArray) {
-        int[][] copy = new int[originalArray.length][originalArray[0].length];
-        for (int i = 0; i < originalArray.length; i++) {
-            System.arraycopy(originalArray[i], 0, copy[i], 0, originalArray[i].length);
+    private List<List<SeatLayoutBitmapUtil.SeatCoordinate>> buildGlobalCombos(List<SeatLayoutBitmapUtil.SeatCoordinate> sortedCoordinates, int seatCount) {
+        List<List<SeatLayoutBitmapUtil.SeatCoordinate>> result = new ArrayList<>();
+        for (int i = 0; i <= sortedCoordinates.size() - seatCount; i++) {
+            result.add(sortedCoordinates.subList(i, i + seatCount));
         }
-        return copy;
+        return result;
+    }
+
+    private Comparator<SeatLayoutBitmapUtil.SeatCoordinate> candidateComparator(SeatLayoutBitmapUtil.LayoutProfile profile) {
+        return Comparator.comparingInt((SeatLayoutBitmapUtil.SeatCoordinate each) -> seatPreferenceScore(each, profile)).reversed()
+                .thenComparingInt(SeatLayoutBitmapUtil.SeatCoordinate::rowIndex)
+                .thenComparingInt(SeatLayoutBitmapUtil.SeatCoordinate::colIndex);
+    }
+
+    private int score(List<SeatLayoutBitmapUtil.SeatCoordinate> coordinates, SeatLayoutBitmapUtil.LayoutProfile profile) {
+        return coordinates.stream().mapToInt(each -> seatPreferenceScore(each, profile)).sum();
+    }
+
+    private int seatPreferenceScore(SeatLayoutBitmapUtil.SeatCoordinate coordinate, SeatLayoutBitmapUtil.LayoutProfile profile) {
+        int bitIndex = coordinate.colIndex();
+        int score = 10;
+        if ((profile.windowMask() & (1L << bitIndex)) != 0) {
+            score += 4;
+        }
+        if ((profile.aisleMask() & (1L << bitIndex)) != 0) {
+            score += 2;
+        }
+        score -= coordinate.rowIndex();
+        return score;
+    }
+
+    private List<TrainPurchaseTicketRespDTO> buildResult(List<PurchaseTicketPassengerDetailDTO> passengers, String carriageNumber, List<String> seatNumbers) {
+        List<TrainPurchaseTicketRespDTO> results = new ArrayList<>(passengers.size());
+        for (int i = 0; i < passengers.size(); i++) {
+            PurchaseTicketPassengerDetailDTO passenger = passengers.get(i);
+            TrainPurchaseTicketRespDTO ticket = new TrainPurchaseTicketRespDTO();
+            ticket.setPassengerId(passenger.getPassengerId());
+            ticket.setSeatType(passenger.getSeatType());
+            ticket.setCarriageNumber(carriageNumber);
+            ticket.setSeatNumber(seatNumbers.get(i));
+            results.add(ticket);
+        }
+        return results;
     }
 }
