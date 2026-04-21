@@ -17,42 +17,24 @@
 
 package org.opengoofy.index12306.biz.ticketservice.mq.consumer;
 
-import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson2.JSON;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.opengoofy.index12306.biz.ticketservice.common.constant.TicketRocketMQConstant;
-import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.CancelTicketOrderReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.mq.domain.MessageWrapper;
 import org.opengoofy.index12306.biz.ticketservice.mq.event.DelayCloseOrderEvent;
 import org.opengoofy.index12306.biz.ticketservice.remote.TicketOrderRemoteService;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
-import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
-import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.tokenbucket.TicketAvailabilityTokenBucket;
-import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
-import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.idempotent.annotation.Idempotent;
 import org.opengoofy.index12306.framework.starter.idempotent.enums.IdempotentSceneEnum;
 import org.opengoofy.index12306.framework.starter.idempotent.enums.IdempotentTypeEnum;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
-
 /**
- * 延迟关闭订单消费者
+ * Delay close order consumer.
  */
 @Slf4j
 @Component
@@ -64,14 +46,7 @@ import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKe
 )
 public class DelayCloseOrderConsumer implements RocketMQListener<MessageWrapper<DelayCloseOrderEvent>> {
 
-    private final SeatService seatService;
     private final TicketOrderRemoteService ticketOrderRemoteService;
-    private final TrainStationService trainStationService;
-    private final DistributedCache distributedCache;
-    private final TicketAvailabilityTokenBucket ticketAvailabilityTokenBucket;
-
-    @Value("${ticket.availability.cache-update.type:}")
-    private String ticketAvailabilityCacheUpdateType;
 
     @Idempotent(
             uniqueKeyPrefix = "index12306-ticket:delay_close_order:",
@@ -82,52 +57,20 @@ public class DelayCloseOrderConsumer implements RocketMQListener<MessageWrapper<
     )
     @Override
     public void onMessage(MessageWrapper<DelayCloseOrderEvent> delayCloseOrderEventMessageWrapper) {
-        log.info("[延迟关闭订单] 开始消费：{}", JSON.toJSONString(delayCloseOrderEventMessageWrapper));
+        log.info("[Delay close order] Start consuming: {}", JSON.toJSONString(delayCloseOrderEventMessageWrapper));
         DelayCloseOrderEvent event = delayCloseOrderEventMessageWrapper.getMessage();
         String orderSn = event.getOrderSn();
         Result<Boolean> closedTickOrder;
         try {
             closedTickOrder = ticketOrderRemoteService.closeTickOrder(new CancelTicketOrderReqDTO(orderSn));
         } catch (Throwable ex) {
-            log.error("[延迟关闭订单] 订单号：{} 远程调用订单服务失败", orderSn, ex);
+            log.error("[Delay close order] OrderSn: {} remote close order call failed", orderSn, ex);
             throw ex;
         }
         if (!closedTickOrder.isSuccess() || !Boolean.TRUE.equals(closedTickOrder.getData())) {
-            log.info("[延迟关闭订单] 订单号：{} 用户已支付订单或关闭失败", orderSn);
+            log.info("[Delay close order] OrderSn: {} has been paid or close failed", orderSn);
             return;
         }
-        rollbackSeatAndCache(event);
-    }
-
-    private void rollbackSeatAndCache(DelayCloseOrderEvent event) {
-        String trainId = event.getTrainId();
-        String departure = event.getDeparture();
-        String arrival = event.getArrival();
-        List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults = event.getTrainPurchaseTicketResults();
-        try {
-            seatService.unlock(trainId, departure, arrival, trainPurchaseTicketResults);
-        } catch (Throwable ex) {
-            log.error("[延迟关闭订单] 订单号：{} 回滚列车DB座位状态失败", event.getOrderSn(), ex);
-            throw ex;
-        }
-        if (!StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
-            try {
-                StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-                Map<Integer, Long> seatTypeCountMap = trainPurchaseTicketResults.stream()
-                        .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType, Collectors.counting()));
-                List<RouteDTO> routeDTOList = trainStationService.listTakeoutTrainStationRoute(trainId, departure, arrival);
-                routeDTOList.forEach(each -> {
-                    String keySuffix = StrUtil.join("_", trainId, each.getStartStation(), each.getEndStation());
-                    seatTypeCountMap.forEach((seatType, count) -> stringRedisTemplate.opsForHash()
-                            .increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), count));
-                });
-            } catch (Throwable ex) {
-                log.error("[延迟关闭订单] 订单号：{} 回滚列车Cache余票失败", event.getOrderSn(), ex);
-                throw ex;
-            }
-        }
-        TicketOrderDetailRespDTO ticketOrderDetail = BeanUtil.convert(event, TicketOrderDetailRespDTO.class);
-        ticketOrderDetail.setPassengerDetails(BeanUtil.convert(event.getTrainPurchaseTicketResults(), TicketOrderPassengerDetailRespDTO.class));
-        ticketAvailabilityTokenBucket.rollbackInBucket(ticketOrderDetail);
+        log.info("[Delay close order] OrderSn: {} closed. Ticket resource rollback will be handled by order close binlog.", orderSn);
     }
 }

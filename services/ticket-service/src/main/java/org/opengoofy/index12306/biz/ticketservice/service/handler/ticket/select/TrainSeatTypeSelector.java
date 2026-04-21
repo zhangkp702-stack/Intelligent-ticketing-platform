@@ -23,10 +23,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainStationPriceDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
+import org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilityDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
@@ -36,13 +38,17 @@ import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.SelectSeatDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.StationSegmentBitmapUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.RemoteException;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractStrategyChoose;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -55,11 +61,12 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
-import static org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEnum.findNameByCode;
-import static org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum.findNameByCode;
+
+
 
 /**
  * 购票时列车座位选择器
@@ -69,7 +76,10 @@ import static org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTyp
 @RequiredArgsConstructor
 public final class TrainSeatTypeSelector {
 
-    private static final int MAX_SELECT_RETRY_TIMES = 8;
+    private static final int MAX_CARRIAGE_SELECT_RETRY_TIMES = 3;
+    private static final int MAX_SELECT_RETRY_TIMES = 256;
+    private static final long RESOURCE_LOCK_WAIT_MILLIS = 30L;
+    private static final long RESOURCE_LOCK_LEASE_SECONDS = 8L;
 
     private final SeatService seatService;
     private final UserRemoteService userRemoteService;
@@ -78,6 +88,8 @@ public final class TrainSeatTypeSelector {
     private final ThreadPoolExecutor selectSeatThreadPoolExecutor;
     private final DistributedCache distributedCache;
     private final TrainStationService trainStationService;
+    private final RedissonClient redissonClient;
+    private final ConfigurableEnvironment environment;
 
     @Value("${ticket.availability.cache-update.type:}")
     private String ticketAvailabilityCacheUpdateType;
@@ -92,7 +104,7 @@ public final class TrainSeatTypeSelector {
             // 这里并发执行
             List<Future<List<TrainPurchaseTicketRespDTO>>> futureResults = new ArrayList<>(seatTypeMap.size());
             seatTypeMap.forEach((seatType, passengerSeatDetails) -> futureResults.add(selectSeatThreadPoolExecutor
-                    .submit(() -> distributeSeats(trainType, seatType, requestParam, passengerSeatDetails))));
+                    .submit(() -> distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails))));
             futureResults.parallelStream().forEach(future -> {
                 try {
                     actualResult.addAll(future.get());
@@ -102,7 +114,7 @@ public final class TrainSeatTypeSelector {
                 }
             });
         } else {
-            seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(distributeSeats(trainType, seatType, requestParam, passengerSeatDetails)));
+            seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails)));
         }
         // 校验选座结果是否完整
         if (CollUtil.isEmpty(actualResult) || !Objects.equals(actualResult.size(), passengerDetails.size())) {
@@ -113,15 +125,19 @@ public final class TrainSeatTypeSelector {
     }
 
     private List<TrainPurchaseTicketRespDTO> distributeSeats(Integer trainType, Integer seatType, PurchaseTicketReqDTO requestParam, List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+        return distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails);
+    }
+    /*
         String buildStrategyKey = VehicleTypeEnum.findNameByCode(trainType)
                 + VehicleSeatTypeEnum.findNameByCode(seatType);
-        Set<String> excludedSeatNumbers = new LinkedHashSet<>();
+        List<Integer> segmentIndexes = buildSegmentIndexes(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
+        Set<String> excludedSeatKeys = new LinkedHashSet<>();
         for (int retry = 0; retry < MAX_SELECT_RETRY_TIMES; retry++) {
             SelectSeatDTO selectSeatDTO = SelectSeatDTO.builder()
                     .seatType(seatType)
                     .passengerSeatDetails(passengerSeatDetails)
                     .requestParam(requestParam)
-                    .excludeSeatNumbers(new ArrayList<>(excludedSeatNumbers))
+                    .excludeSeatNumbers(new ArrayList<>(excludedSeatKeys))
                     .build();
             List<TrainPurchaseTicketRespDTO> selectedSeats;
             try {
@@ -136,9 +152,18 @@ public final class TrainSeatTypeSelector {
                 decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
                 return selectedSeats;
             }
-            selectedSeats.stream().map(TrainPurchaseTicketRespDTO::getSeatNumber).forEach(excludedSeatNumbers::add);
+            int beforeExcludeSize = excludedSeatKeys.size();
+            selectedSeats.stream().map(this::buildCarriageSeatKey).forEach(excludedSeatKeys::add);
+            if (excludedSeatKeys.size() == beforeExcludeSize) {
+                break;
+            }
         }
         throw new ServiceException("余票不足或座位冲突，请重试");
+    }
+
+    */
+    private String buildCarriageSeatKey(TrainPurchaseTicketRespDTO ticket) {
+        return ticket.getCarriageNumber() + "#" + ticket.getSeatNumber();
     }
 
     private void decrementRemainingTicketAfterLock(PurchaseTicketReqDTO requestParam, Integer seatType, int count) {
@@ -151,6 +176,164 @@ public final class TrainSeatTypeSelector {
             String keySuffix = StrUtil.join("_", requestParam.getTrainId(), each.getStartStation(), each.getEndStation());
             stringRedisTemplate.opsForHash().increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), -count);
         });
+    }
+
+    private List<TrainPurchaseTicketRespDTO> distributeSeatsByResourceLocks(Integer trainType,
+                                                                            Integer seatType,
+                                                                            PurchaseTicketReqDTO requestParam,
+                                                                            List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+        String strategyKey =
+                VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
+        List<Integer> segmentIndexes = buildSegmentIndexes(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
+        List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
+                requestParam.getTrainId(),
+                seatType,
+                requestParam.getDeparture(),
+                requestParam.getArrival(),
+                passengerSeatDetails.size()
+        );
+        /* if (CollUtil.isEmpty(candidateCarriages)) {
+            throw new ServiceException("站点余票不足或座位冲突，请重试");
+        }
+        */ /*
+        if (CollUtil.isEmpty(candidateCarriages)) { throw new ServiceException("站点余票不足或座位冲突，请重试"); /*
+            throw new ServiceException("站点余票不足或座位冲突，请重试");
+        }
+        */
+        if (CollUtil.isEmpty(candidateCarriages)) {
+            throw new ServiceException("Station seats are unavailable or conflicted, please retry");
+        }
+        long scanSeed = buildSeatScanSeed(requestParam, seatType, passengerSeatDetails);
+        int carriageAttempt = 0;
+        for (CarriageAvailabilityDTO eachCarriage : candidateCarriages) {
+            String carriageNumber = eachCarriage.getCarriageNumber();
+            List<RLock> segmentLocks = tryAcquireCarriageSegmentLocks(requestParam.getTrainId(), seatType, carriageNumber, segmentIndexes);
+            if (CollUtil.isEmpty(segmentLocks)) {
+                carriageAttempt++;
+                continue;
+            }
+            try {
+                Set<String> excludedSeatKeys = new LinkedHashSet<>();
+                for (int retry = 0; retry < MAX_CARRIAGE_SELECT_RETRY_TIMES; retry++) {
+                    SelectSeatDTO selectSeatDTO = SelectSeatDTO.builder()
+                            .seatType(seatType)
+                            .passengerSeatDetails(passengerSeatDetails)
+                            .requestParam(requestParam)
+                            .excludeSeatNumbers(new ArrayList<>(excludedSeatKeys))
+                            .preferredCarriageNumber(carriageNumber)
+                            .seatScanOffset(buildSeatScanOffset(scanSeed, carriageAttempt, retry))
+                            .build();
+                    List<TrainPurchaseTicketRespDTO> selectedSeats = abstractStrategyChoose.chooseAndExecuteResp(strategyKey, selectSeatDTO);
+                    if (CollUtil.isEmpty(selectedSeats)) {
+                        break;
+                    }
+                    if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
+                        decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
+                        seatService.adjustCarriageRemainingSummary(
+                                requestParam.getTrainId(),
+                                requestParam.getDeparture(),
+                                requestParam.getArrival(),
+                                seatType,
+                                carriageNumber,
+                                -selectedSeats.size()
+                        );
+                        return selectedSeats;
+                    }
+                    int beforeExcludeSize = excludedSeatKeys.size();
+                    selectedSeats.stream().map(this::buildCarriageSeatKey).forEach(excludedSeatKeys::add);
+                    if (excludedSeatKeys.size() == beforeExcludeSize) {
+                        break;
+                    }
+                }
+            } finally {
+                releaseSegmentLocks(segmentLocks);
+            }
+            carriageAttempt++;
+        }
+        throw new ServiceException("Seat resources conflicted, please retry");
+    }
+    /*
+        throw new ServiceException("余票不足或座位冲突，请重试");
+    }
+    /*
+        throw new ServiceException("余票不足或座位冲突，请重试");
+    }
+    /*
+        throw new ServiceException("余票不足或座位冲突，请重试");
+    /*
+        throw new ServiceException("余票不足或座位冲突，请重试");
+        /*
+        throw new ServiceException("余票不足或座位冲突，请重试");
+    }
+
+    */
+
+    private List<RLock> tryAcquireCarriageSegmentLocks(String trainId, Integer seatType, String carriageNumber, List<Integer> segmentIndexes) {
+        List<RLock> locks = new ArrayList<>(segmentIndexes.size());
+        for (Integer segmentIndex : segmentIndexes.stream().distinct().sorted().toList()) {
+            String lockKey = environment.resolvePlaceholders(String.format(
+                    RedisKeyConstant.LOCK_PURCHASE_TICKETS_RESOURCE_SEGMENT,
+                    trainId,
+                    seatType,
+                    carriageNumber,
+                    segmentIndex
+            ));
+            RLock lock = redissonClient.getFairLock(lockKey);
+            boolean locked = false;
+            try {
+                locked = lock.tryLock(RESOURCE_LOCK_WAIT_MILLIS, RESOURCE_LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            } catch (Throwable ex) {
+                log.warn("获取区间资源锁失败, key={}", lockKey, ex);
+            }
+            if (!locked) {
+                releaseSegmentLocks(locks);
+                return Collections.emptyList();
+            }
+            locks.add(lock);
+        }
+        return locks;
+    }
+
+    private void releaseSegmentLocks(List<RLock> locks) {
+        for (int i = locks.size() - 1; i >= 0; i--) {
+            try {
+                if (locks.get(i).isHeldByCurrentThread()) {
+                    locks.get(i).unlock();
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private List<Integer> buildSegmentIndexes(String trainId, String departure, String arrival) {
+        List<String> stationNames = trainStationService.listTrainStationNameByTrainId(trainId);
+        Map<String, Integer> stationIndexMap = StationSegmentBitmapUtil.buildStationIndexMap(stationNames);
+        Integer departureIndex = stationIndexMap.get(departure);
+        Integer arrivalIndex = stationIndexMap.get(arrival);
+        if (departureIndex == null || arrivalIndex == null || departureIndex >= arrivalIndex) {
+            throw new ServiceException("出发站或到达站不合法");
+        }
+        List<Integer> segmentIndexes = new ArrayList<>(arrivalIndex - departureIndex);
+        for (int i = departureIndex; i < arrivalIndex; i++) {
+            segmentIndexes.add(i);
+        }
+        return segmentIndexes;
+    }
+
+    private long buildSeatScanSeed(PurchaseTicketReqDTO requestParam, Integer seatType, List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+        String passengerKey = passengerSeatDetails.stream()
+                .map(PurchaseTicketPassengerDetailDTO::getPassengerId)
+                .sorted()
+                .collect(Collectors.joining(","));
+        return (requestParam.getTrainId() + "|" + requestParam.getDeparture() + "|" + requestParam.getArrival()
+                + "|" + seatType + "|" + UserContext.getUserId() + "|" + passengerKey).hashCode() & 0x7fffffffL;
+    }
+
+    private Integer buildSeatScanOffset(long seed, int carriageAttempt, int retry) {
+        long mixed = seed + carriageAttempt * 131L + retry * 17L;
+        return (int) Math.floorMod(mixed, Integer.MAX_VALUE);
     }
 
     private void enrichPassengerAndPrice(List<TrainPurchaseTicketRespDTO> actualResult, PurchaseTicketReqDTO requestParam) {

@@ -54,4 +54,14 @@ public final class SelectSeatDTO {
      * 需要排除的候选座位，用于锁失败后的重试
      */
     private List<String> excludeSeatNumbers;
+
+    /**
+     * 当前轮次指定的候选车厢
+     */
+    private String preferredCarriageNumber;
+
+    /**
+     * 座位扫描偏移，降低固定顺序热点
+     */
+    private Integer seatScanOffset;
 }

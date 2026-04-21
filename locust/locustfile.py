@@ -3,6 +3,7 @@ import os
 import random
 import threading
 import time
+import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,8 +19,17 @@ SCENARIOS_FILE = Path(os.getenv("LOCUST_SCENARIOS_FILE", str(DEFAULT_SCENARIOS_F
 
 ENABLE_QUERY = os.getenv("LOCUST_ENABLE_QUERY", "true").lower() == "true"
 ENABLE_PAYMENT = os.getenv("LOCUST_ENABLE_PAYMENT", "false").lower() == "true"
+CANCEL_UNPAID = os.getenv("LOCUST_CANCEL_UNPAID", "true").lower() == "true"
 PAY_STATUS_POLL_TIMES = int(os.getenv("LOCUST_PAY_STATUS_POLL_TIMES", "3"))
 PAY_STATUS_POLL_INTERVAL = float(os.getenv("LOCUST_PAY_STATUS_POLL_INTERVAL", "2"))
+SCENARIO_PICK_MODE = os.getenv("LOCUST_SCENARIO_PICK", "random").strip().lower()
+if SCENARIO_PICK_MODE not in {"random", "round_robin"}:
+    SCENARIO_PICK_MODE = "random"
+SCENARIO_RANDOM_SEED = os.getenv("LOCUST_SCENARIO_SEED")
+if SCENARIO_RANDOM_SEED:
+    random.seed(SCENARIO_RANDOM_SEED)
+WAIT_MIN = float(os.getenv("LOCUST_WAIT_MIN", "0.2"))
+WAIT_MAX = float(os.getenv("LOCUST_WAIT_MAX", "0.8"))
 
 
 _USERS_LOCK = threading.Lock()
@@ -49,6 +59,8 @@ def _next_user() -> Dict[str, str]:
 
 
 def _next_scenario() -> Dict[str, str]:
+    if SCENARIO_PICK_MODE == "random":
+        return dict(random.choice(SCENARIO_ROWS))
     global _SCENARIO_INDEX
     with _SCENARIOS_LOCK:
         row = SCENARIO_ROWS[_SCENARIO_INDEX % len(SCENARIO_ROWS)]
@@ -63,7 +75,7 @@ def _as_bool(value: str, default: bool = False) -> bool:
 
 
 class TicketChainUser(HttpUser):
-    wait_time = between(1, 3)
+    wait_time = between(WAIT_MIN, WAIT_MAX)
 
     def on_start(self) -> None:
         self.account = _next_user()
@@ -74,7 +86,10 @@ class TicketChainUser(HttpUser):
         self.user_id: Optional[str] = None
         self.passenger_ids: List[str] = []
         self._login()
-        self._load_passengers()
+        self._load_passengers_from_account()
+        self._derive_passengers_from_username()
+        if not self.passenger_ids:
+            self._load_passengers()
 
     @task
     def purchase_chain(self) -> None:
@@ -109,6 +124,8 @@ class TicketChainUser(HttpUser):
             return
 
         if not self._should_pay(scenario):
+            if CANCEL_UNPAID:
+                self._cancel_ticket_order(order_sn)
             return
 
         total_amount = self._query_order_total_amount(order_sn)
@@ -124,6 +141,13 @@ class TicketChainUser(HttpUser):
             headers["Authorization"] = self.token
         return headers
 
+    @staticmethod
+    def _parse_json_response(response) -> Optional[Dict[str, object]]:
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return None
+
     def _login(self) -> None:
         payload = {
             "usernameOrMailOrPhone": self.username,
@@ -136,7 +160,12 @@ class TicketChainUser(HttpUser):
             catch_response=True,
             name="login",
         ) as response:
-            data = response.json()
+            data = self._parse_json_response(response)
+            if data is None:
+                response.failure(
+                    f"login returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                )
+                return
             if not data.get("success"):
                 response.failure(f"login failed: {data}")
                 return
@@ -147,12 +176,16 @@ class TicketChainUser(HttpUser):
     def _load_passengers(self) -> None:
         with self.client.get(
             "/api/user-service/passenger/query",
-            params={"username": self.username},
             headers=self._headers(),
             catch_response=True,
             name="passenger_query",
         ) as response:
-            data = response.json()
+            data = self._parse_json_response(response)
+            if data is None:
+                response.failure(
+                    f"passenger query returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                )
+                return
             if not data.get("success"):
                 response.failure(f"passenger query failed: {data}")
                 return
@@ -161,6 +194,28 @@ class TicketChainUser(HttpUser):
                 response.failure("no passengers bound to account")
                 return
             response.success()
+
+    def _load_passengers_from_account(self) -> None:
+        passenger_ids = (self.account.get("passengerIds") or "").strip()
+        if not passenger_ids:
+            return
+        self.passenger_ids = [
+            each.strip()
+            for each in passenger_ids.split("|")
+            if each and each.strip()
+        ]
+
+    def _derive_passengers_from_username(self) -> None:
+        if self.passenger_ids:
+            return
+        if not self.username.startswith("loadtest"):
+            return
+        suffix = self.username[len("loadtest") :]
+        if not suffix.isdigit():
+            return
+        # Generated load-test data uses passengerId = 1901000000000000000 + index.
+        passenger_id = 1901000000000000000 + int(suffix)
+        self.passenger_ids = [str(passenger_id)]
 
     def _query_ticket_if_needed(self, scenario: Dict[str, str]) -> Optional[Dict[str, str]]:
         if not ENABLE_QUERY:
@@ -181,7 +236,12 @@ class TicketChainUser(HttpUser):
             catch_response=True,
             name="ticket_query",
         ) as response:
-            data = response.json()
+            data = self._parse_json_response(response)
+            if data is None:
+                response.failure(
+                    f"ticket query returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                )
+                return None
             if not data.get("success"):
                 response.failure(f"ticket query failed: {data}")
                 return None
@@ -230,7 +290,12 @@ class TicketChainUser(HttpUser):
             catch_response=True,
             name="ticket_purchase_v2",
         ) as response:
-            data = response.json()
+            data = self._parse_json_response(response)
+            if data is None:
+                response.failure(
+                    f"purchase returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                )
+                return None
             if not data.get("success"):
                 response.failure(f"purchase failed: {data}")
                 return None
@@ -249,7 +314,12 @@ class TicketChainUser(HttpUser):
             catch_response=True,
             name="order_query",
         ) as response:
-            data = response.json()
+            data = self._parse_json_response(response)
+            if data is None:
+                response.failure(
+                    f"order query returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                )
+                return None
             if not data.get("success"):
                 response.failure(f"order query failed: {data}")
                 return None
@@ -277,7 +347,12 @@ class TicketChainUser(HttpUser):
             catch_response=True,
             name="pay_create",
         ) as response:
-            data = response.json()
+            data = self._parse_json_response(response)
+            if data is None:
+                response.failure(
+                    f"pay create returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                )
+                return
             if not data.get("success"):
                 response.failure(f"pay create failed: {data}")
                 return
@@ -292,7 +367,12 @@ class TicketChainUser(HttpUser):
                 catch_response=True,
                 name="pay_status_query",
             ) as response:
-                data = response.json()
+                data = self._parse_json_response(response)
+                if data is None:
+                    response.failure(
+                        f"pay status returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                    )
+                    return
                 if not data.get("success"):
                     response.failure(f"pay status query failed: {data}")
                     return
@@ -302,6 +382,26 @@ class TicketChainUser(HttpUser):
                     return
                 response.success()
             time.sleep(PAY_STATUS_POLL_INTERVAL)
+
+    def _cancel_ticket_order(self, order_sn: str) -> None:
+        payload = {"orderSn": order_sn}
+        with self.client.post(
+            "/api/ticket-service/ticket/cancel",
+            json=payload,
+            headers=self._headers(),
+            catch_response=True,
+            name="ticket_cancel",
+        ) as response:
+            data = self._parse_json_response(response)
+            if data is None:
+                response.failure(
+                    f"cancel returned non-json response: status={response.status_code}, body={response.text[:200]}"
+                )
+                return
+            if not data.get("success"):
+                response.failure(f"cancel failed: {data}")
+                return
+            response.success()
 
     def _resolve_passenger_count(self, scenario: Dict[str, str]) -> int:
         count = int(scenario.get("passengerCount") or 1)

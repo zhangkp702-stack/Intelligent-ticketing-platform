@@ -66,6 +66,11 @@ public class OrderCloseCacheAndTokenUpdateHandler implements AbstractExecuteStra
                 String trainId = String.valueOf(orderDetailResultData.getTrainId());
                 List<TicketOrderPassengerDetailRespDTO> passengerDetails = orderDetailResultData.getPassengerDetails();
                 seatService.unlock(trainId, orderDetailResultData.getDeparture(), orderDetailResultData.getArrival(), BeanUtil.convert(passengerDetails, TrainPurchaseTicketRespDTO.class));
+                passengerDetails.stream()
+                        .collect(java.util.stream.Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType,
+                                java.util.stream.Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getCarriageNumber, java.util.stream.Collectors.counting())))
+                        .forEach((seatType, carriageCountMap) -> carriageCountMap.forEach((carriageNumber, count) ->
+                                seatService.adjustCarriageRemainingSummary(trainId, orderDetailResultData.getDeparture(), orderDetailResultData.getArrival(), seatType, carriageNumber, count)));
                 ticketAvailabilityTokenBucket.rollbackInBucket(orderDetailResultData);
             }
         }

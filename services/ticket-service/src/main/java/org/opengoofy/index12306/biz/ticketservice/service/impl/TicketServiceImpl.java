@@ -45,7 +45,6 @@ import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationRelationMapper;
-import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatClassDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
@@ -113,13 +112,11 @@ import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.Index12306Constant.ADVANCE_TICKET_DAY;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_PURCHASE_TICKETS;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_PURCHASE_TICKETS_V2;
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_PURCHASE_TICKETS_V2_SEGMENT;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_REGION_TRAIN_STATION;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_REGION_TRAIN_STATION_MAPPING;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_TOKEN_BUCKET_ISNULL;
@@ -406,10 +403,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     }
 
     // 本地锁缓存，确保每个区间锁独立，避免并发问题
-    private final Cache<String, ReentrantLock> localLockMap = Caffeine.newBuilder()
-            .expireAfterWrite(1, TimeUnit.DAYS)
-            .build();
-
     // 令牌缓存，确保令牌是唯一的，避免重复使用
     private final Cache<String, Object> tokenTicketsRefreshMap = Caffeine.newBuilder()
             .expireAfterWrite(10, TimeUnit.MINUTES)
@@ -451,41 +444,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             throw new ServiceException("列车站点已无余票");
         }
         // 对用户买票的座位类型去重排序。
-        List<Integer> seatTypes = requestParam.getPassengers().stream()
-                .map(PurchaseTicketPassengerDetailDTO::getSeatType)
-                .distinct()
-                .sorted()
-                .toList();
-        List<ReentrantLock> localLocks = new ArrayList<>(seatTypes.size());
-        List<RLock> distributedLocks = new ArrayList<>(seatTypes.size());
-        seatTypes.forEach(seatType -> {
-            String lockKey = environment.resolvePlaceholders(String.format(
-                    LOCK_PURCHASE_TICKETS_V2_SEGMENT,
-                    requestParam.getTrainId(),
-                    seatType,
-                    requestParam.getDeparture(),
-                    requestParam.getArrival()));
-            localLocks.add(localLockMap.get(lockKey, key -> new ReentrantLock(true)));
-            distributedLocks.add(redissonClient.getFairLock(lockKey));
-        });
-        try {
-            localLocks.forEach(ReentrantLock::lock);
-            distributedLocks.forEach(RLock::lock);
-            return ticketService.executePurchaseTickets(requestParam);
-        } finally {
-            localLocks.forEach(each -> {
-                try {
-                    each.unlock();
-                } catch (Throwable ignored) {
-                }
-            });
-            distributedLocks.forEach(each -> {
-                try {
-                    each.unlock();
-                } catch (Throwable ignored) {
-                }
-            });
-        }
+        return ticketService.executePurchaseTickets(requestParam);
     }
     // 最终执行购票操作
     @Override
@@ -607,6 +566,11 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             log.error("[取消订单] 订单号：{} 回滚列车DB座位状态失败", requestParam.getOrderSn(), ex);
             throw ex;
         }
+        trainPurchaseTicketResults.stream()
+                .collect(Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType,
+                        Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getCarriageNumber, Collectors.counting())))
+                .forEach((seatType, carriageCountMap) -> carriageCountMap.forEach((carriageNumber, count) ->
+                        seatService.adjustCarriageRemainingSummary(trainId, departure, arrival, seatType, carriageNumber, count)));
         ticketAvailabilityTokenBucket.rollbackInBucket(ticketOrderDetail);
         if (!StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
             try {

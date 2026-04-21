@@ -48,6 +48,7 @@ public class DelayCloseOrderSendProduce extends AbstractCommonSendProduceTemplat
         this.environment = environment;
     }
 
+    // 为消息体封装关键消息
     @Override
     protected BaseSendExtendDTO buildBaseSendExtendParam(DelayCloseOrderEvent messageSendEvent) {
         return BaseSendExtendDTO.builder()
@@ -61,6 +62,7 @@ public class DelayCloseOrderSendProduce extends AbstractCommonSendProduceTemplat
                 .build();
     }
 
+    // 构造要发送给MQ的消息体
     @Override
     protected Message<?> buildMessage(DelayCloseOrderEvent messageSendEvent, BaseSendExtendDTO requestParam) {
         String keys = StrUtil.isEmpty(requestParam.getKeys()) ? UUID.randomUUID().toString() : requestParam.getKeys();

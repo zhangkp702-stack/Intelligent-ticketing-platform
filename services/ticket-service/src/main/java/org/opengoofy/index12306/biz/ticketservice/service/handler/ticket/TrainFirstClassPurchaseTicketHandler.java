@@ -18,6 +18,7 @@
 package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.util.StrUtil;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum;
@@ -31,10 +32,12 @@ import org.opengoofy.index12306.framework.starter.convention.exception.ServiceEx
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 /**
@@ -64,7 +67,13 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
         // 获取乘车人集合
         List<PurchaseTicketPassengerDetailDTO> passengers = requestParam.getPassengerSeatDetails();
         // 查询列车有余票的车厢号集合
-        List<String> carriageNumbers = seatService.listUsableCarriageNumber(trainId, requestParam.getSeatType(), departure, arrival);
+        List<String> carriageNumbers;
+        if (StrUtil.isNotBlank(requestParam.getPreferredCarriageNumber())) {
+            carriageNumbers = List.of(requestParam.getPreferredCarriageNumber());
+        } else {
+            carriageNumbers = new ArrayList<>(seatService.listUsableCarriageNumber(trainId, requestParam.getSeatType(), departure, arrival));
+            Collections.shuffle(carriageNumbers, ThreadLocalRandom.current());
+        }
         // 获取用户选座意愿
         Set<String> excludedSeatNumbers = CollUtil.isEmpty(requestParam.getExcludeSeatNumbers())
                 ? Set.of()
@@ -72,9 +81,10 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
         // 开始逐车厢开始选座
         for (String carriageNumber : carriageNumbers) {
             // 查找所有可用座位
-            List<String> availableSeats = seatService.listAvailableSeat(trainId, carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
-                    .filter(each -> !excludedSeatNumbers.contains(each))
-                    .toList();
+            List<String> availableSeats = new ArrayList<>(seatService.listAvailableSeat(trainId, carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
+                    .filter(each -> !isExcludedSeat(excludedSeatNumbers, carriageNumber, each))
+                    .toList());
+            rotateAvailableSeats(availableSeats, requestParam.getSeatScanOffset());
             if (availableSeats.size() < passengers.size()) {
                 continue;
             }
@@ -89,6 +99,21 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
     }
 
     // 对每一个车厢都进行选座组合的构建
+    private boolean isExcludedSeat(Set<String> excludedSeatNumbers, String carriageNumber, String seatNumber) {
+        return excludedSeatNumbers.contains(seatNumber)
+                || excludedSeatNumbers.contains(carriageNumber + "#" + seatNumber);
+    }
+
+    private void rotateAvailableSeats(List<String> availableSeats, Integer offset) {
+        if (CollUtil.isEmpty(availableSeats) || offset == null || availableSeats.size() <= 1) {
+            return;
+        }
+        int actualOffset = Math.floorMod(offset, availableSeats.size());
+        if (actualOffset > 0) {
+            Collections.rotate(availableSeats, -actualOffset);
+        }
+    }
+
     private static final int MAX_ADJACENT_CANDIDATES = 5;
     private static final int MAX_SAME_ROW_CANDIDATES = 5;
     private static final int MAX_GLOBAL_CANDIDATES = 3;

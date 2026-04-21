@@ -1,4 +1,0 @@
-fromStation,toStation,departureDate,trainNumber,trainId,departure,arrival,seatType,passengerCount,pay
-南京南,苏州,2026-05-01,G7001,240000G70010,南京南,苏州,1,1,true
-镇江,上海,2026-05-01,G7001,240000G70010,镇江,上海,1,1,true
-常州,无锡,2026-05-01,G7001,240000G70010,常州,无锡,2,1,false

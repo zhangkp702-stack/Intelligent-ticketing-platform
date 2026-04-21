@@ -19,6 +19,8 @@ package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainStationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationMapper;
@@ -30,6 +32,7 @@ import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -41,6 +44,10 @@ import java.util.stream.Collectors;
 public class TrainStationServiceImpl implements TrainStationService {
 
     private final TrainStationMapper trainStationMapper;
+    private final Cache<String, List<String>> trainStationNameCache = Caffeine.newBuilder()
+            .maximumSize(2048)
+            .expireAfterWrite(1, TimeUnit.DAYS)
+            .build();
 
     @Override
     public List<TrainStationQueryRespDTO> listTrainStationQuery(String trainId) {
@@ -53,13 +60,15 @@ public class TrainStationServiceImpl implements TrainStationService {
 
     @Override
     public List<String> listTrainStationNameByTrainId(String trainId) {
-        LambdaQueryWrapper<TrainStationDO> queryWrapper = Wrappers.lambdaQuery(TrainStationDO.class)
-                .eq(TrainStationDO::getTrainId, trainId)
-                .select(TrainStationDO::getDeparture)
-                .orderByAsc(TrainStationDO::getSequence);
-        return trainStationMapper.selectList(queryWrapper).stream()
-                .map(TrainStationDO::getDeparture)
-                .collect(Collectors.toList());
+        return trainStationNameCache.get(trainId, key -> {
+            LambdaQueryWrapper<TrainStationDO> queryWrapper = Wrappers.lambdaQuery(TrainStationDO.class)
+                    .eq(TrainStationDO::getTrainId, key)
+                    .select(TrainStationDO::getDeparture)
+                    .orderByAsc(TrainStationDO::getSequence);
+            return trainStationMapper.selectList(queryWrapper).stream()
+                    .map(TrainStationDO::getDeparture)
+                    .collect(Collectors.toList());
+        });
     }
 
     @Override

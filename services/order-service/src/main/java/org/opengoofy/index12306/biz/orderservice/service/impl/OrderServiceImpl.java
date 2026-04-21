@@ -171,11 +171,7 @@ public class OrderServiceImpl implements OrderService {
         try {
             // 发送 RocketMQ 延时消息，指定时间后取消订单
             DelayCloseOrderEvent delayCloseOrderEvent = DelayCloseOrderEvent.builder()
-                    .trainId(String.valueOf(requestParam.getTrainId()))
-                    .departure(requestParam.getDeparture())
-                    .arrival(requestParam.getArrival())
                     .orderSn(orderSn)
-                    .trainPurchaseTicketResults(requestParam.getTicketOrderItems())
                     .build();
             // 创建订单并支付后延时关闭订单消息怎么办？详情查看：https://nageoffer.com/12306/question
             SendResult sendResult = delayCloseOrderSendProduce.sendMessage(delayCloseOrderEvent);

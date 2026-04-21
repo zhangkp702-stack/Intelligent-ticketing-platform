@@ -74,6 +74,16 @@
         order by carriage_number asc
     </select>
 
+    <select id="listCarriageAvailabilitySummary" resultType="org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilityDTO">
+        select carriage_number as carriageNumber, count(*) as seatCount
+        from t_seat
+        where train_id = #{trainId}
+          and seat_type = #{seatType}
+          and (occupy_bitmap &amp; #{requestMask}) = 0
+        group by carriage_number
+        having seatCount &gt; 0
+    </select>
+
     <update id="tryLockSeatByBitmap">
         update t_seat
         set occupy_bitmap = occupy_bitmap | #{requestMask},

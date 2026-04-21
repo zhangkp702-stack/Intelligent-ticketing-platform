@@ -20,6 +20,7 @@ package org.opengoofy.index12306.biz.ticketservice.dao.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Param;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.SeatDO;
+import org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilityDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
 
 import java.util.List;
@@ -55,6 +56,13 @@ public interface SeatMapper extends BaseMapper<SeatDO> {
     List<String> listUsableCarriageNumber(@Param("trainId") Long trainId,
                                           @Param("seatType") Integer seatType,
                                           @Param("requestMask") Long requestMask);
+
+    /**
+     * 车厢维度余票粗筛摘要
+     */
+    List<CarriageAvailabilityDTO> listCarriageAvailabilitySummary(@Param("trainId") Long trainId,
+                                                                  @Param("seatType") Integer seatType,
+                                                                  @Param("requestMask") Long requestMask);
 
     /**
      * 单座位原子占位

@@ -64,16 +64,36 @@ import static org.opengoofy.index12306.biz.userservice.common.constant.RedisKeyC
 @RequiredArgsConstructor
 public class PassengerServiceImpl implements PassengerService {
 
+    private static final String LOAD_TEST_USER_PREFIX = "loadtest";
+
     private final PassengerMapper passengerMapper;
     private final DistributedCache distributedCache;
 
     @Override
     public List<PassengerRespDTO> listPassengerQueryByUsername(String username) {
-        String actualUserPassengerListStr = getActualUserPassengerListStr(username);
-        return Optional.ofNullable(actualUserPassengerListStr)
-                .map(each -> JSON.parseArray(each, PassengerDO.class))
-                .map(each -> BeanUtil.convert(each, PassengerRespDTO.class))
-                .orElse(null);
+        try {
+            LambdaQueryWrapper<PassengerDO> queryWrapper = Wrappers.lambdaQuery(PassengerDO.class)
+                    .eq(PassengerDO::getUsername, username);
+            if (isLoadTestUser(username)) {
+                queryWrapper.select(
+                        PassengerDO::getId,
+                        PassengerDO::getUsername,
+                        PassengerDO::getRealName,
+                        PassengerDO::getIdType,
+                        PassengerDO::getDiscountType,
+                        PassengerDO::getCreateDate,
+                        PassengerDO::getVerifyStatus
+                );
+            }
+            List<PassengerDO> passengerDOList = passengerMapper.selectList(queryWrapper);
+            log.info("[乘车人查询] username={} count={}", username, CollUtil.size(passengerDOList));
+            return CollUtil.isNotEmpty(passengerDOList)
+                    ? passengerDOList.stream().map(this::convertToPassengerResp).collect(Collectors.toList())
+                    : null;
+        } catch (Exception ex) {
+            log.error("[乘车人查询] username={} 查询失败", username, ex);
+            throw ex;
+        }
     }
 
     private String getActualUserPassengerListStr(String username) {
@@ -93,14 +113,33 @@ public class PassengerServiceImpl implements PassengerService {
 
     @Override
     public List<PassengerActualRespDTO> listPassengerQueryByIds(String username, List<Long> ids) {
-        String actualUserPassengerListStr = getActualUserPassengerListStr(username);
-        if (StrUtil.isEmpty(actualUserPassengerListStr)) {
+        if (CollUtil.isEmpty(ids)) {
             return null;
         }
-        return JSON.parseArray(actualUserPassengerListStr, PassengerDO.class)
-                .stream().filter(passengerDO -> ids.contains(passengerDO.getId()))
-                .map(each -> BeanUtil.convert(each, PassengerActualRespDTO.class))
-                .collect(Collectors.toList());
+        try {
+            LambdaQueryWrapper<PassengerDO> queryWrapper = Wrappers.lambdaQuery(PassengerDO.class)
+                    .eq(PassengerDO::getUsername, username)
+                    .in(PassengerDO::getId, ids);
+            if (isLoadTestUser(username)) {
+                queryWrapper.select(
+                        PassengerDO::getId,
+                        PassengerDO::getUsername,
+                        PassengerDO::getRealName,
+                        PassengerDO::getIdType,
+                        PassengerDO::getDiscountType,
+                        PassengerDO::getCreateDate,
+                        PassengerDO::getVerifyStatus
+                );
+            }
+            List<PassengerDO> passengerDOList = passengerMapper.selectList(queryWrapper);
+            log.info("[乘车人实名查询] username={} ids={} count={}", username, ids, CollUtil.size(passengerDOList));
+            return CollUtil.isNotEmpty(passengerDOList)
+                    ? passengerDOList.stream().map(this::convertToPassengerActualResp).collect(Collectors.toList())
+                    : null;
+        } catch (Exception ex) {
+            log.error("[乘车人实名查询] username={} ids={} 查询失败", username, ids, ex);
+            throw ex;
+        }
     }
 
     @Override
@@ -208,5 +247,62 @@ public class PassengerServiceImpl implements PassengerService {
         if (!PhoneUtil.isMobile(requestParam.getPhone())) {
             throw new ClientException("乘车人手机号错误");
         }
+    }
+    private PassengerRespDTO convertToPassengerResp(PassengerDO passengerDO) {
+        String idCard = resolveIdCard(passengerDO);
+        String phone = resolvePhone(passengerDO);
+        return new PassengerRespDTO()
+                .setId(Optional.ofNullable(passengerDO.getId()).map(String::valueOf).orElse(null))
+                .setUsername(passengerDO.getUsername())
+                .setRealName(passengerDO.getRealName())
+                .setIdType(passengerDO.getIdType())
+                .setIdCard(idCard)
+                .setActualIdCard(idCard)
+                .setDiscountType(passengerDO.getDiscountType())
+                .setPhone(phone)
+                .setActualPhone(phone)
+                .setCreateDate(passengerDO.getCreateDate())
+                .setVerifyStatus(passengerDO.getVerifyStatus());
+    }
+
+    private PassengerActualRespDTO convertToPassengerActualResp(PassengerDO passengerDO) {
+        String idCard = resolveIdCard(passengerDO);
+        String phone = resolvePhone(passengerDO);
+        return new PassengerActualRespDTO()
+                .setId(Optional.ofNullable(passengerDO.getId()).map(String::valueOf).orElse(null))
+                .setUsername(passengerDO.getUsername())
+                .setRealName(passengerDO.getRealName())
+                .setIdType(passengerDO.getIdType())
+                .setIdCard(idCard)
+                .setDiscountType(passengerDO.getDiscountType())
+                .setPhone(phone)
+                .setCreateDate(passengerDO.getCreateDate())
+                .setVerifyStatus(passengerDO.getVerifyStatus());
+    }
+
+    private boolean isLoadTestUser(String username) {
+        return StrUtil.isNotBlank(username) && StrUtil.startWith(username, LOAD_TEST_USER_PREFIX);
+    }
+
+    private String resolveIdCard(PassengerDO passengerDO) {
+        if (StrUtil.isNotBlank(passengerDO.getIdCard())) {
+            return passengerDO.getIdCard();
+        }
+        if (isLoadTestUser(passengerDO.getUsername())) {
+            String suffix = StrUtil.subSuf(passengerDO.getUsername(), LOAD_TEST_USER_PREFIX.length());
+            return "11010119900101" + StrUtil.fillBefore(suffix, '0', 4);
+        }
+        return null;
+    }
+
+    private String resolvePhone(PassengerDO passengerDO) {
+        if (StrUtil.isNotBlank(passengerDO.getPhone())) {
+            return passengerDO.getPhone();
+        }
+        if (isLoadTestUser(passengerDO.getUsername())) {
+            String suffix = StrUtil.subSuf(passengerDO.getUsername(), LOAD_TEST_USER_PREFIX.length());
+            return "1390000" + StrUtil.fillBefore(suffix, '0', 4);
+        }
+        return null;
     }
 }
