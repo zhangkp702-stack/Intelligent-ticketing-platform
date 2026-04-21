@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences
+POST,ticket_purchase_v2,"CatchResponseError(""purchase failed: {'code': 'B000001', 'message': '系统执行出错', 'data': None, 'requestId': None, 'success': False}"")",1866

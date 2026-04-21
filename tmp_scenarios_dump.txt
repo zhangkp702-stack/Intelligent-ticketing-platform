@@ -1,0 +1,5 @@
+﻿fromStation,toStation,departureDate,trainNumber,trainId,departure,arrival,seatType,passengerCount,pay
+鍗椾含鍗?鑻忓窞,2026-05-01,G7001,240000G70010,鍗椾含鍗?鑻忓窞,1,1,true
+闀囨睙,涓婃捣,2026-05-01,G7001,240000G70010,闀囨睙,涓婃捣,1,1,true
+甯稿窞,鏃犻敗,2026-05-01,G7001,240000G70010,甯稿窞,鏃犻敗,2,1,false
+

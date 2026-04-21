@@ -1,0 +1,2 @@
+Method,Name,Error,Occurrences
+POST,ticket_purchase_v2,"CatchResponseError(""purchase failed: {'code': 'B000001', 'message': '余票不足或座位冲突，请重试', 'data': None, 'requestId': None, 'success': False}"")",19

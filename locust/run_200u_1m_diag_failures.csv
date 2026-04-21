@@ -1,0 +1,5 @@
+Method,Name,Error,Occurrences
+POST,ticket_purchase_v2,"CatchResponseError(""purchase failed: {'code': 'B000001', 'message': '系统执行出错', 'data': None, 'requestId': None, 'success': False}"")",731
+POST,ticket_cancel,"CatchResponseError(""cancel failed: {'code': 'B000001', 'message': '系统执行出错', 'data': None, 'requestId': None, 'success': False}"")",1
+POST,ticket_purchase_v2,"CatchResponseError(""purchase failed: {'code': 'B000001', 'message': '购票异常，请稍候再试', 'data': None, 'requestId': None, 'success': False}"")",19
+POST,ticket_purchase_v2,"CatchResponseError(""purchase failed: {'code': 'B000001', 'message': '列车站点已无余票', 'data': None, 'requestId': None, 'success': False}"")",8991
