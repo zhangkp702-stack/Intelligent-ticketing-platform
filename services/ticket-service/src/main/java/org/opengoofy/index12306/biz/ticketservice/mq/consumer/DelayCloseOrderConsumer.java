@@ -34,7 +34,7 @@ import org.opengoofy.index12306.framework.starter.idempotent.enums.IdempotentTyp
 import org.springframework.stereotype.Component;
 
 /**
- * Delay close order consumer.
+ * 延迟关闭订单消费者。
  */
 @Slf4j
 @Component
@@ -57,20 +57,20 @@ public class DelayCloseOrderConsumer implements RocketMQListener<MessageWrapper<
     )
     @Override
     public void onMessage(MessageWrapper<DelayCloseOrderEvent> delayCloseOrderEventMessageWrapper) {
-        log.info("[Delay close order] Start consuming: {}", JSON.toJSONString(delayCloseOrderEventMessageWrapper));
+        log.info("[延迟关闭订单] 开始消费：{}", JSON.toJSONString(delayCloseOrderEventMessageWrapper));
         DelayCloseOrderEvent event = delayCloseOrderEventMessageWrapper.getMessage();
         String orderSn = event.getOrderSn();
         Result<Boolean> closedTickOrder;
         try {
             closedTickOrder = ticketOrderRemoteService.closeTickOrder(new CancelTicketOrderReqDTO(orderSn));
         } catch (Throwable ex) {
-            log.error("[Delay close order] OrderSn: {} remote close order call failed", orderSn, ex);
+            log.error("[延迟关闭订单] 订单号：{} 远程调用订单服务失败", orderSn, ex);
             throw ex;
         }
         if (!closedTickOrder.isSuccess() || !Boolean.TRUE.equals(closedTickOrder.getData())) {
-            log.info("[Delay close order] OrderSn: {} has been paid or close failed", orderSn);
+            log.info("[延迟关闭订单] 订单号：{} 用户已支付订单或关闭失败", orderSn);
             return;
         }
-        log.info("[Delay close order] OrderSn: {} closed. Ticket resource rollback will be handled by order close binlog.", orderSn);
+        log.info("[延迟关闭订单] 订单号：{} 关闭成功，等待订单关闭 Binlog 回滚票务资源", orderSn);
     }
 }

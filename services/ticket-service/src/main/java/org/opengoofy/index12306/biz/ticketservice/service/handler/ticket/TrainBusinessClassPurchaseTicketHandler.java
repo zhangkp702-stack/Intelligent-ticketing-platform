@@ -32,6 +32,7 @@ import org.opengoofy.index12306.framework.starter.convention.exception.ServiceEx
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -115,7 +116,7 @@ public class TrainBusinessClassPurchaseTicketHandler extends AbstractTrainPurcha
         if (exactChooseSeats.size() == seatCount) {
             result.add(exactChooseSeats);
         }
-        long availableMask = SeatLayoutBitmapUtil.buildAvailableMask(new ArrayList<>(distinctAvailableSeats), profile);
+        BitSet availableMask = SeatLayoutBitmapUtil.buildAvailableMask(new ArrayList<>(distinctAvailableSeats), profile);
         List<SeatLayoutBitmapUtil.SeatCoordinate> sortedCoordinates = SeatLayoutBitmapUtil.decodeAvailableSeats(availableMask, profile).stream()
                 .sorted(candidateComparator(profile))
                 .toList();

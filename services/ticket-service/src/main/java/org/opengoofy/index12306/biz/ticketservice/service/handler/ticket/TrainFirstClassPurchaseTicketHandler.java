@@ -32,6 +32,7 @@ import org.opengoofy.index12306.framework.starter.convention.exception.ServiceEx
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -140,7 +141,7 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
         addCandidate(result, dedupKeys, choosePlusFallback, seatCount);
 
         // 4. 相邻组合：只保留前 5 个
-        long availableMask = SeatLayoutBitmapUtil.buildAvailableMask(new ArrayList<>(distinctAvailableSeats), profile);
+        BitSet availableMask = SeatLayoutBitmapUtil.buildAvailableMask(new ArrayList<>(distinctAvailableSeats), profile);
         SeatLayoutBitmapUtil.buildAdjacentCombos(availableMask, seatCount, profile).stream()
                 .sorted(Comparator.comparingInt((List<SeatLayoutBitmapUtil.SeatCoordinate> each) -> score(each, profile)).reversed()
                         .thenComparingInt(each -> each.get(0).rowIndex())

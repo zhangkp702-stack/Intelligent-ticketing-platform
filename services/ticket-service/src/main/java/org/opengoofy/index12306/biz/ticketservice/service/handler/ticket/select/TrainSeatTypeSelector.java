@@ -184,7 +184,12 @@ public final class TrainSeatTypeSelector {
                                                                             List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
         String strategyKey =
                 VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
+        // 获取区间路段索引列表    b-d会返回 1，2，3
         List<Integer> segmentIndexes = buildSegmentIndexes(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
+        // 查询当前列车在当前区间下还有哪些车厢值得优先尝试，以及每个车厢当前摘要上还剩多少可用票
+        // 03车厢 剩余10张
+        // 05车厢 剩余8张
+        // 01车厢 剩余6张
         List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
                 requestParam.getTrainId(),
                 seatType,
@@ -192,43 +197,48 @@ public final class TrainSeatTypeSelector {
                 requestParam.getArrival(),
                 passengerSeatDetails.size()
         );
-        /* if (CollUtil.isEmpty(candidateCarriages)) {
-            throw new ServiceException("站点余票不足或座位冲突，请重试");
-        }
-        */ /*
-        if (CollUtil.isEmpty(candidateCarriages)) { throw new ServiceException("站点余票不足或座位冲突，请重试"); /*
-            throw new ServiceException("站点余票不足或座位冲突，请重试");
-        }
-        */
         if (CollUtil.isEmpty(candidateCarriages)) {
-            throw new ServiceException("Station seats are unavailable or conflicted, please retry");
+            throw new ServiceException("站点余票不足或座位资源冲突，请稍后重试");
         }
+        // 生成一个座位扫描种子，用于在每个车厢内随机扫描座位，避免冲突和死锁
         long scanSeed = buildSeatScanSeed(requestParam, seatType, passengerSeatDetails);
+        // 初始化车厢尝试次数
         int carriageAttempt = 0;
+        // 开始遍历每个候选车厢
         for (CarriageAvailabilityDTO eachCarriage : candidateCarriages) {
+            // 取出当前车厢号
             String carriageNumber = eachCarriage.getCarriageNumber();
+            // 尝试获取“车厢 + 区间段”锁集合
             List<RLock> segmentLocks = tryAcquireCarriageSegmentLocks(requestParam.getTrainId(), seatType, carriageNumber, segmentIndexes);
+            // 拿不到锁就换车厢重试
             if (CollUtil.isEmpty(segmentLocks)) {
                 carriageAttempt++;
                 continue;
             }
             try {
+                // 本车厢里已经尝试过但锁座失败的那些座位 key。
                 Set<String> excludedSeatKeys = new LinkedHashSet<>();
                 for (int retry = 0; retry < MAX_CARRIAGE_SELECT_RETRY_TIMES; retry++) {
+                    // 构造当前轮次的选座参数对象
                     SelectSeatDTO selectSeatDTO = SelectSeatDTO.builder()
                             .seatType(seatType)
                             .passengerSeatDetails(passengerSeatDetails)
                             .requestParam(requestParam)
+                            // 把当前已经尝试失败的座位传进去，告诉选座策略：这些座位别再选了。
                             .excludeSeatNumbers(new ArrayList<>(excludedSeatKeys))
+                            // 这次只在当前这个车厢里选，不要跑别的车厢。
                             .preferredCarriageNumber(carriageNumber)
                             .seatScanOffset(buildSeatScanOffset(scanSeed, carriageAttempt, retry))
                             .build();
+                    // 调用选座策略实际选座
                     List<TrainPurchaseTicketRespDTO> selectedSeats = abstractStrategyChoose.chooseAndExecuteResp(strategyKey, selectSeatDTO);
                     if (CollUtil.isEmpty(selectedSeats)) {
                         break;
                     }
                     if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
+                        // 这里使用canal加binlog日志跟新
                         decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
+                        // 再扣减当前车厢的摘要余票
                         seatService.adjustCarriageRemainingSummary(
                                 requestParam.getTrainId(),
                                 requestParam.getDeparture(),
@@ -250,24 +260,10 @@ public final class TrainSeatTypeSelector {
             }
             carriageAttempt++;
         }
-        throw new ServiceException("Seat resources conflicted, please retry");
-    }
-    /*
-        throw new ServiceException("余票不足或座位冲突，请重试");
-    }
-    /*
-        throw new ServiceException("余票不足或座位冲突，请重试");
-    }
-    /*
-        throw new ServiceException("余票不足或座位冲突，请重试");
-    /*
-        throw new ServiceException("余票不足或座位冲突，请重试");
-        /*
-        throw new ServiceException("余票不足或座位冲突，请重试");
+        throw new ServiceException("座位资源冲突，请稍后重试");
     }
 
-    */
-
+    // 尝试获取“车厢 + 区间段”锁集合
     private List<RLock> tryAcquireCarriageSegmentLocks(String trainId, Integer seatType, String carriageNumber, List<Integer> segmentIndexes) {
         List<RLock> locks = new ArrayList<>(segmentIndexes.size());
         for (Integer segmentIndex : segmentIndexes.stream().distinct().sorted().toList()) {

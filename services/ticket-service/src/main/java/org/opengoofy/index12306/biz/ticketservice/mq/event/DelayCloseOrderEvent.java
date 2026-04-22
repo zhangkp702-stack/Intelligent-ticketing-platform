@@ -23,7 +23,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 /**
- * Delay close order event.
+ * 延迟关闭订单事件。
  */
 @Data
 @Builder
@@ -32,7 +32,7 @@ import lombok.NoArgsConstructor;
 public class DelayCloseOrderEvent {
 
     /**
-     * Order serial number.
+     * 订单号。
      */
     private String orderSn;
 }

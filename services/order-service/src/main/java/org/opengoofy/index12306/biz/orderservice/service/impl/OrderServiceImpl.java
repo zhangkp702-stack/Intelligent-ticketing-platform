@@ -124,6 +124,7 @@ public class OrderServiceImpl implements OrderService {
     public String createTicketOrder(TicketOrderCreateReqDTO requestParam) {
         // 通过基因法将用户 ID 融入到订单号
         String orderSn = OrderIdGeneratorManager.generateId(requestParam.getUserId());
+        // 创建汇总订单，存储整个账单的公共情况
         OrderDO orderDO = OrderDO.builder().orderSn(orderSn)
                 .orderTime(requestParam.getOrderTime())
                 .departure(requestParam.getDeparture())

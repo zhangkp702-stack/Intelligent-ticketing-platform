@@ -238,7 +238,7 @@ public class Snowflake implements Serializable, IdGenerator {
                 timestamp = lastTimestamp;
             } else {
                 // 如果服务器时间有问题(时钟后退) 报错。
-                throw new IllegalStateException(StrUtil.format("Clock moved backwards. Refusing to generate id for {}ms", lastTimestamp - timestamp));
+                throw new IllegalStateException(StrUtil.format("系统时钟发生回拨，拒绝生成 ID，回拨时间：{}ms", lastTimestamp - timestamp));
             }
         }
         if (timestamp == this.lastTimestamp) {
@@ -284,7 +284,7 @@ public class Snowflake implements Serializable, IdGenerator {
         }
         if (timestamp < lastTimestamp) {
             // 如果发现新的时间戳比上次记录的时间戳数值小，说明操作系统时间发生了倒退，报错
-            throw new IllegalStateException(StrUtil.format("Clock moved backwards. Refusing to generate id for {}ms", lastTimestamp - timestamp));
+            throw new IllegalStateException(StrUtil.format("系统时钟发生回拨，拒绝生成 ID，回拨时间：{}ms", lastTimestamp - timestamp));
         }
         return timestamp;
     }

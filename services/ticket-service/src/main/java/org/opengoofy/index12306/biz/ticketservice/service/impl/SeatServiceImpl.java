@@ -69,7 +69,9 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
 
     @Override
     public List<String> listAvailableSeat(String trainId, String carriageNumber, Integer seatType, String departure, String arrival) {
+        // 获取当前列车的位图
         long requestMask = buildRequestMask(trainId, departure, arrival);
+        // 去数据库中找所有和当前指令与运算之后位0的座位
         List<SeatDO> availableSeats = seatMapper.listAvailableSeatByCarriage(
                 Long.parseLong(trainId), carriageNumber, seatType, requestMask, 1000);
         return availableSeats.stream().map(SeatDO::getSeatNumber).collect(Collectors.toList());
@@ -89,10 +91,15 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
 
     @Override
     public List<CarriageAvailabilityDTO> listCandidateCarriages(String trainId, Integer seatType, String departure, String arrival, int passengerCount) {
+        // 列车站台区间的位图
         long requestMask = buildRequestMask(trainId, departure, arrival);
+        // 生成redis的key后缀
         String keySuffix = buildKeySuffix(trainId, departure, arrival, seatType);
+        // 生成汇总订单的key
         String summaryKey = TRAIN_STATION_CARRIAGE_REMAINING_TICKET + keySuffix;
+        // 从redis中获取redisTemplate
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
+        // 获取余票信息
         Map<Object, Object> cachedSummary = stringRedisTemplate.opsForHash().entries(summaryKey);
         if (cachedSummary == null || cachedSummary.isEmpty()) {
             List<CarriageAvailabilityDTO> summaries = seatMapper.listCarriageAvailabilitySummary(Long.parseLong(trainId), seatType, requestMask);
@@ -111,10 +118,13 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
         }
         List<CarriageAvailabilityDTO> candidates = cachedSummary.entrySet().stream()
                 .map(each -> new CarriageAvailabilityDTO(String.valueOf(each.getKey()), Integer.parseInt(String.valueOf(each.getValue()))))
+                // 只保留余票数大于等于本次购票人数的车厢。
                 .filter(each -> each.getSeatCount() >= passengerCount)
+                // 余票数多的优先, 余票相同时，车厢号小的优先
                 .sorted(Comparator.comparingInt(CarriageAvailabilityDTO::getSeatCount).reversed()
                         .thenComparing(CarriageAvailabilityDTO::getCarriageNumber))
                 .collect(Collectors.toList());
+        // 如果筛完一个候选都没有，主动再查一次数据库
         if (candidates.isEmpty()) {
             List<CarriageAvailabilityDTO> refreshed = seatMapper.listCarriageAvailabilitySummary(Long.parseLong(trainId), seatType, requestMask);
             if (!refreshed.isEmpty()) {
@@ -132,6 +142,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
                         .collect(Collectors.toList());
             }
         }
+        // 如果有多个候选车厢，用游标轮转打散顺序
         if (candidates.size() > 1) {
             String cursorKey = TRAIN_STATION_CARRIAGE_REMAINING_TICKET_CURSOR + keySuffix;
             Long cursor = stringRedisTemplate.opsForValue().increment(cursorKey);
@@ -142,6 +153,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
                 }
             }
         }
+        // 当前请求下，哪些车厢值得优先尝试，以及每个车厢当前摘要上还剩多少可用票。
         return candidates;
     }
 

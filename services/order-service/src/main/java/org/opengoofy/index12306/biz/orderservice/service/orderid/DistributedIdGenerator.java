@@ -38,7 +38,7 @@ public class DistributedIdGenerator {
     public synchronized long generateId() {
         long timestamp = System.currentTimeMillis() - EPOCH;
         if (timestamp < lastTimestamp) {
-            throw new RuntimeException("Clock moved backwards. Refusing to generate ID.");
+            throw new RuntimeException("系统时钟发生回拨，拒绝生成 ID");
         }
         if (timestamp == lastTimestamp) {
             sequence = (sequence + 1) & ((1 << SEQUENCE_BITS) - 1);

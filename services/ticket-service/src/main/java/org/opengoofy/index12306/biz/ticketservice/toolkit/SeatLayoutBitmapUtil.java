@@ -21,6 +21,7 @@ import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEn
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -56,13 +57,11 @@ public final class SeatLayoutBitmapUtil {
         return new LayoutProfile(18, 5, secondClassColumnMap(), bitMask(0, 4), bitMask(2, 3));
     }
 
-    public static List<List<SeatCoordinate>> buildAdjacentCombos(long availableMask, int seatCount, LayoutProfile profile) {
+    public static List<List<SeatCoordinate>> buildAdjacentCombos(BitSet availableMask, int seatCount, LayoutProfile profile) {
         List<List<SeatCoordinate>> combinations = new ArrayList<>();
         for (int row = 0; row < profile.rowCount(); row++) {
-            long rowMask = (availableMask >>> (row * profile.colCount())) & ((1L << profile.colCount()) - 1);
             for (int start = 0; start <= profile.colCount() - seatCount; start++) {
-                long request = ((1L << seatCount) - 1) << start;
-                if ((rowMask & request) == request) {
+                if (isAdjacentAvailable(availableMask, row, start, seatCount, profile)) {
                     List<SeatCoordinate> coordinates = new ArrayList<>();
                     for (int c = 0; c < seatCount; c++) {
                         coordinates.add(new SeatCoordinate(row, start + c));
@@ -74,7 +73,7 @@ public final class SeatLayoutBitmapUtil {
         return combinations;
     }
 
-    public static List<SeatCoordinate> chooseNearestOrRandom(long availableMask, int seatCount, LayoutProfile profile) {
+    public static List<SeatCoordinate> chooseNearestOrRandom(BitSet availableMask, int seatCount, LayoutProfile profile) {
         List<SeatCoordinate> all = decodeAvailableSeats(availableMask, profile);
         if (all.isEmpty()) {
             return Collections.emptyList();
@@ -85,25 +84,34 @@ public final class SeatLayoutBitmapUtil {
                 .collect(Collectors.toList());
     }
 
-    public static long buildAvailableMask(List<String> seatNumbers, LayoutProfile profile) {
-        long mask = 0L;
+    public static BitSet buildAvailableMask(List<String> seatNumbers, LayoutProfile profile) {
+        BitSet mask = new BitSet(profile.rowCount() * profile.colCount());
         for (String seatNo : seatNumbers) {
             SeatCoordinate coordinate = parseSeatCoordinate(seatNo, profile);
             int index = coordinate.rowIndex() * profile.colCount() + coordinate.colIndex();
-            mask |= (1L << index);
+            mask.set(index);
         }
         return mask;
     }
 
-    public static List<SeatCoordinate> decodeAvailableSeats(long availableMask, LayoutProfile profile) {
+    public static List<SeatCoordinate> decodeAvailableSeats(BitSet availableMask, LayoutProfile profile) {
         List<SeatCoordinate> result = new ArrayList<>();
-        for (int i = 0; i < profile.rowCount() * profile.colCount(); i++) {
+        int maxSeatCount = profile.rowCount() * profile.colCount();
+        for (int i = availableMask.nextSetBit(0); i >= 0 && i < maxSeatCount; i = availableMask.nextSetBit(i + 1)) {
             // 检查第i位是不是1，如果是1，说明这个座位是可用的
-            if ((availableMask & (1L << i)) != 0) {
-                result.add(new SeatCoordinate(i / profile.colCount(), i % profile.colCount()));
-            }
+            result.add(new SeatCoordinate(i / profile.colCount(), i % profile.colCount()));
         }
         return result;
+    }
+
+    private static boolean isAdjacentAvailable(BitSet availableMask, int row, int start, int seatCount, LayoutProfile profile) {
+        int rowOffset = row * profile.colCount();
+        for (int i = 0; i < seatCount; i++) {
+            if (!availableMask.get(rowOffset + start + i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public static SeatCoordinate parseSeatCoordinate(String seatNo, LayoutProfile profile) {
