@@ -123,6 +123,18 @@ public final class RedisKeyConstant {
      */
     public static final String TRAIN_STATION_CARRIAGE_REMAINING_TICKET_CURSOR = "index12306-ticket-service:train_station_carriage_remaining_ticket_cursor:";
 
+    public static final String TRAIN_CARRIAGE_SEAT_ALLOCATION_CURSOR = "index12306-ticket-service:train_carriage_seat_allocation_cursor:";
+
+    /**
+     * 车厢区间段座位占用位图，使用 Redis Cluster hash tag 保证同车厢多段 key 落在同一 slot
+     */
+    public static final String TRAIN_CARRIAGE_SEGMENT_SEAT_BITMAP = "index12306-ticket-service:seat_bitmap:{%s:%d:%s}:%d";
+
+    /**
+     * 车厢区间段临时占座归属，field 为座位 bit，value 为 holdId
+     */
+    public static final String TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER = "index12306-ticket-service:seat_owner:{%s:%d:%s}:%d";
+
     /**
      * 获取全部地点集合 Key
      */

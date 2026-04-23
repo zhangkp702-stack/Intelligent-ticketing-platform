@@ -27,6 +27,7 @@ import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRe
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.tokenbucket.TicketAvailabilityTokenBucket;
 import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
@@ -49,6 +50,7 @@ public class OrderCloseCacheAndTokenUpdateHandler implements AbstractExecuteStra
     private final TicketOrderRemoteService ticketOrderRemoteService;
     private final SeatService seatService;
     private final TicketAvailabilityTokenBucket ticketAvailabilityTokenBucket;
+    private final RedisSeatBitmapService redisSeatBitmapService;
 
     @Override
     public void execute(CanalBinlogEvent message) {
@@ -65,6 +67,7 @@ public class OrderCloseCacheAndTokenUpdateHandler implements AbstractExecuteStra
             if (orderDetailResult.isSuccess() && orderDetailResultData != null) {
                 String trainId = String.valueOf(orderDetailResultData.getTrainId());
                 List<TicketOrderPassengerDetailRespDTO> passengerDetails = orderDetailResultData.getPassengerDetails();
+                redisSeatBitmapService.releaseAnyway(trainId, orderDetailResultData.getDeparture(), orderDetailResultData.getArrival(), BeanUtil.convert(passengerDetails, TrainPurchaseTicketRespDTO.class));
                 seatService.unlock(trainId, orderDetailResultData.getDeparture(), orderDetailResultData.getArrival(), BeanUtil.convert(passengerDetails, TrainPurchaseTicketRespDTO.class));
                 passengerDetails.stream()
                         .collect(java.util.stream.Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType,

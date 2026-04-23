@@ -38,6 +38,7 @@ import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.SelectSeatDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.StationSegmentBitmapUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.RemoteException;
@@ -58,12 +59,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_CARRIAGE_SEAT_ALLOCATION_CURSOR;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
 
 
@@ -77,6 +80,7 @@ import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKe
 public final class TrainSeatTypeSelector {
 
     private static final int MAX_CARRIAGE_SELECT_RETRY_TIMES = 3;
+    private static final int DEFAULT_REDIS_BITMAP_SELECT_RETRY_TIMES = 12;
     private static final int MAX_SELECT_RETRY_TIMES = 256;
     private static final long RESOURCE_LOCK_WAIT_MILLIS = 30L;
     private static final long RESOURCE_LOCK_LEASE_SECONDS = 8L;
@@ -90,9 +94,16 @@ public final class TrainSeatTypeSelector {
     private final TrainStationService trainStationService;
     private final RedissonClient redissonClient;
     private final ConfigurableEnvironment environment;
+    private final RedisSeatBitmapService redisSeatBitmapService;
 
     @Value("${ticket.availability.cache-update.type:}")
     private String ticketAvailabilityCacheUpdateType;
+
+    @Value("${ticket.seat.redis-bitmap.enabled:true}")
+    private Boolean redisSeatBitmapEnabled;
+
+    @Value("${ticket.seat.redis-bitmap-select-retry-times:12}")
+    private Integer redisBitmapSelectRetryTimes;
 
     public List<TrainPurchaseTicketRespDTO> select(Integer trainType, PurchaseTicketReqDTO requestParam) {
         List<PurchaseTicketPassengerDetailDTO> passengerDetails = requestParam.getPassengers();
@@ -104,7 +115,7 @@ public final class TrainSeatTypeSelector {
             // 这里并发执行
             List<Future<List<TrainPurchaseTicketRespDTO>>> futureResults = new ArrayList<>(seatTypeMap.size());
             seatTypeMap.forEach((seatType, passengerSeatDetails) -> futureResults.add(selectSeatThreadPoolExecutor
-                    .submit(() -> distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails))));
+                    .submit(() -> distributeSeats(trainType, seatType, requestParam, passengerSeatDetails))));
             futureResults.parallelStream().forEach(future -> {
                 try {
                     actualResult.addAll(future.get());
@@ -114,7 +125,7 @@ public final class TrainSeatTypeSelector {
                 }
             });
         } else {
-            seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails)));
+            seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(distributeSeats(trainType, seatType, requestParam, passengerSeatDetails)));
         }
         // 校验选座结果是否完整
         if (CollUtil.isEmpty(actualResult) || !Objects.equals(actualResult.size(), passengerDetails.size())) {
@@ -125,6 +136,16 @@ public final class TrainSeatTypeSelector {
     }
 
     private List<TrainPurchaseTicketRespDTO> distributeSeats(Integer trainType, Integer seatType, PurchaseTicketReqDTO requestParam, List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+        if (Boolean.TRUE.equals(redisSeatBitmapEnabled)) {
+            try {
+                return distributeSeatsByRedisBitmap(trainType, seatType, requestParam, passengerSeatDetails);
+            } catch (ServiceException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                log.warn("Redis bitmap seat selection unavailable, fallback to DB bitmap. trainId={}, seatType={}",
+                        requestParam.getTrainId(), seatType, ex);
+            }
+        }
         return distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails);
     }
     /*
@@ -176,6 +197,90 @@ public final class TrainSeatTypeSelector {
             String keySuffix = StrUtil.join("_", requestParam.getTrainId(), each.getStartStation(), each.getEndStation());
             stringRedisTemplate.opsForHash().increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), -count);
         });
+    }
+
+    private List<TrainPurchaseTicketRespDTO> distributeSeatsByRedisBitmap(Integer trainType,
+                                                                          Integer seatType,
+                                                                          PurchaseTicketReqDTO requestParam,
+                                                                          List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+        String strategyKey = VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
+        List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
+                requestParam.getTrainId(),
+                seatType,
+                requestParam.getDeparture(),
+                requestParam.getArrival(),
+                passengerSeatDetails.size()
+        );
+        if (CollUtil.isEmpty(candidateCarriages)) {
+            throw new ServiceException("站点余票不足或座位资源冲突，请稍后重试");
+        }
+        long scanSeed = buildSeatScanSeed(requestParam, seatType, passengerSeatDetails);
+        int carriageAttempt = 0;
+        for (CarriageAvailabilityDTO eachCarriage : candidateCarriages) {
+            String carriageNumber = eachCarriage.getCarriageNumber();
+            Set<String> excludedSeatKeys = new LinkedHashSet<>();
+            int maxRetryTimes = Optional.ofNullable(redisBitmapSelectRetryTimes).orElse(DEFAULT_REDIS_BITMAP_SELECT_RETRY_TIMES);
+            for (int retry = 0; retry < maxRetryTimes; retry++) {
+                Integer seatScanOffset = allocateSeatScanOffset(
+                        requestParam,
+                        seatType,
+                        carriageNumber,
+                        passengerSeatDetails.size(),
+                        scanSeed,
+                        carriageAttempt,
+                        retry
+                );
+                SelectSeatDTO selectSeatDTO = SelectSeatDTO.builder()
+                        .seatType(seatType)
+                        .passengerSeatDetails(passengerSeatDetails)
+                        .requestParam(requestParam)
+                        .excludeSeatNumbers(new ArrayList<>(excludedSeatKeys))
+                        .preferredCarriageNumber(carriageNumber)
+                        .seatScanOffset(seatScanOffset)
+                        .build();
+                List<TrainPurchaseTicketRespDTO> selectedSeats = abstractStrategyChoose.chooseAndExecuteResp(strategyKey, selectSeatDTO);
+                if (CollUtil.isEmpty(selectedSeats)) {
+                    break;
+                }
+                String holdId = redisSeatBitmapService.tryHold(
+                        requestParam.getTrainId(),
+                        requestParam.getDeparture(),
+                        requestParam.getArrival(),
+                        seatType,
+                        selectedSeats
+                );
+                if (StrUtil.isBlank(holdId)) {
+                    selectedSeats.stream().map(this::buildCarriageSeatKey).forEach(excludedSeatKeys::add);
+                    continue;
+                }
+                if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
+                    decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
+                    seatService.adjustCarriageRemainingSummary(
+                            requestParam.getTrainId(),
+                            requestParam.getDeparture(),
+                            requestParam.getArrival(),
+                            seatType,
+                            carriageNumber,
+                            -selectedSeats.size()
+                    );
+                    return selectedSeats;
+                }
+                redisSeatBitmapService.releaseByHoldId(
+                        requestParam.getTrainId(),
+                        requestParam.getDeparture(),
+                        requestParam.getArrival(),
+                        seatType,
+                        selectedSeats
+                );
+                int beforeExcludeSize = excludedSeatKeys.size();
+                selectedSeats.stream().map(this::buildCarriageSeatKey).forEach(excludedSeatKeys::add);
+                if (excludedSeatKeys.size() == beforeExcludeSize) {
+                    break;
+                }
+            }
+            carriageAttempt++;
+        }
+        throw new ServiceException("座位资源冲突，请稍后重试");
     }
 
     private List<TrainPurchaseTicketRespDTO> distributeSeatsByResourceLocks(Integer trainType,
@@ -329,6 +434,18 @@ public final class TrainSeatTypeSelector {
 
     private Integer buildSeatScanOffset(long seed, int carriageAttempt, int retry) {
         long mixed = seed + carriageAttempt * 131L + retry * 17L;
+        return (int) Math.floorMod(mixed, Integer.MAX_VALUE);
+    }
+
+    private Integer allocateSeatScanOffset(PurchaseTicketReqDTO requestParam, Integer seatType, String carriageNumber,
+                                           int passengerCount, long scanSeed, int carriageAttempt, int retry) {
+        String cursorKey = TRAIN_CARRIAGE_SEAT_ALLOCATION_CURSOR
+                + StrUtil.join("_", requestParam.getTrainId(), seatType, carriageNumber, requestParam.getDeparture(), requestParam.getArrival());
+        long step = Math.max(1, passengerCount) * 7L + retry * 13L + 1L;
+        StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
+        Long cursor = stringRedisTemplate.opsForValue().increment(cursorKey, step);
+        stringRedisTemplate.expire(cursorKey, 1, TimeUnit.DAYS);
+        long mixed = scanSeed + Optional.ofNullable(cursor).orElse(0L) + carriageAttempt * 131L + retry * 17L;
         return (int) Math.floorMod(mixed, Integer.MAX_VALUE);
     }
 

@@ -75,4 +75,9 @@ public class TrainPurchaseTicketRespDTO {
      * 座位金额
      */
     private Integer amount;
+
+    /**
+     * Redis 临时占座标识，用于订单创建失败时释放 Redis 位图
+     */
+    private String redisSeatHoldId;
 }
