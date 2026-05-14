@@ -53,12 +53,16 @@ public class TokenValidateGatewayFilterFactory extends AbstractGatewayFilterFact
     @Override
     public GatewayFilter apply(Config config) {
         return (exchange, chain) -> {
+            // 获取当前请求路径 requestPath
             ServerHttpRequest request = exchange.getRequest();
             String requestPath = request.getPath().toString();
+            // 判断当前路径是否在 blackPathPre 里面
             if (isPathInBlackPreList(requestPath, config.getBlackPathPre())) {
+                // 如果在，说明这个接口需要登录校验，从请求头 Authorization 里拿 token
                 String token = request.getHeaders().getFirst("Authorization");
-                // TODO 需要验证 Token 是否有效，有可能用户注销了账户，但是 Token 有效期还未过
+                // 需要验证 Token 是否有效，有可能用户注销了账户，但是 Token 有效期还未过
                 UserInfoDTO userInfo = JWTUtil.parseJwtToken(token);
+                // 如果解析失败，直接返回 401，不再转发到下游服务
                 if (!validateToken(userInfo)) {
                     ServerHttpResponse response = exchange.getResponse();
                     response.setStatusCode(HttpStatus.UNAUTHORIZED);
