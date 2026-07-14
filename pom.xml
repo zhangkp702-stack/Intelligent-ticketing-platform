@@ -24,6 +24,7 @@
         <module>dependencies</module>
         <module>frameworks</module>
         <module>services</module>
+        <module>ai-services</module>
         <module>tests</module>
     </modules>
 

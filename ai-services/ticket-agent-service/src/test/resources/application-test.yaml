@@ -1,0 +1,9 @@
+spring:
+  cloud:
+    nacos:
+      discovery:
+        enabled: false
+  ai:
+    mcp:
+      client:
+        enabled: false

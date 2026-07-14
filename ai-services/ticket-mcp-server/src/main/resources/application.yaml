@@ -1,0 +1,42 @@
+server:
+  port: ${TICKET_MCP_SERVER_PORT:9006}
+
+spring:
+  application:
+    name: index12306-ticket-mcp-server
+  cloud:
+    nacos:
+      discovery:
+        enabled: ${NACOS_DISCOVERY_ENABLED:false}
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+  ai:
+    mcp:
+      server:
+        enabled: true
+        protocol: STATELESS
+        name: index12306-ticket-mcp-server
+        version: 0.0.1
+        type: SYNC
+        instructions: 仅向内部购票智能体提供经过授权的票务能力。
+        request-timeout: 20s
+        capabilities:
+          resource: false
+          tool: true
+          prompt: false
+          completion: false
+        annotation-scanner:
+          enabled: true
+        stateless:
+          mcp-endpoint: /mcp
+          disallow-delete: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when_authorized
