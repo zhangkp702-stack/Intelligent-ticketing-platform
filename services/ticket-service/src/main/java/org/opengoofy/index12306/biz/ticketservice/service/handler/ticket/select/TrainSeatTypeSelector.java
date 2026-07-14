@@ -148,41 +148,7 @@ public final class TrainSeatTypeSelector {
         }
         return distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails);
     }
-    /*
-        String buildStrategyKey = VehicleTypeEnum.findNameByCode(trainType)
-                + VehicleSeatTypeEnum.findNameByCode(seatType);
-        List<Integer> segmentIndexes = buildSegmentIndexes(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
-        Set<String> excludedSeatKeys = new LinkedHashSet<>();
-        for (int retry = 0; retry < MAX_SELECT_RETRY_TIMES; retry++) {
-            SelectSeatDTO selectSeatDTO = SelectSeatDTO.builder()
-                    .seatType(seatType)
-                    .passengerSeatDetails(passengerSeatDetails)
-                    .requestParam(requestParam)
-                    .excludeSeatNumbers(new ArrayList<>(excludedSeatKeys))
-                    .build();
-            List<TrainPurchaseTicketRespDTO> selectedSeats;
-            try {
-                selectedSeats = abstractStrategyChoose.chooseAndExecuteResp(buildStrategyKey, selectSeatDTO);
-            } catch (ServiceException ex) {
-                throw new ServiceException("当前车次列车类型暂未适配，请购买G35或G39车次");
-            }
-            if (CollUtil.isEmpty(selectedSeats)) {
-                break;
-            }
-            if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
-                decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
-                return selectedSeats;
-            }
-            int beforeExcludeSize = excludedSeatKeys.size();
-            selectedSeats.stream().map(this::buildCarriageSeatKey).forEach(excludedSeatKeys::add);
-            if (excludedSeatKeys.size() == beforeExcludeSize) {
-                break;
-            }
-        }
-        throw new ServiceException("余票不足或座位冲突，请重试");
-    }
 
-    */
     private String buildCarriageSeatKey(TrainPurchaseTicketRespDTO ticket) {
         return ticket.getCarriageNumber() + "#" + ticket.getSeatNumber();
     }

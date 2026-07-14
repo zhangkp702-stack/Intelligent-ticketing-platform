@@ -373,7 +373,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     }
 
     @ILog
-    /*
     @Idempotent(
             uniqueKeyPrefix = "index12306-ticket:lock_purchase-tickets:",
             key = "T(org.opengoofy.index12306.framework.starter.bases.ApplicationContextHolder).getBean('environment').getProperty('unique-name', '')"
@@ -383,7 +382,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             scene = IdempotentSceneEnum.RESTAPI,
             type = IdempotentTypeEnum.SPEL
     )
-    */
+
     @Override
     public TicketPurchaseRespDTO purchaseTicketsV1(PurchaseTicketReqDTO requestParam) {
         // 责任链模式，验证 1：参数必填 2：参数正确性 3：乘客是否已买当前车次等...
@@ -451,7 +450,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         List<TicketOrderDetailRespDTO> ticketOrderDetailResults = new ArrayList<>();
         // 获取车次信息
         String trainId = requestParam.getTrainId();
-        // 节假日高并发购票Redis能扛得住么？详情查看：https://nageoffer.com/12306/question
         // 先查缓存有没有，没有就查数据库并加载到缓存里面，查询列车信息
         TrainDO trainDO = distributedCache.safeGet(
                 TRAIN_INFO + trainId,

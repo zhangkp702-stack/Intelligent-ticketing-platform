@@ -89,6 +89,17 @@ feign:
   okhttp:
     enabled: true
 
+index12306:
+  ratelimiter:
+    # 是否信任 X-Forwarded-For，仅当前面有可信反向代理会清洗重写该头时才能开启，否则可被伪造绕过限流
+    trust-forwarded-header: false
+  captcha:
+    tencent:
+      # 默认关闭，未在腾讯云控制台申请验证码 AppID/AppSecretKey 前不会强制要求验证码
+      enabled: false
+      app-id:
+      app-secret-key:
+
 management:
   endpoints:
     web:
