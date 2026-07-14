@@ -27,7 +27,10 @@ import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDT
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketService;
+import org.opengoofy.index12306.framework.starter.captcha.annotation.RiskGuard;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
+import org.opengoofy.index12306.framework.starter.ratelimiter.annotation.RateLimiter;
+import org.opengoofy.index12306.framework.starter.ratelimiter.enums.RateLimitDimensionEnum;
 import org.opengoofy.index12306.framework.starter.web.Results;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -48,6 +51,8 @@ public class TicketController {
     /**
      * 根据条件查询车票
      */
+    @RateLimiter(permitsPerSecond = 5, dimension = RateLimitDimensionEnum.USER_THEN_IP, message = "查询过于频繁，请稍后再试")
+    @RiskGuard(dimension = RateLimitDimensionEnum.USER_THEN_IP)
     @GetMapping("/api/ticket-service/ticket/query")
     public Result<TicketPageQueryRespDTO> pageListTicketQuery(TicketPageQueryReqDTO requestParam) {
         return Results.success(ticketService.pageListTicketQueryV1(requestParam));
@@ -56,6 +61,8 @@ public class TicketController {
     /**
      * 购买车票
      */
+    @RateLimiter(permitsPerSecond = 3, dimension = RateLimitDimensionEnum.USER, message = "下单过于频繁，请稍后再试")
+    @RiskGuard(dimension = RateLimitDimensionEnum.USER)
     @PostMapping("/api/ticket-service/ticket/purchase")
     public Result<TicketPurchaseRespDTO> purchaseTickets(@RequestBody PurchaseTicketReqDTO requestParam) {
         return Results.success(ticketService.purchaseTicketsV1(requestParam));
@@ -64,6 +71,8 @@ public class TicketController {
     /**
      * 购买车票v2
      */
+    @RateLimiter(permitsPerSecond = 3, dimension = RateLimitDimensionEnum.USER, message = "下单过于频繁，请稍后再试")
+    @RiskGuard(dimension = RateLimitDimensionEnum.USER)
     @PostMapping("/api/ticket-service/ticket/purchase/v2")
     public Result<TicketPurchaseRespDTO> purchaseTicketsV2(@RequestBody PurchaseTicketReqDTO requestParam) {
         return Results.success(ticketService.purchaseTicketsV2(requestParam));

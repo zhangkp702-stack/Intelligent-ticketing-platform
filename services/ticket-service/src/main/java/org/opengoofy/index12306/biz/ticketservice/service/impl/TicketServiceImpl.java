@@ -294,7 +294,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
         // 列车查询逻辑较为复杂，详细解析文章查�?https://nageoffer.com/12306/question
         // v2 版本更符合企业级高并发真实场景的解决方案，完美解决了 v1 版本的性能深渊问题。通过 Jmeter 压测聚合报告可见，性能提升约 300% - 500%+
-        // 其实还能做 v3 版本，性能估计在当前基础上还能进一步提升一倍；但 v3 过于复杂，不易读也不易扩展，这里不再继续展开。
 
         // 这里是站点名称映射位地区名称，根据起点和终点获取地区名称
         List<Object> stationDetails = stringRedisTemplate.opsForHash()
@@ -383,6 +382,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             scene = IdempotentSceneEnum.RESTAPI,
             type = IdempotentTypeEnum.SPEL
     )
+
     @Override
     public TicketPurchaseRespDTO purchaseTicketsV1(PurchaseTicketReqDTO requestParam) {
         // 责任链模式，验证 1：参数必填 2：参数正确性 3：乘客是否已买当前车次等...
@@ -450,7 +450,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         List<TicketOrderDetailRespDTO> ticketOrderDetailResults = new ArrayList<>();
         // 获取车次信息
         String trainId = requestParam.getTrainId();
-        // 节假日高并发购票Redis能扛得住么？详情查看：https://nageoffer.com/12306/question
         // 先查缓存有没有，没有就查数据库并加载到缓存里面，查询列车信息
         TrainDO trainDO = distributedCache.safeGet(
                 TRAIN_INFO + trainId,

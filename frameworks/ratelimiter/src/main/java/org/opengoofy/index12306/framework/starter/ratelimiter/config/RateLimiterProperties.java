@@ -15,22 +15,22 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.gatewayservice;
+package org.opengoofy.index12306.framework.starter.ratelimiter.config;
 
-import org.opengoofy.index12306.biz.gatewayservice.config.GatewayRateLimiterProperties;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * 网关服务应用启动器
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 限流/风控通用配置
  */
-@SpringBootApplication
-@EnableConfigurationProperties(GatewayRateLimiterProperties.class)
-public class GatewayServiceApplication {
+@Data
+@ConfigurationProperties(prefix = "index12306.ratelimiter")
+public class RateLimiterProperties {
 
-    public static void main(String[] args) {
-        SpringApplication.run(GatewayServiceApplication.class, args);
-    }
+    /**
+     * 是否信任请求头 X-Forwarded-For 作为客户端 IP。
+     * 只有当应用前面确实存在会清洗并重写该请求头的可信反向代理（Nginx/SLB/CDN）时才应开启，
+     * 否则客户端可以任意伪造该请求头，绕过 IP 维度限流或冒名顶替他人 IP
+     */
+    private boolean trustForwardedHeader = false;
 }

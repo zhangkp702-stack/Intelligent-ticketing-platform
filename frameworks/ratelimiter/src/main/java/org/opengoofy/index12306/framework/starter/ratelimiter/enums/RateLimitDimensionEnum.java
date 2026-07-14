@@ -15,22 +15,25 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.gatewayservice;
-
-import org.opengoofy.index12306.biz.gatewayservice.config.GatewayRateLimiterProperties;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+package org.opengoofy.index12306.framework.starter.ratelimiter.enums;
 
 /**
- * 网关服务应用启动器
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 限流维度
  */
-@SpringBootApplication
-@EnableConfigurationProperties(GatewayRateLimiterProperties.class)
-public class GatewayServiceApplication {
+public enum RateLimitDimensionEnum {
 
-    public static void main(String[] args) {
-        SpringApplication.run(GatewayServiceApplication.class, args);
-    }
+    /**
+     * 必须已登录，按当前用户 ID 限流
+     */
+    USER,
+
+    /**
+     * 已登录按用户 ID，未登录按客户端 IP 限流
+     */
+    USER_THEN_IP,
+
+    /**
+     * 按客户端 IP 限流
+     */
+    IP
 }

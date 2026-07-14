@@ -15,22 +15,20 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.gatewayservice;
-
-import org.opengoofy.index12306.biz.gatewayservice.config.GatewayRateLimiterProperties;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+package org.opengoofy.index12306.framework.starter.captcha.core;
 
 /**
- * 网关服务应用启动器
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 验证码校验服务，由前端验证码组件回调得到 ticket/randstr 后，交由服务端二次核验
  */
-@SpringBootApplication
-@EnableConfigurationProperties(GatewayRateLimiterProperties.class)
-public class GatewayServiceApplication {
+public interface CaptchaVerifyService {
 
-    public static void main(String[] args) {
-        SpringApplication.run(GatewayServiceApplication.class, args);
-    }
+    /**
+     * 校验验证码票据是否有效
+     *
+     * @param ticket   验证码票据
+     * @param randstr  验证码随机串
+     * @param clientIp 发起验证的客户端 IP
+     * @return 校验是否通过
+     */
+    boolean verify(String ticket, String randstr, String clientIp);
 }

@@ -6,10 +6,30 @@ spring:
   profiles:
 #    active: aggregation
      active: dev
+  data:
+    redis:
+      host: 192.168.126.100
+      port: 6379
+      password: 123456
   cloud:
     nacos:
       discovery:
         server-addr: 192.168.126.100:8848
+
+index12306:
+  gateway:
+    rate-limiter:
+      enabled: true
+      # 是否信任 X-Forwarded-For，仅当网关前面有可信反向代理会清洗重写该头时才能开启，否则可被伪造绕过限流/嫁祸他人 IP
+      trust-forwarded-header: false
+      # 同一 IP 每秒允许通过的请求数（网关层兜底粗筛，比业务接口限流更宽松）
+      permits-per-second: 50
+      # 触发限流的累计次数达到该阈值后，自动拉黑该 IP
+      violation-threshold: 20
+      # 违规计数窗口，单位秒
+      violation-window-seconds: 600
+      # 自动拉黑后的封禁时长，单位秒
+      blacklist-ttl-seconds: 3600
 
 management:
   endpoints:
