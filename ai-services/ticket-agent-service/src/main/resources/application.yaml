@@ -4,6 +4,26 @@ server:
 spring:
   application:
     name: index12306-ticket-agent-service
+  datasource:
+    url: ${AGENT_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/12306_agent?characterEncoding=utf8&useUnicode=true&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-timeout: 3000
+      maximum-pool-size: 16
+      minimum-idle: 2
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: Asia/Shanghai
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
   cloud:
     nacos:
       discovery:
@@ -31,6 +51,20 @@ management:
 
 index12306:
   agent:
+    memory:
+      topic-candidate-limit: 6
+      recent-user-question-limit: 6
+      recent-message-limit: 16
+      context-token-budget: 12000
+      summary-trigger-message-count: 12
+      summary-max-attempts: 3
+      summary-retry-delay: 30s
+      summary-lease-duration: 2m
+      summary-executor:
+        core-pool-size: 2
+        max-pool-size: 4
+        queue-capacity: 200
+        await-termination: 20s
     model:
       attempt-timeout: 20s
       total-timeout: 50s
