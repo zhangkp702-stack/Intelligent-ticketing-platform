@@ -5,6 +5,7 @@ import org.opengoofy.index12306.ai.agentservice.model.client.RoutedModelClient;
 import org.opengoofy.index12306.ai.agentservice.model.config.AgentModelProperties;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelCapability;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptEvent;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptOutcome;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptRecorder;
@@ -73,6 +74,25 @@ public class ModelRouter {
             ModelRole role,
             Set<ModelCapability> additionalCapabilities,
             ModelInvocation<T> invocation) {
+        // 兼容不需要业务关联信息的既有调用，由显式上下文重载统一执行路由。
+        return execute(role, additionalCapabilities, ModelAttemptContext.empty(), invocation);
+    }
+
+    /**
+     * 按角色降级链执行同步模型调用，并将每次尝试关联到显式业务上下文。
+     *
+     * @param role 模型角色
+     * @param additionalCapabilities 本次调用额外要求的能力
+     * @param attemptContext 不含正文的模型审计关联信息
+     * @param invocation 实际模型调用及结果转换逻辑
+     * @param <T> 调用结果类型
+     * @return 模型结果、最终选择元数据和成功审计标识
+     */
+    public <T> ModelCallResult<T> execute(
+            ModelRole role,
+            Set<ModelCapability> additionalCapabilities,
+            ModelAttemptContext attemptContext,
+            ModelInvocation<T> invocation) {
         long routingStarted = System.nanoTime();
         long deadline = routingStarted + properties.totalTimeout().toNanos();
         Set<ModelCapability> requiredCapabilities = requiredCapabilities(role, additionalCapabilities);
@@ -98,6 +118,7 @@ public class ModelRouter {
             if (permitOptional.isEmpty()) {
                 healthTracker.releaseProbe(role, candidateId);
                 recordFailure(role, client, index, 0, false, ModelFailureCategory.PROVIDER_BUSY,
+                        attemptContext,
                         new java.util.concurrent.RejectedExecutionException());
                 lastCategory = ModelFailureCategory.PROVIDER_BUSY;
                 continue;
@@ -113,19 +134,21 @@ public class ModelRouter {
                 }
                 long attemptMillis = elapsedMillis(attemptStarted);
                 healthTracker.recordSuccess(role, candidateId);
-                recordSuccess(role, client, index, attemptMillis, false);
+                String modelCallId = recordSuccess(
+                        role, client, index, attemptMillis, false, attemptContext);
                 return new ModelCallResult<>(
                         value,
                         candidateId,
                         client.providerId(),
                         client.modelId(),
                         index,
-                        Duration.ofNanos(System.nanoTime() - routingStarted));
+                        Duration.ofNanos(System.nanoTime() - routingStarted),
+                        modelCallId);
             } catch (Exception ex) {
                 long attemptMillis = elapsedMillis(attemptStarted);
                 ModelFailureCategory category = failureClassifier.classify(ex);
                 healthTracker.recordFailure(role, candidateId, category);
-                recordFailure(role, client, index, attemptMillis, false, category, ex);
+                recordFailure(role, client, index, attemptMillis, false, category, attemptContext, ex);
                 lastFailure = ex;
                 lastCategory = category;
                 if (!category.fallbackAllowed()) {
@@ -196,6 +219,7 @@ public class ModelRouter {
                 if (permitOptional.isEmpty()) {
                     healthTracker.releaseProbe(role, candidateId);
                     recordFailure(role, client, index, 0, false, ModelFailureCategory.PROVIDER_BUSY,
+                            ModelAttemptContext.empty(),
                             new java.util.concurrent.RejectedExecutionException());
                     continue;
                 }
@@ -267,7 +291,8 @@ public class ModelRouter {
                     permit.close();
                     terminalRecorded.set(true);
                     healthTracker.recordSuccess(role, client.candidateId());
-                    recordSuccess(role, client, index, elapsedMillis(attemptStarted), emitted.get());
+                    recordSuccess(role, client, index, elapsedMillis(attemptStarted), emitted.get(),
+                            ModelAttemptContext.empty());
                 })
                 .doOnError(ex -> {
                     // 在首包前降级订阅下一模型之前释放许可，避免同平台降级链自阻塞。
@@ -276,7 +301,8 @@ public class ModelRouter {
                     ModelFailureCategory category = failureClassifier.classify(ex);
                     healthTracker.recordFailure(role, client.candidateId(), category);
                     recordFailure(
-                            role, client, index, elapsedMillis(attemptStarted), emitted.get(), category, ex);
+                            role, client, index, elapsedMillis(attemptStarted), emitted.get(), category,
+                            ModelAttemptContext.empty(), ex);
                 })
                 .doFinally(ignored -> {
                     permit.close();
@@ -326,7 +352,8 @@ public class ModelRouter {
             boolean firstChunkEmitted) {
         ModelFailureCategory category = failureClassifier.classify(exception);
         healthTracker.recordFailure(role, client.candidateId(), category);
-        recordFailure(role, client, index, 0, firstChunkEmitted, category, exception);
+        recordFailure(role, client, index, 0, firstChunkEmitted, category,
+                ModelAttemptContext.empty(), exception);
         if (!firstChunkEmitted && category.fallbackAllowed()) {
             return streamFrom(
                     role,
@@ -387,14 +414,18 @@ public class ModelRouter {
      * @param fallbackIndex 候选项位置
      * @param durationMillis 尝试耗时
      * @param firstChunkEmitted 是否输出过流式首包
+     * @param attemptContext 不含正文的业务审计关联信息
+     * @return 成功尝试的持久化审计标识，未启用或写入失败时为空
      */
-    private void recordSuccess(
+    private String recordSuccess(
             ModelRole role,
             RoutedModelClient client,
             int fallbackIndex,
             long durationMillis,
-            boolean firstChunkEmitted) {
-        attemptRecorder.record(new ModelAttemptEvent(
+            boolean firstChunkEmitted,
+            ModelAttemptContext attemptContext) {
+        // 返回成功尝试的持久化标识，供主题路由日志建立可追踪关联。
+        return attemptRecorder.record(new ModelAttemptEvent(
                 Instant.now(),
                 role,
                 client.candidateId(),
@@ -405,7 +436,8 @@ public class ModelRouter {
                 durationMillis,
                 fallbackIndex,
                 firstChunkEmitted,
-                null));
+                null,
+                attemptContext));
     }
 
     /**
@@ -418,6 +450,7 @@ public class ModelRouter {
      * @param firstChunkEmitted 是否输出过流式首包
      * @param category 失败分类
      * @param exception 原始异常
+     * @param attemptContext 不含正文的业务审计关联信息
      */
     private void recordFailure(
             ModelRole role,
@@ -426,7 +459,9 @@ public class ModelRouter {
             long durationMillis,
             boolean firstChunkEmitted,
             ModelFailureCategory category,
+            ModelAttemptContext attemptContext,
             Throwable exception) {
+        // 失败记录仅保存异常类型，不保存可能包含用户输入的异常正文。
         attemptRecorder.record(new ModelAttemptEvent(
                 Instant.now(),
                 role,
@@ -438,7 +473,8 @@ public class ModelRouter {
                 durationMillis,
                 fallbackIndex,
                 firstChunkEmitted,
-                exception == null ? null : exception.getClass().getName()));
+                exception == null ? null : exception.getClass().getName(),
+                attemptContext));
     }
 
     /**

@@ -4,6 +4,7 @@ import org.opengoofy.index12306.ai.agentservice.memory.domain.ModelCallEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.ModelCallRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 
 import java.time.Clock;
 
@@ -33,7 +34,7 @@ public class ModelCallAuditService {
      * @param data 模型调用稳定元数据
      * @return 持久化审计标识
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public String record(ModelCallEntity.ModelCallData data) {
         // 持久化入口只接受受限字段记录，避免调用方误写用户正文。
         ModelCallEntity entity = ModelCallEntity.create(data, clock.instant());

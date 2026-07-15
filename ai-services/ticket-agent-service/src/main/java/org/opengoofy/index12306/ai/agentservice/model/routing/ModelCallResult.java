@@ -12,6 +12,7 @@ import java.time.Duration;
  * @param fallbackIndex 候选项在降级链中的位置
  * @param elapsed 整个路由过程耗时
  * @param <T> 模型返回值类型
+ * @param modelCallId 成功模型尝试的持久化审计标识
  */
 public record ModelCallResult<T>(
         T value,
@@ -19,5 +20,6 @@ public record ModelCallResult<T>(
         String providerId,
         String modelId,
         int fallbackIndex,
-        Duration elapsed) {
+        Duration elapsed,
+        String modelCallId) {
 }

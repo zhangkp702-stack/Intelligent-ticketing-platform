@@ -11,6 +11,7 @@ import org.opengoofy.index12306.ai.agentservice.memory.repository.ConversationRe
 import org.opengoofy.index12306.ai.agentservice.memory.repository.MessageRepository;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.TopicRepository;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.TurnRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -30,6 +31,7 @@ public class ConversationMemoryService {
     private final MessageRepository messageRepository;
     private final TurnRepository turnRepository;
     private final Clock clock;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 创建会话记忆写入服务。
@@ -39,18 +41,21 @@ public class ConversationMemoryService {
      * @param messageRepository 消息仓储
      * @param turnRepository 轮次仓储
      * @param clock 统一时钟
+     * @param eventPublisher 事务提交后业务事件发布器
      */
     public ConversationMemoryService(
             ConversationRepository conversationRepository,
             TopicRepository topicRepository,
             MessageRepository messageRepository,
             TurnRepository turnRepository,
-            Clock clock) {
+            Clock clock,
+            ApplicationEventPublisher eventPublisher) {
         this.conversationRepository = conversationRepository;
         this.topicRepository = topicRepository;
         this.messageRepository = messageRepository;
         this.turnRepository = turnRepository;
         this.clock = clock;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -87,6 +92,14 @@ public class ConversationMemoryService {
 
         // 锁定并校验会话所有权，避免其他用户向该会话写入主题。
         ConversationEntity conversation = requireLockedConversation(userId, conversationId);
+        // 会话锁内按稳定主题键复查，确保相同路由请求重试时不会重复创建主题。
+        TopicEntity existingTopic = topicRepository
+                .findByConversationIdAndTopicKey(conversationId, topicKey)
+                .orElse(null);
+        if (existingTopic != null) {
+            conversation.activateTopic(existingTopic.getId(), now);
+            return existingTopic;
+        }
         TopicEntity topic = TopicEntity.create(conversationId, topicKey, title, now);
         topicRepository.save(topic);
         conversation.activateTopic(topic.getId(), now);
@@ -225,6 +238,9 @@ public class ConversationMemoryService {
         messageRepository.save(assistantMessage);
         turn.complete(assistantMessage.getId(), now);
         topic.markActive(now);
+        // 发布最小事件，监听器仅在本事务提交成功后检查并异步执行摘要任务。
+        eventPublisher.publishEvent(new TurnCompletedEvent(
+                command.userId(), turn.getConversationId(), turn.getTopicId(), sequence));
         return assistantMessage;
     }
 

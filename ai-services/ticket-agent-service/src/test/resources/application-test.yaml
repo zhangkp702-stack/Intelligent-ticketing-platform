@@ -4,6 +4,7 @@ spring:
     username: sa
     password:
     driver-class-name: org.h2.Driver
+
   jpa:
     open-in-view: false
     hibernate:
@@ -19,3 +20,8 @@ spring:
     mcp:
       client:
         enabled: false
+
+index12306:
+  agent:
+    memory:
+      summary-auto-dispatch-enabled: false

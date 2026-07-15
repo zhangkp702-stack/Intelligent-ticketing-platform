@@ -40,6 +40,15 @@ public interface TopicRepository extends JpaRepository<TopicEntity, String> {
     Optional<TopicEntity> findByIdAndConversationId(String topicId, String conversationId);
 
     /**
+     * 按会话和稳定主题键查询主题，用于新主题创建幂等控制。
+     *
+     * @param conversationId 会话标识
+     * @param topicKey 会话内稳定主题键
+     * @return 已存在的同键主题
+     */
+    Optional<TopicEntity> findByConversationIdAndTopicKey(String conversationId, String topicKey);
+
+    /**
      * 使用数据库写锁读取主题，保护摘要版本推进。
      *
      * @param topicId 主题标识

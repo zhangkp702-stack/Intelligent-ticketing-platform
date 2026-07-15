@@ -17,10 +17,12 @@ import java.time.Duration;
  * @param summaryRetryDelay 摘要失败后的基础重试等待时间
  * @param summaryLeaseDuration 摘要执行器持有任务租约的时间
  * @param summaryExecutor 摘要专用线程池配置
+ * @param topicRouteConfidenceThreshold 采信模型主题选择的最低置信度
  */
 @ConfigurationProperties(prefix = "index12306.agent.memory")
 public record AgentMemoryProperties(
         @DefaultValue("6") int topicCandidateLimit,
+        @DefaultValue("0.55") double topicRouteConfidenceThreshold,
         @DefaultValue("6") int recentUserQuestionLimit,
         @DefaultValue("16") int recentMessageLimit,
         @DefaultValue("12000") int contextTokenBudget,

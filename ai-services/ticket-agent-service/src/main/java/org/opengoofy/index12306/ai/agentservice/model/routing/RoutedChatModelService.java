@@ -2,12 +2,14 @@ package org.opengoofy.index12306.ai.agentservice.model.routing;
 
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelCapability;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * 面向后续对话编排层提供按角色路由的 Spring AI 调用入口。
@@ -54,6 +56,49 @@ public class RoutedChatModelService {
                 role,
                 additionalCapabilities,
                 client -> client.chatModel().call(prompt));
+    }
+
+    /**
+     * 使用显式审计上下文执行同步模型调用。
+     *
+     * @param role 模型角色
+     * @param prompt Spring AI 提示对象
+     * @param attemptContext 模型审计关联信息
+     * @return 模型响应和最终选模信息
+     */
+    public ModelCallResult<ChatResponse> call(
+            ModelRole role,
+            Prompt prompt,
+            ModelAttemptContext attemptContext) {
+        // 显式传入业务关联字段，避免模型层依赖线程本地上下文。
+        return modelRouter.execute(
+                role,
+                Set.of(),
+                attemptContext,
+                client -> client.chatModel().call(prompt));
+    }
+
+    /**
+     * 在每个候选模型的尝试内部完成响应转换，使结构校验失败可以触发下一个模型。
+     *
+     * @param role 模型角色
+     * @param prompt Spring AI 提示对象
+     * @param attemptContext 模型审计关联信息
+     * @param responseMapper 响应校验及转换逻辑
+     * @param <T> 转换后的结果类型
+     * @return 转换结果、最终选模信息和成功审计标识
+     */
+    public <T> ModelCallResult<T> callAndMap(
+            ModelRole role,
+            Prompt prompt,
+            ModelAttemptContext attemptContext,
+            Function<ChatResponse, T> responseMapper) {
+        // 转换异常发生在单个候选尝试内，路由器可按既有规则继续降级。
+        return modelRouter.execute(
+                role,
+                Set.of(),
+                attemptContext,
+                client -> responseMapper.apply(client.chatModel().call(prompt)));
     }
 
     /**

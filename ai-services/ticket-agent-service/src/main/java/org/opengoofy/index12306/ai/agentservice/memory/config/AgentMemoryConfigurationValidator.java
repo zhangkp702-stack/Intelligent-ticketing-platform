@@ -26,6 +26,10 @@ public class AgentMemoryConfigurationValidator implements SmartInitializingSingl
      */
     @Override
     public void afterSingletonsInstantiated() {
+        // 置信度是模型路由与确定性兜底之间的边界，只允许标准概率范围。
+        Assert.isTrue(properties.topicRouteConfidenceThreshold() >= 0
+                        && properties.topicRouteConfidenceThreshold() <= 1,
+                "主题路由置信度阈值必须在零到一之间");
         // 上下文候选和 Token 预算必须为正，避免路由输入或最终上下文为空。
         Assert.isTrue(properties.topicCandidateLimit() > 0, "主题候选数量必须大于零");
         Assert.isTrue(properties.recentUserQuestionLimit() > 0, "最近用户问题数量必须大于零");

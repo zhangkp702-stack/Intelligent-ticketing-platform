@@ -19,6 +19,7 @@ import java.time.Instant;
  * @param fallbackIndex 候选项在降级链中的位置
  * @param firstChunkEmitted 流式调用是否已经输出首包
  * @param exceptionType 异常类型名称，不包含异常正文
+ * @param context 不含正文的业务审计关联信息
  */
 public record ModelAttemptEvent(
         Instant occurredAt,
@@ -31,5 +32,6 @@ public record ModelAttemptEvent(
         long durationMillis,
         int fallbackIndex,
         boolean firstChunkEmitted,
-        String exceptionType) {
+        String exceptionType,
+        ModelAttemptContext context) {
 }
