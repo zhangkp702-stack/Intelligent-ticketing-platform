@@ -31,10 +31,82 @@ management:
 
 index12306:
   agent:
-    providers:
-      bailian:
-        base-url: ${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
-        api-key: ${BAILIAN_API_KEY:}
-      siliconflow:
-        base-url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn}
-        api-key: ${SILICONFLOW_API_KEY:}
+    model:
+      attempt-timeout: 20s
+      total-timeout: 50s
+      acquire-timeout: 50ms
+      failure-threshold: 3
+      open-duration: 30s
+      audit-capacity: 200
+      providers:
+        bailian:
+          enabled: ${BAILIAN_ENABLED:true}
+          base-url: ${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode}
+          api-key: ${BAILIAN_API_KEY:}
+          completions-path: /v1/chat/completions
+          connect-timeout: 3s
+          read-timeout: 20s
+          max-concurrent: 8
+        siliconflow:
+          enabled: ${SILICONFLOW_ENABLED:true}
+          base-url: ${SILICONFLOW_BASE_URL:https://api.siliconflow.cn}
+          api-key: ${SILICONFLOW_API_KEY:}
+          completions-path: /v1/chat/completions
+          connect-timeout: 3s
+          read-timeout: 20s
+          max-concurrent: 8
+      candidates:
+        bailian-answer-primary:
+          provider: bailian
+          model: qwen3.5-plus-2026-02-15
+          capabilities: [CHAT, TOOL_CALLING, STRUCTURED_OUTPUT, STREAMING]
+          temperature: 0.2
+          max-tokens: 4096
+        siliconflow-answer-secondary:
+          provider: siliconflow
+          model: Qwen/Qwen3.6-35B-A3B
+          capabilities: [CHAT, TOOL_CALLING, STRUCTURED_OUTPUT, STREAMING]
+          temperature: 0.2
+          max-tokens: 4096
+          extra-body:
+            enable_thinking: false
+        siliconflow-answer-tertiary:
+          provider: siliconflow
+          model: Qwen/Qwen3-32B
+          capabilities: [CHAT, TOOL_CALLING, STRUCTURED_OUTPUT, STREAMING]
+          temperature: 0.2
+          max-tokens: 4096
+          extra-body:
+            enable_thinking: false
+        bailian-flash:
+          provider: bailian
+          model: qwen3.5-flash-2026-02-23
+          capabilities: [CHAT, TOOL_CALLING, STRUCTURED_OUTPUT, STREAMING]
+          temperature: 0.1
+          max-tokens: 3072
+        siliconflow-summary-primary:
+          provider: siliconflow
+          model: Qwen/Qwen3.5-9B
+          capabilities: [CHAT, STRUCTURED_OUTPUT, STREAMING]
+          temperature: 0.0
+          max-tokens: 2048
+          extra-body:
+            enable_thinking: false
+      routes:
+        ANSWER_TOOL:
+          - bailian-answer-primary
+          - siliconflow-answer-secondary
+          - siliconflow-answer-tertiary
+          - bailian-flash
+        TOPIC_ROUTE:
+          - siliconflow-summary-primary
+          - bailian-flash
+          - siliconflow-answer-tertiary
+        MEMORY_SUMMARY:
+          - siliconflow-summary-primary
+          - bailian-flash
+          - siliconflow-answer-tertiary
+        PARAMETER_REPAIR:
+          - bailian-answer-primary
+          - siliconflow-answer-secondary
+          - bailian-flash
