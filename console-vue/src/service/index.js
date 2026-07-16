@@ -186,6 +186,43 @@ const fetchRefundTicket = async (body) => {
     url: '/api/ticket-service/ticket/refund',
     data: body
   })
+  return data
+}
+
+const fetchCreateAgentConversation = async (body) => {
+  const { data } = await http({
+    method: 'POST',
+    url: '/api/agent-service/conversations',
+    data: body
+  })
+  return data
+}
+
+const fetchConfirmAgentAction = async (
+  actionId,
+  confirmationToken,
+  requestId
+) => {
+  const { data } = await http({
+    method: 'POST',
+    url: `/api/agent-service/actions/${actionId}/confirm`,
+    headers: {
+      'X-Request-Id': requestId,
+      'Idempotency-Key': requestId
+    },
+    data: {
+      confirmationToken
+    }
+  })
+  return data
+}
+
+const fetchAgentActionStatus = async (actionId) => {
+  const { data } = await http({
+    method: 'GET',
+    url: `/api/agent-service/actions/${actionId}`
+  })
+  return data
 }
 
 export {
@@ -209,5 +246,8 @@ export {
   fetchOrderStatus,
   fetchUserUpdate,
   fetchMyTicket,
-  fetchRefundTicket
+  fetchRefundTicket,
+  fetchCreateAgentConversation,
+  fetchConfirmAgentAction,
+  fetchAgentActionStatus
 }

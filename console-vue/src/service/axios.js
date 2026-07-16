@@ -14,7 +14,11 @@ const initAxios = Axios.create({
 //请求拦截器
 initAxios.interceptors.request.use(
   (config) => {
-    //在发送之前做点什么
+    // 每次请求都从 Cookie 获取最新令牌，避免页面挂载顺序导致首个请求缺少认证头。
+    const token = Cookie.get('token')
+    if (token) {
+      config.headers.Authorization = token
+    }
     return config
   },
   (error) => {
@@ -35,7 +39,7 @@ initAxios.interceptors.response.use(
   },
   (error) => {
     console.log(error, 'error')
-    if (error.response.status === 401) {
+    if (error.response?.status === 401) {
       message.error('用户未登录或已过期！')
       window.location.href = 'login'
     }

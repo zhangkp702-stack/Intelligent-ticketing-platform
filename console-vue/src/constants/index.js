@@ -209,6 +209,23 @@ const CHECK_STATUS = [
     label: '未通过'
   }
 ]
+
+const AGENT_ACTION_TYPE_MAP = {
+  TICKET_PURCHASE: '购买车票',
+  TICKET_CANCEL: '取消订单',
+  TICKET_REFUND: '申请退票'
+}
+
+const AGENT_ACTION_STATUS_MAP = {
+  AWAITING_CONFIRMATION: '等待确认',
+  EXECUTING: '正在执行',
+  SUCCEEDED: '执行成功',
+  UNKNOWN: '结果待核对',
+  EXPIRED: '确认已过期',
+  FAILED: '执行失败',
+  CANCELLED: '操作已取消'
+}
+
 export {
   TICKET_TYPE_LIST,
   SEAT_NAME_MAP,
@@ -220,5 +237,7 @@ export {
   DISCOUNTS_TYPE,
   REGIN_MAP,
   CHECK_STATUS,
-  TRAIN_TAG
+  TRAIN_TAG,
+  AGENT_ACTION_TYPE_MAP,
+  AGENT_ACTION_STATUS_MAP
 }
