@@ -32,6 +32,21 @@ spring:
           mcp-endpoint: /mcp
           disallow-delete: true
 
+index12306:
+  agent:
+    mcp:
+      internal-secret: ${TICKET_MCP_INTERNAL_SECRET:}
+      allowed-clock-skew: 2m
+      ticket-service-url: ${TICKET_SERVICE_URL:http://127.0.0.1:9002}
+      user-service-url: ${USER_SERVICE_URL:http://127.0.0.1:9001}
+      order-service-url: ${ORDER_SERVICE_URL:http://127.0.0.1:9003}
+      connect-timeout: 3s
+      read-timeout: 20s
+      station-result-limit: 10
+      ticket-result-limit: 20
+      passenger-result-limit: 30
+      order-page-size-limit: 20
+
 management:
   endpoints:
     web:

@@ -3,3 +3,8 @@ spring:
     nacos:
       discovery:
         enabled: false
+
+index12306:
+  agent:
+    mcp:
+      internal-secret: test-only-mcp-internal-secret-1234567890

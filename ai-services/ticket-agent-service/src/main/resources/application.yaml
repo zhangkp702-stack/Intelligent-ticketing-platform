@@ -34,11 +34,18 @@ spring:
   ai:
     mcp:
       client:
-        enabled: false
+        enabled: ${TICKET_MCP_CLIENT_ENABLED:false}
         name: index12306-ticket-agent-mcp-client
         version: 0.0.1
         type: SYNC
         request-timeout: 20s
+        toolcallback:
+          enabled: false
+        streamable-http:
+          connections:
+            ticket:
+              url: ${TICKET_MCP_SERVER_URL:http://127.0.0.1:9006}
+              endpoint: /mcp
 
 management:
   endpoints:
@@ -51,6 +58,8 @@ management:
 
 index12306:
   agent:
+    mcp:
+      internal-secret: ${TICKET_MCP_INTERNAL_SECRET:}
     memory:
       topic-candidate-limit: 6
       topic-route-confidence-threshold: 0.55
