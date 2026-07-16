@@ -172,10 +172,31 @@ public class ModelRouter {
             ModelRole role,
             Set<ModelCapability> additionalCapabilities,
             ModelStreamInvocation<T> invocation) {
+        // 未提供业务关联信息的旧调用保持原有行为。
+        return stream(role, additionalCapabilities, ModelAttemptContext.empty(), invocation);
+    }
+
+    /**
+     * 使用显式审计上下文创建按角色降级的模型响应流。
+     *
+     * @param role 模型角色
+     * @param additionalCapabilities 本次调用额外要求的能力
+     * @param attemptContext 不包含正文的业务审计关联信息
+     * @param invocation 实际流式模型调用逻辑
+     * @param <T> 响应数据块类型
+     * @return 具备首包前降级能力的响应流
+     */
+    public <T> Flux<T> stream(
+            ModelRole role,
+            Set<ModelCapability> additionalCapabilities,
+            ModelAttemptContext attemptContext,
+            ModelStreamInvocation<T> invocation) {
+        // 把同一业务上下文传递到整条候选链，确保降级尝试可关联到同一轮对话。
         Set<ModelCapability> required = requiredCapabilities(role, additionalCapabilities);
         List<String> attemptedCandidates = new ArrayList<>();
         long routingStarted = System.nanoTime();
-        return streamFrom(role, required, invocation, 0, routingStarted, attemptedCandidates);
+        return streamFrom(
+                role, required, attemptContext, invocation, 0, routingStarted, attemptedCandidates);
     }
 
     /**
@@ -183,6 +204,7 @@ public class ModelRouter {
      *
      * @param role 模型角色
      * @param requiredCapabilities 完整能力要求
+     * @param attemptContext 不包含正文的业务审计关联信息
      * @param invocation 流式调用逻辑
      * @param startIndex 开始搜索的候选项位置
      * @param routingStarted 路由开始时间
@@ -193,6 +215,7 @@ public class ModelRouter {
     private <T> Flux<T> streamFrom(
             ModelRole role,
             Set<ModelCapability> requiredCapabilities,
+            ModelAttemptContext attemptContext,
             ModelStreamInvocation<T> invocation,
             int startIndex,
             long routingStarted,
@@ -219,7 +242,7 @@ public class ModelRouter {
                 if (permitOptional.isEmpty()) {
                     healthTracker.releaseProbe(role, candidateId);
                     recordFailure(role, client, index, 0, false, ModelFailureCategory.PROVIDER_BUSY,
-                            ModelAttemptContext.empty(),
+                            attemptContext,
                             new java.util.concurrent.RejectedExecutionException());
                     continue;
                 }
@@ -227,6 +250,7 @@ public class ModelRouter {
                 return invokeStreamCandidate(
                         role,
                         requiredCapabilities,
+                        attemptContext,
                         invocation,
                         index,
                         routingStarted,
@@ -245,6 +269,7 @@ public class ModelRouter {
      *
      * @param role 模型角色
      * @param requiredCapabilities 完整能力要求
+     * @param attemptContext 不包含正文的业务审计关联信息
      * @param invocation 流式调用逻辑
      * @param index 当前候选项位置
      * @param routingStarted 路由开始时间
@@ -258,6 +283,7 @@ public class ModelRouter {
     private <T> Flux<T> invokeStreamCandidate(
             ModelRole role,
             Set<ModelCapability> requiredCapabilities,
+            ModelAttemptContext attemptContext,
             ModelStreamInvocation<T> invocation,
             int index,
             long routingStarted,
@@ -277,7 +303,7 @@ public class ModelRouter {
         } catch (RuntimeException ex) {
             permit.close();
             return handleStreamFailure(
-                    role, requiredCapabilities, invocation, index, routingStarted,
+                    role, requiredCapabilities, attemptContext, invocation, index, routingStarted,
                     attemptedCandidates, client, ex, false);
         }
 
@@ -292,7 +318,7 @@ public class ModelRouter {
                     terminalRecorded.set(true);
                     healthTracker.recordSuccess(role, client.candidateId());
                     recordSuccess(role, client, index, elapsedMillis(attemptStarted), emitted.get(),
-                            ModelAttemptContext.empty());
+                            attemptContext);
                 })
                 .doOnError(ex -> {
                     // 在首包前降级订阅下一模型之前释放许可，避免同平台降级链自阻塞。
@@ -302,7 +328,7 @@ public class ModelRouter {
                     healthTracker.recordFailure(role, client.candidateId(), category);
                     recordFailure(
                             role, client, index, elapsedMillis(attemptStarted), emitted.get(), category,
-                            ModelAttemptContext.empty(), ex);
+                            attemptContext, ex);
                 })
                 .doFinally(ignored -> {
                     permit.close();
@@ -316,6 +342,7 @@ public class ModelRouter {
                         return streamFrom(
                                 role,
                                 requiredCapabilities,
+                                attemptContext,
                                 invocation,
                                 index + 1,
                                 routingStarted,
@@ -330,6 +357,7 @@ public class ModelRouter {
      *
      * @param role 模型角色
      * @param requiredCapabilities 完整能力要求
+     * @param attemptContext 不包含正文的业务审计关联信息
      * @param invocation 流式调用逻辑
      * @param index 当前候选项位置
      * @param routingStarted 路由开始时间
@@ -343,6 +371,7 @@ public class ModelRouter {
     private <T> Flux<T> handleStreamFailure(
             ModelRole role,
             Set<ModelCapability> requiredCapabilities,
+            ModelAttemptContext attemptContext,
             ModelStreamInvocation<T> invocation,
             int index,
             long routingStarted,
@@ -353,11 +382,12 @@ public class ModelRouter {
         ModelFailureCategory category = failureClassifier.classify(exception);
         healthTracker.recordFailure(role, client.candidateId(), category);
         recordFailure(role, client, index, 0, firstChunkEmitted, category,
-                ModelAttemptContext.empty(), exception);
+                attemptContext, exception);
         if (!firstChunkEmitted && category.fallbackAllowed()) {
             return streamFrom(
                     role,
                     requiredCapabilities,
+                    attemptContext,
                     invocation,
                     index + 1,
                     routingStarted,

@@ -12,6 +12,8 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ActiveProfiles("test")
@@ -61,5 +63,21 @@ class TicketAgentServiceApplicationTests {
     void noModelClientIsRegisteredWithoutApiKey() {
         // 测试配置不提供密钥，服务应安全启动且客户端注册表保持为空。
         assertThat(modelClientRegistry.all()).isEmpty();
+    }
+
+    /**
+     * 验证网关注入用户身份后可以创建独立智能体会话。
+     *
+     * @throws Exception 请求执行失败时抛出
+     */
+    @Test
+    void authenticatedUserCanCreateConversation() throws Exception {
+        // 请求体只允许提供标题，用户身份必须来自网关认证头。
+        mockMvc.perform(post("/api/agent-service/conversations")
+                        .header("userId", "user-api-test")
+                        .contentType("application/json")
+                        .content("{\"title\":\"购票咨询\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conversationId").isNotEmpty());
     }
 }

@@ -262,6 +262,43 @@ public class ConversationMemoryService {
     }
 
     /**
+     * 读取幂等轮次的当前状态和已完成回答，用于决定是否可以安全复用结果。
+     *
+     * @param userId 用户标识
+     * @param turnId 轮次标识
+     * @return 轮次状态、主题和已完成回答
+     */
+    @Transactional(readOnly = true)
+    public TurnState getTurnState(String userId, String turnId) {
+        TurnEntity turn = turnRepository.findById(turnId)
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+
+        // 先校验会话所有权，再按终态读取助手消息，避免幂等查询越权。
+        requireConversation(userId, turn.getConversationId());
+        String assistantContent = turn.getAssistantMessageId() == null
+                ? null : requireMessage(turn.getAssistantMessageId()).getContent();
+        return new TurnState(turn.getStatus(), turn.getTopicId(), assistantContent);
+    }
+
+    /**
+     * 将客户端已中止且仍在运行的轮次标记为取消。
+     *
+     * @param userId 用户标识
+     * @param turnId 轮次标识
+     */
+    @Transactional
+    public void cancelTurn(String userId, String turnId) {
+        TurnEntity turn = turnRepository.findLockedById(turnId)
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+
+        // 终态轮次保持原结果，避免取消回调覆盖已经持久化的完成或失败状态。
+        requireConversation(userId, turn.getConversationId());
+        if (turn.getStatus() == TurnStatus.RUNNING) {
+            turn.cancel(clock.instant());
+        }
+    }
+
+    /**
      * 锁定并校验会话所有权。
      *
      * @param userId 用户标识
@@ -402,5 +439,15 @@ public class ConversationMemoryService {
      * @param tokenCount 估算 Token 数
      */
     public record CompleteTurnCommand(String userId, String turnId, String content, int tokenCount) {
+    }
+
+    /**
+     * 幂等轮次读取结果。
+     *
+     * @param status 当前轮次状态
+     * @param topicId 已绑定主题标识
+     * @param assistantContent 已完成回答，未完成时为空
+     */
+    public record TurnState(TurnStatus status, String topicId, String assistantContent) {
     }
 }

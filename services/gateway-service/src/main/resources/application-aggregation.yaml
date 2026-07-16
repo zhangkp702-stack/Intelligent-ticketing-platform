@@ -2,6 +2,16 @@ spring:
   cloud:
     gateway:
       routes:
+        - id: index12306-ticket-agent-service
+          uri: lb://index12306-ticket-agent-service/api/agent-service/**
+          predicates:
+            - Path=/api/agent-service/**
+          filters:
+            - name: TokenValidate
+              args:
+                blackPathPre:
+                  - /api/agent-service
+
         - id: index12306-user-aggregation-service
           uri: lb://index12306-aggregation${unique-name:}-service/api/user-service/**
           predicates:

@@ -8,6 +8,7 @@ import org.opengoofy.index12306.ai.agentservice.model.config.AgentModelPropertie
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelCapability;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptOutcome;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptRecorder;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.web.client.ResourceAccessException;
@@ -134,6 +135,30 @@ class ModelRouterTests {
                 .verify();
         assertThat(secondaryCalls).hasValue(0);
         assertThat(context.recorder().recent().get(0).firstChunkEmitted()).isTrue();
+    }
+
+    /**
+     * 验证流式降级链中的每次模型尝试都保留同一业务审计上下文。
+     */
+    @Test
+    void streamPreservesAttemptContextAcrossFallback() {
+        TestContext context = context();
+        ModelAttemptContext attemptContext = new ModelAttemptContext(
+                "request-1", "conversation-1", "topic-1", "turn-1");
+
+        // 主模型首包前失败并降级，两个尝试都必须关联到当前对话轮次。
+        Flux<String> response = context.router().stream(
+                ModelRole.ANSWER_TOOL,
+                Set.of(ModelCapability.STREAMING),
+                attemptContext,
+                client -> client.candidateId().equals("primary")
+                        ? Flux.error(new ResourceAccessException("network"))
+                        : Flux.just("secondary-chunk"));
+
+        StepVerifier.create(response).expectNext("secondary-chunk").verifyComplete();
+        assertThat(context.recorder().recent())
+                .extracting(event -> event.context())
+                .containsOnly(attemptContext);
     }
 
     /**

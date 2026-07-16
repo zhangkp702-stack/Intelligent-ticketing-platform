@@ -115,4 +115,29 @@ public class RoutedChatModelService {
                 Set.of(ModelCapability.STREAMING),
                 client -> client.chatModel().stream(prompt));
     }
+
+    /**
+     * 使用显式审计上下文创建回答流，并按是否注册工具校验候选模型能力。
+     *
+     * @param role 模型角色
+     * @param prompt Spring AI 提示对象
+     * @param attemptContext 模型审计关联信息
+     * @param toolsEnabled 本次回答是否允许调用只读工具
+     * @return 带首包前模型降级能力的回答流
+     */
+    public Flux<ChatResponse> stream(
+            ModelRole role,
+            Prompt prompt,
+            ModelAttemptContext attemptContext,
+            boolean toolsEnabled) {
+        // 工具开启时只选择同时支持流式输出和工具调用的候选模型。
+        Set<ModelCapability> capabilities = toolsEnabled
+                ? Set.of(ModelCapability.STREAMING, ModelCapability.TOOL_CALLING)
+                : Set.of(ModelCapability.STREAMING);
+        return modelRouter.stream(
+                role,
+                capabilities,
+                attemptContext,
+                client -> client.chatModel().stream(prompt));
+    }
 }

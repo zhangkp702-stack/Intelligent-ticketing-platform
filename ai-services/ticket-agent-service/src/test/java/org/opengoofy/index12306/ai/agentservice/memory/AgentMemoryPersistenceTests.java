@@ -97,6 +97,28 @@ class AgentMemoryPersistenceTests {
     }
 
     /**
+     * 验证流式客户端取消后轮次进入取消终态，并可通过状态查询安全读取。
+     */
+    @Test
+    void runningTurnCanBeCancelledAndRead() {
+        String userId = unique("user");
+        String requestId = unique("cancel");
+        ConversationEntity conversation = conversationMemoryService.createConversation(userId, "取消测试");
+
+        // 创建尚未路由和回答的运行中轮次，再模拟客户端断开流式连接。
+        ConversationMemoryService.StartedTurn started = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), requestId, requestId, "查询余票", 4));
+        conversationMemoryService.cancelTurn(userId, started.turnId());
+        ConversationMemoryService.TurnState state = conversationMemoryService.getTurnState(
+                userId, started.turnId());
+
+        // 取消轮次没有助手正文，也不能继续被当成运行中请求重复执行。
+        assertThat(state.status()).isEqualTo(TurnStatus.CANCELLED);
+        assertThat(state.assistantContent()).isNull();
+    }
+
+    /**
      * 验证主题判定输入只包含历史用户问题，并验证上下文快照和路由日志可幂等回放。
      */
     @Test

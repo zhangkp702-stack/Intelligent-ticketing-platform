@@ -125,4 +125,19 @@ public class TurnEntity extends AgentBaseEntity {
         this.finishedAt = now;
         touch(now);
     }
+
+    /**
+     * 在客户端主动断开流式连接时取消仍在运行的轮次。
+     *
+     * @param now 取消时间
+     */
+    public void cancel(Instant now) {
+        if (status != TurnStatus.RUNNING) {
+            throw new IllegalStateException("轮次已经结束");
+        }
+        // 取消不记录外部异常正文，仅通过终态区分客户端中止和服务失败。
+        this.status = TurnStatus.CANCELLED;
+        this.finishedAt = now;
+        touch(now);
+    }
 }
