@@ -4,9 +4,14 @@
       <Col :span="6" class="agent-column">
         <ConversationPanel
           :conversation-id="state.conversationId"
+          :conversations="state.conversations"
           :creating="state.creatingConversation"
-          :streaming="state.streaming"
+          :loading="state.loadingConversations"
+          :loading-more="state.loadingMoreConversations"
+          :has-more="state.conversations.length < state.conversationTotal"
           @create="createConversation"
+          @select="selectConversation"
+          @load-more="loadMoreConversations"
         />
       </Col>
       <Col :span="18" class="agent-column">
@@ -18,7 +23,10 @@
             </div>
           </template>
           <div ref="messageContainer" class="message-container">
-            <div v-if="!state.messages.length" class="empty-content">
+            <div v-if="state.loadingHistory" class="history-loading">
+              <Spin tip="正在恢复会话记录" />
+            </div>
+            <div v-else-if="!state.messages.length" class="empty-content">
               <Empty description="开始一次智能购票对话">
                 <template #image>
                   <RobotOutlined class="empty-robot" />
@@ -36,29 +44,44 @@
                 </Button>
               </Space>
             </div>
-            <template
-              v-for="chatMessage in state.messages"
-              :key="chatMessage.id"
-            >
-              <MessageItem :message="chatMessage" />
-              <ActionConfirmCard
-                v-if="chatMessage.action"
-                :action="chatMessage.action"
-                :execution="chatMessage.actionExecution"
-                :confirming="
-                  state.confirmingActionId === chatMessage.action.actionId
-                "
-                :refreshing="
-                  state.refreshingActionId === chatMessage.action.actionId
-                "
-                @confirm="confirmAction(chatMessage)"
-                @refresh="refreshAction(chatMessage)"
-                @view-orders="router.push('/ticketList')"
-              />
+            <template v-else>
+              <div v-if="state.historyHasMore" class="history-more">
+                <Button
+                  type="link"
+                  :loading="state.loadingMoreHistory"
+                  @click="loadMoreHistory"
+                >
+                  加载更早消息
+                </Button>
+              </div>
+              <template
+                v-for="chatMessage in state.messages"
+                :key="chatMessage.id"
+              >
+                <MessageItem :message="chatMessage" />
+                <ActionConfirmCard
+                  v-if="chatMessage.action"
+                  :action="chatMessage.action"
+                  :execution="chatMessage.actionExecution"
+                  :confirming="
+                    state.confirmingActionId === chatMessage.action.actionId
+                  "
+                  :refreshing="
+                    state.refreshingActionId === chatMessage.action.actionId
+                  "
+                  @confirm="confirmAction(chatMessage)"
+                  @refresh="refreshAction(chatMessage)"
+                  @view-orders="router.push('/ticketList')"
+                />
+              </template>
             </template>
           </div>
           <ChatInput
-            :disabled="state.creatingConversation"
+            :disabled="
+              state.creatingConversation ||
+              state.loadingHistory ||
+              state.loadingConversations
+            "
             :streaming="state.streaming"
             @send="sendMessage"
             @stop="stopStreaming"
@@ -78,6 +101,7 @@ import {
   Empty,
   Row,
   Space,
+  Spin,
   Tag,
   message
 } from 'ant-design-vue'
@@ -86,6 +110,9 @@ import Cookie from 'js-cookie'
 import { useRouter } from 'vue-router'
 import {
   fetchAgentActionStatus,
+  fetchAgentConversationMessages,
+  fetchAgentConversations,
+  fetchAgentPendingAction,
   fetchConfirmAgentAction,
   fetchCreateAgentConversation
 } from '@/service'
@@ -109,10 +136,21 @@ const terminalStatuses = [
 ]
 const pollTimers = new Map()
 let streamController
+let streamGeneration = 0
+let conversationLoadGeneration = 0
 
 const state = reactive({
   conversationId: sessionStorage.getItem(storageKey),
+  conversations: [],
+  conversationCurrent: 1,
+  conversationTotal: 0,
   messages: [],
+  historyCursor: null,
+  historyHasMore: false,
+  loadingConversations: false,
+  loadingMoreConversations: false,
+  loadingHistory: false,
+  loadingMoreHistory: false,
   creatingConversation: false,
   streaming: false,
   confirmingActionId: null,
@@ -127,21 +165,305 @@ const starterQuestions = [
 ]
 
 /**
- * 创建新的 Agent 会话并清空当前页面消息。
+ * 分页加载当前用户的智能体会话。
+ *
+ * @param {boolean} reset 是否从第一页重新加载
+ * @returns {Promise<boolean>} 加载成功时返回 true
+ */
+const loadConversations = async (reset = false) => {
+  const targetPage = reset ? 1 : state.conversationCurrent
+  if (reset) {
+    state.loadingConversations = true
+  } else {
+    state.loadingMoreConversations = true
+  }
+  try {
+    const result = await fetchAgentConversations({
+      current: targetPage,
+      size: 20
+    })
+    const records = result.records || []
+
+    // 追加分页时按会话标识去重，避免更新时间变化造成跨页重复。
+    if (reset) {
+      state.conversations = records
+    } else {
+      const existingIds = new Set(
+        state.conversations.map((item) => item.conversationId)
+      )
+      state.conversations.push(
+        ...records.filter((item) => !existingIds.has(item.conversationId))
+      )
+    }
+    state.conversationCurrent = targetPage
+    state.conversationTotal = result.total || 0
+    return true
+  } catch (error) {
+    message.error(error.response?.data?.message || '加载历史会话失败')
+    return false
+  } finally {
+    state.loadingConversations = false
+    state.loadingMoreConversations = false
+  }
+}
+
+/**
+ * 加载下一页历史会话。
+ */
+const loadMoreConversations = async () => {
+  if (
+    state.loadingMoreConversations ||
+    state.conversations.length >= state.conversationTotal
+  ) {
+    return
+  }
+  state.conversationCurrent += 1
+  const loaded = await loadConversations()
+  if (!loaded) {
+    state.conversationCurrent -= 1
+  }
+}
+
+/**
+ * 把后端历史消息转换为页面消息结构。
+ *
+ * @param {object} historyMessage 后端历史消息
+ * @returns {object} 页面消息
+ */
+const mapHistoryMessage = (historyMessage) => ({
+  id: historyMessage.messageId,
+  role: historyMessage.role,
+  content: historyMessage.content,
+  turnId: historyMessage.turnId,
+  topicId: historyMessage.topicId,
+  sequenceNo: historyMessage.sequenceNo,
+  createdAt: historyMessage.createdAt
+})
+
+/**
+ * 中止当前会话的流读取和状态轮询，阻止旧异步任务更新新会话。
+ */
+const cancelActiveConversationWork = () => {
+  streamGeneration += 1
+  streamController?.abort()
+  streamController = null
+  state.streaming = false
+  state.loadingHistory = false
+  state.loadingMoreHistory = false
+  state.confirmingActionId = null
+  state.refreshingActionId = null
+  clearStatusPolls()
+}
+
+/**
+ * 把恢复出的操作卡片挂到对应助手消息，缺少该轮历史时创建安全占位消息。
+ *
+ * @param {object | null} recoveredAction 后端恢复结果
+ * @returns {object | null} 挂载操作卡片的页面消息
+ */
+const applyRecoveredAction = (recoveredAction) => {
+  if (!recoveredAction?.action) {
+    return null
+  }
+  let actionMessage = state.messages
+    .slice()
+    .reverse()
+    .find(
+      (item) =>
+        item.role === 'ASSISTANT' && item.turnId === recoveredAction.turnId
+    )
+  if (!actionMessage) {
+    actionMessage = {
+      id: `recovered-action-${recoveredAction.action.actionId}`,
+      role: 'ASSISTANT',
+      content: '该会话包含一项可恢复的票务操作。',
+      turnId: recoveredAction.turnId
+    }
+    state.messages.push(actionMessage)
+  }
+
+  // 确认令牌只进入当前内存对象，不写入浏览器持久化存储。
+  actionMessage.action = recoveredAction.action
+  actionMessage.actionExecution = recoveredAction.execution
+  return actionMessage
+}
+
+/**
+ * 更早历史页包含原操作轮次时，把占位卡片迁移回真实助手消息。
+ */
+const reconcileRecoveredActionMessage = () => {
+  const placeholderIndex = state.messages.findIndex((item) =>
+    item.id.startsWith('recovered-action-')
+  )
+  if (placeholderIndex < 0) {
+    return
+  }
+  const placeholder = state.messages[placeholderIndex]
+  const actualMessage = state.messages.find(
+    (item) =>
+      item.id !== placeholder.id &&
+      item.role === 'ASSISTANT' &&
+      item.turnId === placeholder.turnId
+  )
+  if (!actualMessage) {
+    return
+  }
+
+  // 操作卡片只保留一份，避免加载更早消息后出现重复操作入口。
+  actualMessage.action = placeholder.action
+  actualMessage.actionExecution = placeholder.actionExecution
+  state.messages.splice(placeholderIndex, 1)
+}
+
+/**
+ * 切换会话并恢复最近消息和操作卡片。
+ *
+ * @param {string} conversationId 目标会话标识
+ * @param {boolean} force 是否强制重新加载当前会话
+ */
+const selectConversation = async (conversationId, force = false) => {
+  if (
+    !conversationId ||
+    (!force && conversationId === state.conversationId && state.messages.length)
+  ) {
+    return
+  }
+  cancelActiveConversationWork()
+  const loadGeneration = ++conversationLoadGeneration
+  state.conversationId = conversationId
+  state.messages = []
+  state.historyCursor = null
+  state.historyHasMore = false
+  state.loadingHistory = true
+  sessionStorage.setItem(storageKey, conversationId)
+
+  try {
+    // 消息与操作恢复互不依赖，并行读取可缩短页面切换等待时间。
+    const [historyResult, actionResult] = await Promise.allSettled([
+      fetchAgentConversationMessages(conversationId, { size: 50 }),
+      fetchAgentPendingAction(conversationId)
+    ])
+    if (
+      loadGeneration !== conversationLoadGeneration ||
+      state.conversationId !== conversationId
+    ) {
+      return
+    }
+    if (historyResult.status === 'rejected') {
+      throw historyResult.reason
+    }
+    const history = historyResult.value
+    state.messages = (history.messages || []).map(mapHistoryMessage)
+    state.historyCursor = history.nextBeforeSequence
+    state.historyHasMore = Boolean(history.hasMore)
+
+    if (actionResult.status === 'fulfilled') {
+      const actionMessage = applyRecoveredAction(actionResult.value)
+      if (actionMessage?.actionExecution?.status === 'EXECUTING') {
+        scheduleStatusPoll(actionMessage, 0, conversationId)
+      }
+    } else {
+      message.warning('会话消息已恢复，但操作状态加载失败')
+    }
+    await scrollToBottom()
+  } catch (error) {
+    if (
+      loadGeneration === conversationLoadGeneration &&
+      state.conversationId === conversationId
+    ) {
+      state.messages = []
+      message.error(error.response?.data?.message || '恢复会话记录失败')
+    }
+  } finally {
+    if (loadGeneration === conversationLoadGeneration) {
+      state.loadingHistory = false
+    }
+  }
+}
+
+/**
+ * 使用服务端序号游标向前加载更早的会话消息。
+ */
+const loadMoreHistory = async () => {
+  if (
+    state.loadingMoreHistory ||
+    !state.historyHasMore ||
+    !state.historyCursor
+  ) {
+    return
+  }
+  const conversationId = state.conversationId
+  const loadGeneration = conversationLoadGeneration
+  const container = messageContainer.value
+  const previousHeight = container?.scrollHeight || 0
+  state.loadingMoreHistory = true
+  try {
+    const history = await fetchAgentConversationMessages(conversationId, {
+      beforeSequence: state.historyCursor,
+      size: 50
+    })
+    if (
+      loadGeneration !== conversationLoadGeneration ||
+      state.conversationId !== conversationId
+    ) {
+      return
+    }
+
+    // 历史页插入顶部时按消息标识去重，并保持用户当前阅读位置。
+    const existingIds = new Set(state.messages.map((item) => item.id))
+    const olderMessages = (history.messages || [])
+      .map(mapHistoryMessage)
+      .filter((item) => !existingIds.has(item.id))
+    state.messages.unshift(...olderMessages)
+    reconcileRecoveredActionMessage()
+    state.historyCursor = history.nextBeforeSequence
+    state.historyHasMore = Boolean(history.hasMore)
+    await nextTick()
+    if (container) {
+      container.scrollTop += container.scrollHeight - previousHeight
+    }
+  } catch (error) {
+    message.error(error.response?.data?.message || '加载更早消息失败')
+  } finally {
+    state.loadingMoreHistory = false
+  }
+}
+
+/**
+ * 创建新的 Agent 会话并切换到空白对话。
  */
 const createConversation = async () => {
-  if (state.streaming) {
+  if (state.creatingConversation) {
     return
   }
   state.creatingConversation = true
   try {
-    clearStatusPolls()
+    cancelActiveConversationWork()
+    conversationLoadGeneration += 1
     const result = await fetchCreateAgentConversation({
       title: '智能购票会话'
     })
     state.conversationId = result.conversationId
     state.messages = []
+    state.historyCursor = null
+    state.historyHasMore = false
     sessionStorage.setItem(storageKey, result.conversationId)
+
+    // 新会话立即加入侧栏顶部，避免等待下一次分页刷新。
+    state.conversations = [
+      {
+        conversationId: result.conversationId,
+        title: '智能购票会话',
+        status: 'ACTIVE',
+        lastMessageSequence: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      },
+      ...state.conversations.filter(
+        (item) => item.conversationId !== result.conversationId
+      )
+    ]
+    state.conversationTotal += 1
     message.success('已创建新的智能购票会话')
   } catch (error) {
     message.error(error.response?.data?.message || '创建会话失败')
@@ -171,18 +493,22 @@ const requireConversation = async () => {
  * @param {string} content 用户问题
  */
 const sendMessage = async (content) => {
-  if (state.streaming || !content?.trim()) {
+  if (state.streaming || state.loadingHistory || !content?.trim()) {
     return
   }
+  let assistantMessage
+  let requestGeneration
+  let conversationId
   try {
-    const conversationId = await requireConversation()
+    conversationId = await requireConversation()
+    requestGeneration = ++streamGeneration
     const requestId = createAgentRequestId()
     const userMessage = {
       id: `${requestId}-user`,
       role: 'USER',
       content: content.trim()
     }
-    const assistantMessage = {
+    assistantMessage = {
       id: `${requestId}-assistant`,
       role: 'ASSISTANT',
       content: '',
@@ -202,23 +528,27 @@ const sendMessage = async (content) => {
       idempotencyKey: requestId,
       signal: streamController.signal,
       onEvent: (eventName, event) => {
-        handleAgentEvent(eventName, event, assistantMessage)
+        // 会话切换后丢弃旧流中已经在网络途中的事件。
+        if (
+          requestGeneration === streamGeneration &&
+          state.conversationId === conversationId
+        ) {
+          handleAgentEvent(eventName, event, assistantMessage)
+        }
       }
     })
   } catch (error) {
+    const requestIsActive =
+      requestGeneration === streamGeneration &&
+      state.conversationId === conversationId
+    if (!requestIsActive) {
+      return
+    }
     if (error.name === 'AbortError') {
-      const assistantMessage = state.messages
-        .slice()
-        .reverse()
-        .find((item) => item.role === 'ASSISTANT' && item.pending)
       if (assistantMessage && !assistantMessage.content) {
         assistantMessage.content = '已停止生成'
       }
     } else {
-      const assistantMessage = state.messages
-        .slice()
-        .reverse()
-        .find((item) => item.role === 'ASSISTANT' && item.pending)
       if (assistantMessage) {
         assistantMessage.error = error.message || '智能体服务暂时不可用'
         assistantMessage.failureCategory = error.failureCategory
@@ -231,17 +561,37 @@ const sendMessage = async (content) => {
       }
     }
   } finally {
-    const assistantMessage = state.messages
-      .slice()
-      .reverse()
-      .find((item) => item.role === 'ASSISTANT' && item.pending)
-    if (assistantMessage) {
-      assistantMessage.pending = false
+    if (
+      requestGeneration === streamGeneration &&
+      state.conversationId === conversationId
+    ) {
+      if (assistantMessage) {
+        assistantMessage.pending = false
+      }
+      state.streaming = false
+      streamController = null
+      touchActiveConversation()
+      await scrollToBottom()
     }
-    state.streaming = false
-    streamController = null
-    await scrollToBottom()
   }
+}
+
+/**
+ * 更新当前会话的本地活跃时间并移动到侧栏顶部。
+ */
+const touchActiveConversation = () => {
+  const index = state.conversations.findIndex(
+    (item) => item.conversationId === state.conversationId
+  )
+  if (index < 0) {
+    return
+  }
+
+  // 后端会在消息写入时更新会话时间，本地先同步排序以减少界面跳动。
+  const conversation = state.conversations[index]
+  conversation.updatedAt = new Date().toISOString()
+  state.conversations.splice(index, 1)
+  state.conversations.unshift(conversation)
 }
 
 /**
@@ -346,10 +696,16 @@ const refreshAction = async (
  *
  * @param {object} chatMessage 包含操作卡片的助手消息
  * @param {number} attempt 当前轮询次数
+ * @param {string} conversationId 轮询所属会话标识
  */
-const scheduleStatusPoll = (chatMessage, attempt = 0) => {
+const scheduleStatusPoll = (
+  chatMessage,
+  attempt = 0,
+  conversationId = state.conversationId
+) => {
   const actionId = chatMessage.action.actionId
   if (
+    conversationId !== state.conversationId ||
     attempt >= 20 ||
     terminalStatuses.includes(chatMessage.actionExecution?.status) ||
     pollTimers.has(actionId)
@@ -358,8 +714,11 @@ const scheduleStatusPoll = (chatMessage, attempt = 0) => {
   }
   const timer = window.setTimeout(async () => {
     pollTimers.delete(actionId)
+    if (conversationId !== state.conversationId) {
+      return
+    }
     await refreshAction(chatMessage, false, false)
-    scheduleStatusPoll(chatMessage, attempt + 1)
+    scheduleStatusPoll(chatMessage, attempt + 1, conversationId)
   }, 1500)
   pollTimers.set(actionId, timer)
 }
@@ -390,14 +749,26 @@ const scrollToBottom = async () => {
 }
 
 onMounted(async () => {
-  if (!state.conversationId) {
+  const savedConversationId = state.conversationId
+  const loaded = await loadConversations(true)
+  if (!loaded) {
+    return
+  }
+  const targetConversation = state.conversations.find(
+    (item) => item.conversationId === savedConversationId
+  )
+  if (targetConversation) {
+    await selectConversation(targetConversation.conversationId, true)
+  } else if (state.conversations.length) {
+    await selectConversation(state.conversations[0].conversationId, true)
+  } else {
     await createConversation()
   }
 })
 
 onBeforeUnmount(() => {
-  streamController?.abort()
-  clearStatusPolls()
+  conversationLoadGeneration += 1
+  cancelActiveConversationWork()
 })
 </script>
 
@@ -434,6 +805,19 @@ onBeforeUnmount(() => {
   padding: 22px;
   overflow-y: auto;
   background: #f7f8fa;
+}
+
+.history-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+}
+
+.history-more {
+  display: flex;
+  justify-content: center;
+  margin: -10px 0 16px;
 }
 
 .empty-content {

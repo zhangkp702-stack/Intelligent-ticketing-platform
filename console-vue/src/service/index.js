@@ -198,6 +198,32 @@ const fetchCreateAgentConversation = async (body) => {
   return data
 }
 
+const fetchAgentConversations = async (params) => {
+  const { data } = await http({
+    method: 'GET',
+    url: '/api/agent-service/conversations',
+    params
+  })
+  return data
+}
+
+const fetchAgentConversationMessages = async (conversationId, params) => {
+  const { data } = await http({
+    method: 'GET',
+    url: `/api/agent-service/conversations/${conversationId}/messages`,
+    params
+  })
+  return data
+}
+
+const fetchAgentPendingAction = async (conversationId) => {
+  const { data } = await http({
+    method: 'GET',
+    url: `/api/agent-service/conversations/${conversationId}/pending-action`
+  })
+  return data || null
+}
+
 const fetchConfirmAgentAction = async (
   actionId,
   confirmationToken,
@@ -248,6 +274,9 @@ export {
   fetchMyTicket,
   fetchRefundTicket,
   fetchCreateAgentConversation,
+  fetchAgentConversations,
+  fetchAgentConversationMessages,
+  fetchAgentPendingAction,
   fetchConfirmAgentAction,
   fetchAgentActionStatus
 }
