@@ -4,14 +4,23 @@ import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatResult;
+import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ConversationPage;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.CreateConversationRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.CreateConversationResponse;
+import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.HistoryMessagePage;
+import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.RecoverableActionView;
+import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
+import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationHistoryService;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -32,14 +41,23 @@ public class AgentChatController {
     private static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
     private final AgentChatService agentChatService;
+    private final ConversationHistoryService conversationHistoryService;
+    private final PurchaseActionService purchaseActionService;
 
     /**
      * 创建智能体对话控制器。
      *
      * @param agentChatService 对话编排服务
+     * @param conversationHistoryService 会话历史查询服务
+     * @param purchaseActionService 高风险操作恢复服务
      */
-    public AgentChatController(AgentChatService agentChatService) {
+    public AgentChatController(
+            AgentChatService agentChatService,
+            ConversationHistoryService conversationHistoryService,
+            PurchaseActionService purchaseActionService) {
         this.agentChatService = agentChatService;
+        this.conversationHistoryService = conversationHistoryService;
+        this.purchaseActionService = purchaseActionService;
     }
 
     /**
@@ -56,6 +74,60 @@ public class AgentChatController {
         // 会话所有者完全来自网关认证头，不接受请求体覆盖用户身份。
         String title = request == null ? null : request.title();
         return new CreateConversationResponse(agentChatService.createConversation(userId, title));
+    }
+
+    /**
+     * 分页查询当前认证用户自己的智能体会话。
+     *
+     * @param userId 网关注入的用户标识
+     * @param current 当前页码
+     * @param size 每页数量
+     * @return 按最近更新时间倒序排列的会话分页
+     */
+    @GetMapping("/conversations")
+    public ConversationPage listConversations(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @RequestParam(defaultValue = "1") int current,
+            @RequestParam(defaultValue = "20") int size) {
+        // 用户标识只来自网关认证头，查询层会再次按 userId 收敛数据范围。
+        return conversationHistoryService.listConversations(userId, current, size);
+    }
+
+    /**
+     * 使用消息序号游标查询当前用户会话的文本消息历史。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @param beforeSequence 可选消息序号上界
+     * @param size 返回数量
+     * @return 按序号升序排列的历史消息
+     */
+    @GetMapping("/conversations/{conversationId}/messages")
+    public HistoryMessagePage listMessages(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId,
+            @RequestParam(required = false) Long beforeSequence,
+            @RequestParam(defaultValue = "50") int size) {
+        // 工具调用和内部结构化消息不会通过历史接口返回浏览器。
+        return conversationHistoryService.listMessages(
+                userId, conversationId, beforeSequence, size);
+    }
+
+    /**
+     * 恢复会话最近的操作卡片，并在仍可确认时重新签发一次确认视图。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @return 最近操作；会话没有操作时返回 204
+     */
+    @GetMapping("/conversations/{conversationId}/pending-action")
+    public ResponseEntity<RecoverableActionView> recoverPendingAction(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId) {
+        // 恢复接口不读取数据库中的令牌明文，令牌由操作服务根据当前状态重新签发。
+        return purchaseActionService.recoverLatestAction(userId, conversationId)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
     }
 
     /**

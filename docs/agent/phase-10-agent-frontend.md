@@ -105,15 +105,15 @@ fetch + ReadableStream + TextDecoder + AbortController
 
 确认令牌、消息正文和操作结果不会写入浏览器持久化存储。
 
-当前后端尚未提供会话列表、历史消息和待确认操作恢复接口，因此本阶段不能在刷新页面后恢复完整消息历史。
-
-后续需要补充：
+后端阶段十一已经补充以下恢复接口：
 
 ```text
 GET /api/agent-service/conversations
 GET /api/agent-service/conversations/{conversationId}/messages
 GET /api/agent-service/conversations/{conversationId}/pending-action
 ```
+
+当前前端仍只保存活动会话标识，尚未接入上述接口，因此本阶段页面刷新后仍不会自动加载完整消息历史。
 
 ## 7. 验证
 
@@ -127,7 +127,7 @@ npm run build
 
 ## 8. 下一阶段
 
-下一阶段补充后端会话查询接口和前端历史会话恢复，然后进入真实环境联调：
+下一阶段接入前端历史会话恢复，然后进入真实环境联调：
 
 1. 会话列表和历史消息加载。
 2. 页面刷新后恢复待确认操作。

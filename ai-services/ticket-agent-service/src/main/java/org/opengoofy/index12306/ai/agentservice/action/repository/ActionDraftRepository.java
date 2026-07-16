@@ -34,6 +34,14 @@ public interface ActionDraftRepository extends JpaRepository<ActionDraftEntity, 
     List<ActionDraftEntity> findAllByTurnId(String turnId);
 
     /**
+     * 查询会话最近创建的高风险操作，用于页面刷新后恢复确认或结果卡片。
+     *
+     * @param conversationId 会话标识
+     * @return 最近操作草案
+     */
+    Optional<ActionDraftEntity> findFirstByConversationIdOrderByCreatedAtDesc(String conversationId);
+
+    /**
      * 使用数据库写锁读取草案，保护确认令牌的一次性消费。
      *
      * @param actionId 草案标识

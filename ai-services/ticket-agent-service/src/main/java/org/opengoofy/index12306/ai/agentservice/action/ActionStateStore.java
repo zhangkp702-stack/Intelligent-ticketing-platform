@@ -148,6 +148,38 @@ public class ActionStateStore {
     }
 
     /**
+     * 查询当前用户会话最近的高风险操作，并在需要时固化过期状态。
+     *
+     * @param userId 当前用户标识
+     * @param conversationId 会话标识
+     * @return 会话最近操作
+     */
+    @Transactional
+    public Optional<ActionDraftEntity> findLatestByConversation(
+            String userId,
+            String conversationId) {
+        ConversationEntity conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
+        if (!conversation.belongsTo(userId)) {
+            throw new IllegalArgumentException("无权访问该会话");
+        }
+
+        // 即使会话暂时没有操作，也必须先完成会话归属校验，禁止通过标识探测。
+        ActionDraftEntity action = actionRepository
+                .findFirstByConversationIdOrderByCreatedAtDesc(conversationId)
+                .orElse(null);
+        if (action == null) {
+            return Optional.empty();
+        }
+        assertOwner(action, userId);
+        if (action.getStatus() == AgentActionStatus.AWAITING_CONFIRMATION
+                && !clock.instant().isBefore(action.getConfirmationExpiresAt())) {
+            action.expire(clock.instant());
+        }
+        return Optional.of(action);
+    }
+
+    /**
      * 锁定草案、校验令牌并创建唯一执行记录。
      *
      * @param userId 当前用户标识

@@ -10,6 +10,7 @@ import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.Purc
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.PurchaseExecutionResult;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.PurchasePassenger;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.PurchasePayload;
+import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.RecoverableActionView;
 import org.opengoofy.index12306.ai.agentservice.action.config.AgentActionProperties;
 import org.opengoofy.index12306.ai.agentservice.action.domain.ActionDraftEntity;
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
@@ -222,6 +223,41 @@ public class PurchaseActionService {
      */
     public ActionStatusView getStatus(String userId, String actionId) {
         return toStatusView(stateStore.get(userId, actionId));
+    }
+
+    /**
+     * 恢复当前用户会话最近的操作卡片，并只为仍待确认的草案重新签发令牌。
+     *
+     * @param userId 当前用户标识
+     * @param conversationId 会话标识
+     * @return 可恢复操作；会话没有操作时为空
+     */
+    public Optional<RecoverableActionView> recoverLatestAction(
+            String userId,
+            String conversationId) {
+        ActionDraftEntity action = stateStore
+                .findLatestByConversation(userId, conversationId)
+                .orElse(null);
+        if (action == null) {
+            return Optional.empty();
+        }
+
+        // 只有服务端仍判定为待确认的草案才重新签发令牌，终态结果不能获得新确认机会。
+        String actionSummary = action.getActionType() == AgentActionType.TICKET_PURCHASE
+                ? summary(readPayload(action.getPayloadJson()))
+                : ticketOperationActionService.summary(action);
+        String confirmationToken = action.getStatus() == AgentActionStatus.AWAITING_CONFIRMATION
+                ? tokenService.issue(action)
+                : null;
+        ActionConfirmationView confirmation = new ActionConfirmationView(
+                action.getId(),
+                action.getActionType().name(),
+                action.getStatus(),
+                actionSummary,
+                action.getConfirmationExpiresAt(),
+                confirmationToken);
+        return Optional.of(new RecoverableActionView(
+                action.getTurnId(), confirmation, toStatusView(action)));
     }
 
     /**

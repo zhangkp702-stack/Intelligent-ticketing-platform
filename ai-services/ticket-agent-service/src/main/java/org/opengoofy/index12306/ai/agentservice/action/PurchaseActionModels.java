@@ -127,6 +127,17 @@ public final class PurchaseActionModels {
     }
 
     /**
+     * @param turnId 产生操作草案的问答轮次
+     * @param action 可恢复的操作摘要和可选确认令牌
+     * @param execution 当前持久化状态和脱敏结果
+     */
+    public record RecoverableActionView(
+            String turnId,
+            ActionConfirmationView action,
+            ActionStatusView execution) {
+    }
+
+    /**
      * @param confirmationToken SSE 返回的确认令牌
      */
     public record ConfirmPurchaseRequest(String confirmationToken) {

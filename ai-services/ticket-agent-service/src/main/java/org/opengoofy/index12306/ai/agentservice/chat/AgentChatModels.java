@@ -1,6 +1,12 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionConfirmationView;
+import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationStatus;
+import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
+import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageType;
+
+import java.time.Instant;
+import java.util.List;
 
 /**
  * 对话入口使用的请求、响应和流式事件模型集合。
@@ -27,6 +33,70 @@ public final class AgentChatModels {
      * @param conversationId 会话标识
      */
     public record CreateConversationResponse(String conversationId) {
+    }
+
+    /**
+     * @param conversationId 会话标识
+     * @param title 会话标题
+     * @param status 会话状态
+     * @param activeTopicId 最近活动主题标识
+     * @param lastMessageSequence 最近消息序号
+     * @param createdAt 创建时间
+     * @param updatedAt 最近更新时间
+     */
+    public record ConversationView(
+            String conversationId,
+            String title,
+            ConversationStatus status,
+            String activeTopicId,
+            long lastMessageSequence,
+            Instant createdAt,
+            Instant updatedAt) {
+    }
+
+    /**
+     * @param current 当前页码
+     * @param size 每页数量
+     * @param total 会话总数
+     * @param records 当前页会话
+     */
+    public record ConversationPage(
+            long current,
+            long size,
+            long total,
+            List<ConversationView> records) {
+    }
+
+    /**
+     * @param messageId 消息标识
+     * @param turnId 所属问答轮次
+     * @param topicId 所属主题
+     * @param sequenceNo 会话内消息序号
+     * @param role 消息角色
+     * @param messageType 消息类型
+     * @param content 消息正文
+     * @param createdAt 创建时间
+     */
+    public record HistoryMessageView(
+            String messageId,
+            String turnId,
+            String topicId,
+            long sequenceNo,
+            MessageRole role,
+            MessageType messageType,
+            String content,
+            Instant createdAt) {
+    }
+
+    /**
+     * @param messages 按消息序号升序排列的当前批次
+     * @param nextBeforeSequence 下一页游标
+     * @param hasMore 是否还有更早消息
+     */
+    public record HistoryMessagePage(
+            List<HistoryMessageView> messages,
+            Long nextBeforeSequence,
+            boolean hasMore) {
     }
 
     /**

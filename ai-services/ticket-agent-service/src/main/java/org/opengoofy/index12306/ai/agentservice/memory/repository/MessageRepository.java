@@ -2,6 +2,7 @@ package org.opengoofy.index12306.ai.agentservice.memory.repository;
 
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
+import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -25,6 +26,28 @@ public interface MessageRepository extends JpaRepository<MessageEntity, String> 
     Optional<MessageEntity> findByConversationIdAndIdempotencyKey(
             String conversationId,
             String idempotencyKey);
+
+    /**
+     * 游标查询会话中指定序号之前的文本消息。
+     *
+     * @param conversationId 会话标识
+     * @param messageType 消息类型
+     * @param beforeSequence 不包含的消息序号上界
+     * @param pageable 最大返回数量
+     * @return 按消息序号倒序排列的历史消息
+     */
+    @Query("""
+            select m from MessageEntity m
+            where m.conversationId = :conversationId
+              and m.messageType = :messageType
+              and m.sequenceNo < :beforeSequence
+            order by m.sequenceNo desc
+            """)
+    List<MessageEntity> findConversationHistory(
+            @Param("conversationId") String conversationId,
+            @Param("messageType") MessageType messageType,
+            @Param("beforeSequence") long beforeSequence,
+            Pageable pageable);
 
     /**
      * 查询主题指定消息边界之后的全部未压缩消息。
