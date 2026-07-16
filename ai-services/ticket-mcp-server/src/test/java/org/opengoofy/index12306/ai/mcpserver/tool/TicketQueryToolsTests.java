@@ -6,6 +6,7 @@ import org.opengoofy.index12306.ai.mcpserver.client.TicketBusinessClient;
 import org.opengoofy.index12306.ai.mcpserver.security.McpCallerIdentity;
 import org.opengoofy.index12306.ai.mcpserver.security.McpRequestAuthenticator;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PassengerView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderDetailView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
 import org.springaicommunity.mcp.annotation.McpMeta;
@@ -33,7 +34,7 @@ import static org.mockito.Mockito.when;
 class TicketQueryToolsTests {
 
     /**
-     * 验证五个只读工具和一个受保护购票工具都由 MCP 服务提供。
+     * 验证九个只读工具和一个受保护购票工具都由 MCP 服务提供。
      */
     @Test
     void registersOnlyExpectedReadOnlyTools() {
@@ -50,6 +51,10 @@ class TicketQueryToolsTests {
                 "query_train_stops",
                 "list_my_passengers",
                 "list_my_orders",
+                "get_my_order_detail",
+                "preview_order_cancellation",
+                "preview_ticket_refund",
+                "query_pay_status",
                 "execute_confirmed_ticket_purchase");
     }
 
@@ -75,6 +80,29 @@ class TicketQueryToolsTests {
         assertThat(method.getParameterTypes()).containsExactly(McpMeta.class);
         assertThat(tools.listMyPassengers(meta)).containsExactly(passenger);
         verify(businessClient).listPassengers(identity);
+    }
+
+    /**
+     * 验证订单详情工具只使用签名身份查询当前用户订单。
+     */
+    @Test
+    void orderDetailToolUsesAuthenticatedIdentity() {
+        McpRequestAuthenticator authenticator = mock(McpRequestAuthenticator.class);
+        TicketBusinessClient businessClient = mock(TicketBusinessClient.class);
+        McpMeta meta = new McpMeta(java.util.Map.of());
+        McpCallerIdentity identity = new McpCallerIdentity(
+                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a", "", "");
+        OrderDetailView order = new OrderDetailView(
+                "order-1", "train-1", "G1", "北京南", "上海虹桥",
+                "2026-07-20", "09:00", "13:30", 10,
+                false, false, true, List.of());
+        when(authenticator.authenticate(meta)).thenReturn(identity);
+        when(businessClient.getOrderDetail("order-1", identity)).thenReturn(order);
+        TicketQueryTools tools = new TicketQueryTools(authenticator, businessClient, new ObjectMapper());
+
+        // 工具参数只包含订单号，用户归属由签名元数据和下游安全详情接口共同校验。
+        assertThat(tools.getMyOrderDetail("order-1", meta)).isEqualTo(order);
+        verify(businessClient).getOrderDetail("order-1", identity);
     }
 
     /**

@@ -80,6 +80,26 @@ public class TicketOrderDetailRespDTO {
     private Date arrivalTime;
 
     /**
+     * 订单状态
+     */
+    private Integer status;
+
+    /**
+     * 是否允许取消订单
+     */
+    private Boolean canCancel;
+
+    /**
+     * 是否允许发起支付
+     */
+    private Boolean canPay;
+
+    /**
+     * 是否允许申请退票
+     */
+    private Boolean canRefund;
+
+    /**
      * 乘车人订单详情
      */
     private List<TicketOrderPassengerDetailRespDTO> passengerDetails;

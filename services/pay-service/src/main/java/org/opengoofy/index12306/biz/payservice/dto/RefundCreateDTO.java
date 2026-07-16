@@ -30,6 +30,11 @@ import java.util.List;
 public class RefundCreateDTO {
 
     /**
+     * 幂等退款请求标识
+     */
+    private String requestId;
+
+    /**
      * 支付流水号
      */
     private String paySn;

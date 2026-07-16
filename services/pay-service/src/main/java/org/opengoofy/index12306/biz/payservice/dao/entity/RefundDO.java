@@ -32,6 +32,11 @@ import java.util.Date;
 public class RefundDO extends BaseDO {
 
     /**
+     * 幂等退款请求标识
+     */
+    private String refundRequestId;
+
+    /**
      * id
      */
     private Long id;

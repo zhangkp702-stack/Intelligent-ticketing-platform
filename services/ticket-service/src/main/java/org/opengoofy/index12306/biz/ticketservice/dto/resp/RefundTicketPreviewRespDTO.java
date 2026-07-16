@@ -15,21 +15,23 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto;
+package org.opengoofy.index12306.biz.ticketservice.dto.resp;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.List;
 
 /**
- * 退款详情返回参数实体
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 退票执行前的只读预览结果。
  */
 @Data
-public class RefundRespDTO {
-
-    /**
-     * 幂等退款请求标识
-     */
-    private String requestId;
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class RefundTicketPreviewRespDTO {
 
     /**
      * 订单号
@@ -37,17 +39,27 @@ public class RefundRespDTO {
     private String orderSn;
 
     /**
-     * 退款金额
+     * 退款类型
+     */
+    private Integer type;
+
+    /**
+     * 是否允许按当前参数退票
+     */
+    private Boolean refundable;
+
+    /**
+     * 预计退款总金额
      */
     private Integer refundAmount;
 
     /**
-     * 退款状态
+     * 本次选择的可退车票
      */
-    private Integer status;
+    private List<RefundTicketItemRespDTO> items;
 
     /**
-     * 第三方退款交易凭证
+     * 不可退时的安全原因
      */
-    private String tradeNo;
+    private String reason;
 }

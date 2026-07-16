@@ -36,6 +36,7 @@ public final class TicketToolResult {
      * @param duration 历时
      * @param daysArrived 到达所需天数
      * @param departure 出发站
+     * @param orderSn 订单号
      * @param arrival 到达站
      * @param saleTime 开售时间
      * @param saleStatus 售卖状态
@@ -120,8 +121,13 @@ public final class TicketToolResult {
      * @param realName 乘车人姓名
      * @param ticketType 票种
      * @param amount 订单金额，单位沿用订单服务定义
+     * @param status 订单状态
+     * @param canCancel 是否允许取消
+     * @param canPay 是否允许支付
+     * @param canRefund 是否允许退票
      */
     public record OrderView(
+            String orderSn,
             String departure,
             String arrival,
             String ridingDate,
@@ -133,7 +139,129 @@ public final class TicketToolResult {
             String seatNumber,
             String realName,
             Integer ticketType,
-            Integer amount) {
+            Integer amount,
+            Integer status,
+            Boolean canCancel,
+            Boolean canPay,
+            Boolean canRefund) {
+    }
+
+    /**
+     * @param orderSn 订单号
+     * @param trainId 列车内部标识
+     * @param trainNumber 车次号
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @param ridingDate 乘车日期
+     * @param departureTime 发车时间
+     * @param arrivalTime 到达时间
+     * @param status 订单状态
+     * @param canCancel 是否允许取消
+     * @param canPay 是否允许支付
+     * @param canRefund 是否允许退票
+     * @param tickets 脱敏车票明细
+     */
+    public record OrderDetailView(
+            String orderSn,
+            String trainId,
+            String trainNumber,
+            String departure,
+            String arrival,
+            String ridingDate,
+            String departureTime,
+            String arrivalTime,
+            Integer status,
+            Boolean canCancel,
+            Boolean canPay,
+            Boolean canRefund,
+            List<OrderTicketView> tickets) {
+    }
+
+    /**
+     * @param orderItemId 子订单记录标识
+     * @param realName 乘车人姓名
+     * @param seatType 席别编码
+     * @param carriageNumber 车厢号
+     * @param seatNumber 座位号
+     * @param ticketType 票种
+     * @param amount 金额
+     * @param status 车票状态
+     */
+    public record OrderTicketView(
+            String orderItemId,
+            String realName,
+            Integer seatType,
+            String carriageNumber,
+            String seatNumber,
+            Integer ticketType,
+            Integer amount,
+            Integer status) {
+    }
+
+    /**
+     * @param orderSn 订单号
+     * @param orderStatus 订单状态
+     * @param canCancel 是否允许取消
+     * @param canPay 是否允许支付
+     * @param canRefund 是否允许退票
+     * @param reason 当前操作不可执行时的原因
+     */
+    public record OrderOperationPreview(
+            String orderSn,
+            Integer orderStatus,
+            Boolean canCancel,
+            Boolean canPay,
+            Boolean canRefund,
+            String reason) {
+    }
+
+    /**
+     * @param orderSn 订单号
+     * @param type 退款类型
+     * @param refundable 是否允许按当前范围退票
+     * @param refundAmount 预计退款金额
+     * @param items 可退车票明细
+     * @param reason 不可退时的原因
+     */
+    public record RefundPreview(
+            String orderSn,
+            Integer type,
+            Boolean refundable,
+            Integer refundAmount,
+            List<RefundableTicketView> items,
+            String reason) {
+    }
+
+    /**
+     * @param orderItemId 子订单记录标识
+     * @param realName 乘车人姓名
+     * @param seatType 席别编码
+     * @param carriageNumber 车厢号
+     * @param seatNumber 座位号
+     * @param status 车票状态
+     * @param refundableAmount 可退金额
+     */
+    public record RefundableTicketView(
+            String orderItemId,
+            String realName,
+            Integer seatType,
+            String carriageNumber,
+            String seatNumber,
+            Integer status,
+            Integer refundableAmount) {
+    }
+
+    /**
+     * @param orderSn 订单号
+     * @param totalAmount 支付总金额
+     * @param status 支付状态
+     * @param paidAt 支付时间
+     */
+    public record PaymentStatusView(
+            String orderSn,
+            Integer totalAmount,
+            Integer status,
+            String paidAt) {
     }
 
     /**

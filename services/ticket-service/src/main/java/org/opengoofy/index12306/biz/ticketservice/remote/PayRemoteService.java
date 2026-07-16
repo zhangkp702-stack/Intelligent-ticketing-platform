@@ -37,7 +37,7 @@ public interface PayRemoteService {
     /**
      * 支付单详情查询
      */
-    @GetMapping("/api/pay-service/pay/query")
+    @GetMapping("/api/pay-service/pay/query/order-sn")
     Result<PayInfoRespDTO> getPayInfo(@RequestParam(value = "orderSn") String orderSn);
 
     /**

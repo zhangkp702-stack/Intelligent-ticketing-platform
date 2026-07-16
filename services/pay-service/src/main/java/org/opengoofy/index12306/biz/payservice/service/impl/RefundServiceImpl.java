@@ -50,6 +50,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.List;
 import java.util.Objects;
 
 
@@ -68,19 +69,47 @@ public class RefundServiceImpl implements RefundService {
     private final AbstractStrategyChoose abstractStrategyChoose;
     private final RefundResultCallbackOrderSendProduce refundResultCallbackOrderSendProduce;
 
+    /**
+     * 按退款请求标识幂等执行支付渠道退款并返回可追踪结果。
+     *
+     * @param requestParam 退款金额、范围和请求标识
+     * @return 已存在或本次创建的退款结果
+     */
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public RefundRespDTO commonRefund(RefundReqDTO requestParam) {
-        RefundRespDTO refundRespDTO = null;
+        if (requestParam.getRequestId() == null || requestParam.getRequestId().isBlank()) {
+            throw new ServiceException("退款请求标识不能为空");
+        }
+
+        // 相同请求已经落库时直接返回原结果，避免再次调用第三方退款渠道。
+        List<RefundDO> existingRefunds = findRefunds(requestParam.getRequestId());
+        if (!existingRefunds.isEmpty()) {
+            return buildRefundResult(requestParam, existingRefunds);
+        }
+        // 锁定同一订单的支付单，串行计算剩余可退金额，防止不同请求并发超退。
         LambdaQueryWrapper<PayDO> queryWrapper = Wrappers.lambdaQuery(PayDO.class)
-                .eq(PayDO::getOrderSn, requestParam.getOrderSn());
+                .eq(PayDO::getOrderSn, requestParam.getOrderSn())
+                .last("FOR UPDATE");
         PayDO payDO = payMapper.selectOne(queryWrapper);
         if (Objects.isNull(payDO)) {
             log.error("支付单不存在，orderSn：{}", requestParam.getOrderSn());
             throw new ServiceException("支付单不存在");
         }
-        payDO.setPayAmount(payDO.getTotalAmount() - requestParam.getRefundAmount());
-        //创建退款单
+        // 等待行锁期间相同请求可能已经完成，获得锁后再次读取并复用原退款结果。
+        existingRefunds = findRefunds(requestParam.getRequestId());
+        if (!existingRefunds.isEmpty()) {
+            return buildRefundResult(requestParam, existingRefunds);
+        }
+        int currentPayAmount = payDO.getPayAmount() == null ? payDO.getTotalAmount() : payDO.getPayAmount();
+        if (requestParam.getRefundAmount() == null
+                || requestParam.getRefundAmount() <= 0
+                || requestParam.getRefundAmount() > currentPayAmount) {
+            throw new ServiceException("退款金额超出当前可退金额");
+        }
+        payDO.setPayAmount(currentPayAmount - requestParam.getRefundAmount());
+
+        // 先按请求标识创建退款明细，后续更新只影响本次选择的车票。
         RefundCreateDTO refundCreateDTO = BeanUtil.convert(requestParam, RefundCreateDTO.class);
         refundCreateDTO.setPaySn(payDO.getPaySn());
         createRefund(refundCreateDTO);
@@ -92,6 +121,9 @@ public class RefundServiceImpl implements RefundService {
         refundCommand.setPayAmount(new BigDecimal(requestParam.getRefundAmount()));
         RefundRequest refundRequest = RefundRequestConvert.command2RefundRequest(refundCommand);
         RefundResponse result = abstractStrategyChoose.chooseAndExecuteResp(refundRequest.buildMark(), refundRequest);
+        if (result == null || result.getStatus() == null) {
+            throw new ServiceException("退款渠道未返回有效结果");
+        }
         payDO.setStatus(result.getStatus());
         LambdaUpdateWrapper<PayDO> updateWrapper = Wrappers.lambdaUpdate(PayDO.class)
                 .eq(PayDO::getOrderSn, requestParam.getOrderSn());
@@ -101,7 +133,7 @@ public class RefundServiceImpl implements RefundService {
             throw new ServiceException("修改支付单退款结果失败");
         }
         LambdaUpdateWrapper<RefundDO> refundUpdateWrapper = Wrappers.lambdaUpdate(RefundDO.class)
-                .eq(RefundDO::getOrderSn, requestParam.getOrderSn());
+                .eq(RefundDO::getRefundRequestId, requestParam.getRequestId());
         RefundDO refundDO = new RefundDO();
         refundDO.setTradeNo(result.getTradeNo());
         refundDO.setStatus(result.getStatus());
@@ -119,18 +151,32 @@ public class RefundServiceImpl implements RefundService {
                     .build();
             refundResultCallbackOrderSendProduce.sendMessage(refundResultCallbackOrderEvent);
         }
-        //TODO 暂时返回空实体
-        return refundRespDTO;
+
+        // 返回稳定字段供票务服务和后续智能体执行状态持久化。
+        RefundRespDTO response = new RefundRespDTO();
+        response.setRequestId(requestParam.getRequestId());
+        response.setOrderSn(requestParam.getOrderSn());
+        response.setRefundAmount(requestParam.getRefundAmount());
+        response.setStatus(result.getStatus());
+        response.setTradeNo(result.getTradeNo());
+        return response;
     }
 
+    /**
+     * 为本次退款选择的每张车票创建可独立追踪的退款记录。
+     *
+     * @param requestParam 退款记录创建参数
+     */
     private void createRefund(RefundCreateDTO requestParam) {
+        // 订单详情只用于补齐退款审计字段，支付服务本身不向终端用户暴露该内部接口。
         Result<TicketOrderDetailRespDTO> queryTicketResult = ticketOrderRemoteService.queryTicketOrderByOrderSn(requestParam.getOrderSn());
-        if (!queryTicketResult.isSuccess() && Objects.isNull(queryTicketResult.getData())) {
+        if (!queryTicketResult.isSuccess() || Objects.isNull(queryTicketResult.getData())) {
             throw new ServiceException("车票订单不存在");
         }
         TicketOrderDetailRespDTO orderDetailRespDTO = queryTicketResult.getData();
         requestParam.getRefundDetailReqDTOList().forEach(each -> {
             RefundDO refundDO = new RefundDO();
+            refundDO.setRefundRequestId(requestParam.getRequestId());
             refundDO.setPaySn(requestParam.getPaySn());
             refundDO.setOrderSn(requestParam.getOrderSn());
             refundDO.setTrainId(orderDetailRespDTO.getTrainId());
@@ -150,5 +196,41 @@ public class RefundServiceImpl implements RefundService {
             refundDO.setUsername(each.getUsername());
             refundMapper.insert(refundDO);
         });
+    }
+
+    /**
+     * 查询同一幂等请求已经创建的退款记录。
+     *
+     * @param requestId 退款请求标识
+     * @return 已存在退款记录
+     */
+    private List<RefundDO> findRefunds(String requestId) {
+        // 唯一索引和查询条件共同保证同一请求不会重复插入相同乘车人退款明细。
+        LambdaQueryWrapper<RefundDO> queryWrapper = Wrappers.lambdaQuery(RefundDO.class)
+                .eq(RefundDO::getRefundRequestId, requestId);
+        return refundMapper.selectList(queryWrapper);
+    }
+
+    /**
+     * 把已存在退款记录聚合为幂等响应。
+     *
+     * @param requestParam 当前退款请求
+     * @param refunds 已存在退款明细
+     * @return 原退款请求的可追踪结果
+     */
+    private RefundRespDTO buildRefundResult(RefundReqDTO requestParam, List<RefundDO> refunds) {
+        // 同一请求下所有明细共享交易凭证和状态，金额按明细求和恢复。
+        RefundDO first = refunds.get(0);
+        RefundRespDTO response = new RefundRespDTO();
+        response.setRequestId(requestParam.getRequestId());
+        response.setOrderSn(requestParam.getOrderSn());
+        response.setRefundAmount(refunds.stream()
+                .map(RefundDO::getAmount)
+                .filter(Objects::nonNull)
+                .mapToInt(Integer::intValue)
+                .sum());
+        response.setStatus(first.getStatus());
+        response.setTradeNo(first.getTradeNo());
+        return response;
     }
 }

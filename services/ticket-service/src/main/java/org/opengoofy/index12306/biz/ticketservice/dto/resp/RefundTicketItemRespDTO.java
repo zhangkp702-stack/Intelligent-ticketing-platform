@@ -15,39 +15,54 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto;
+package org.opengoofy.index12306.biz.ticketservice.dto.resp;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
- * 退款详情返回参数实体
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 可退车票明细。
  */
 @Data
-public class RefundRespDTO {
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class RefundTicketItemRespDTO {
 
     /**
-     * 幂等退款请求标识
+     * 子订单记录 ID
      */
-    private String requestId;
+    private String orderItemId;
 
     /**
-     * 订单号
+     * 乘车人姓名
      */
-    private String orderSn;
+    private String realName;
 
     /**
-     * 退款金额
+     * 席别编码
      */
-    private Integer refundAmount;
+    private Integer seatType;
 
     /**
-     * 退款状态
+     * 车厢号
+     */
+    private String carriageNumber;
+
+    /**
+     * 座位号
+     */
+    private String seatNumber;
+
+    /**
+     * 车票状态
      */
     private Integer status;
 
     /**
-     * 第三方退款交易凭证
+     * 可退金额，单位沿用订单服务定义
      */
-    private String tradeNo;
+    private Integer refundableAmount;
 }

@@ -42,6 +42,14 @@ public interface OrderService {
     TicketOrderDetailRespDTO queryTicketOrderByOrderSn(String orderSn);
 
     /**
+     * 根据订单号查询当前登录用户自己的车票订单。
+     *
+     * @param orderSn 订单号
+     * @return 经过订单归属校验的订单详情
+     */
+    TicketOrderDetailRespDTO querySelfTicketOrderByOrderSn(String orderSn);
+
+    /**
      * 跟据用户名分页查询车票订单
      *
      * @param requestParam 跟据用户 ID 分页查询对象

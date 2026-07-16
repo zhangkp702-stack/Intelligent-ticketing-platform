@@ -31,6 +31,11 @@ import org.springframework.stereotype.Component;
 @Component
 public class TrainRefundTicketParamNotNullChainFilter implements TrainRefundTicketChainFilter<RefundTicketReqDTO> {
 
+    /**
+     * 校验退票请求的必填参数和退款类型，部分退款时同时要求提供子订单记录。
+     *
+     * @param requestParam 退票请求参数
+     */
     @Override
     public void handler(RefundTicketReqDTO requestParam) {
         if (StrUtil.isBlank(requestParam.getOrderSn())) {
@@ -39,6 +44,12 @@ public class TrainRefundTicketParamNotNullChainFilter implements TrainRefundTick
         if (requestParam.getType() == null) {
             throw new ClientException("退款类型不能为空");
         }
+        // 只接受系统定义的两种退款类型，避免未知类型进入真实退款流程。
+        if (!requestParam.getType().equals(RefundTypeEnum.PARTIAL_REFUND.getType())
+                && !requestParam.getType().equals(RefundTypeEnum.FULL_REFUND.getType())) {
+            throw new ClientException("退款类型仅支持部分退款或全部退款");
+        }
+        // 部分退款必须明确选中子订单，防止误退整张订单中的全部车票。
         if (requestParam.getType().equals(RefundTypeEnum.PARTIAL_REFUND.getType())) {
             if (CollUtil.isEmpty(requestParam.getSubOrderRecordIdReqList())) {
                 throw new ClientException("部分退款子订单记录集合不能为空");

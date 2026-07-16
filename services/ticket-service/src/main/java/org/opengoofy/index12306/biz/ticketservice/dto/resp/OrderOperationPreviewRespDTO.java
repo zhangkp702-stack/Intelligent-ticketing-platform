@@ -15,21 +15,21 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto;
+package org.opengoofy.index12306.biz.ticketservice.dto.resp;
 
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
- * 退款详情返回参数实体
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 当前用户订单操作预检查结果。
  */
 @Data
-public class RefundRespDTO {
-
-    /**
-     * 幂等退款请求标识
-     */
-    private String requestId;
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderOperationPreviewRespDTO {
 
     /**
      * 订单号
@@ -37,17 +37,27 @@ public class RefundRespDTO {
     private String orderSn;
 
     /**
-     * 退款金额
+     * 当前订单状态
      */
-    private Integer refundAmount;
+    private Integer orderStatus;
 
     /**
-     * 退款状态
+     * 是否允许取消
      */
-    private Integer status;
+    private Boolean canCancel;
 
     /**
-     * 第三方退款交易凭证
+     * 是否允许支付
      */
-    private String tradeNo;
+    private Boolean canPay;
+
+    /**
+     * 是否允许退票
+     */
+    private Boolean canRefund;
+
+    /**
+     * 当前操作不可执行时的安全原因
+     */
+    private String reason;
 }

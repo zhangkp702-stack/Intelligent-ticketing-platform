@@ -25,4 +25,29 @@ import lombok.Data;
  */
 @Data
 public class RefundRespDTO {
+
+    /**
+     * 幂等退款请求标识
+     */
+    private String requestId;
+
+    /**
+     * 订单号
+     */
+    private String orderSn;
+
+    /**
+     * 退款金额
+     */
+    private Integer refundAmount;
+
+    /**
+     * 退款状态
+     */
+    private Integer status;
+
+    /**
+     * 第三方退款交易凭证
+     */
+    private String tradeNo;
 }

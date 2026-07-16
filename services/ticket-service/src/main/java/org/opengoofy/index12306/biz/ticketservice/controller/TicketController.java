@@ -23,6 +23,8 @@ import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.RefundTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.TicketPageQueryReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.OrderOperationPreviewRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
@@ -88,6 +90,19 @@ public class TicketController {
     }
 
     /**
+     * 预检查当前用户订单是否允许取消。
+     *
+     * @param orderSn 订单号
+     * @return 当前订单可操作状态
+     */
+    @GetMapping("/api/ticket-service/ticket/cancel/preview")
+    public Result<OrderOperationPreviewRespDTO> previewCancelTicketOrder(
+            @RequestParam(value = "orderSn") String orderSn) {
+        // 预览接口只读取状态，不会释放座位或修改订单。
+        return Results.success(ticketService.previewCancelTicketOrder(orderSn));
+    }
+
+    /**
      * 支付单详情查询
      */
     @GetMapping("/api/ticket-service/ticket/pay/query")
@@ -101,5 +116,18 @@ public class TicketController {
     @PostMapping("/api/ticket-service/ticket/refund")
     public Result<RefundTicketRespDTO> commonTicketRefund(@RequestBody RefundTicketReqDTO requestParam) {
         return Results.success(ticketService.commonTicketRefund(requestParam));
+    }
+
+    /**
+     * 预览当前用户指定车票的预计退款金额。
+     *
+     * @param requestParam 退票范围
+     * @return 不产生退款的只读预览结果
+     */
+    @PostMapping("/api/ticket-service/ticket/refund/preview")
+    public Result<RefundTicketPreviewRespDTO> previewTicketRefund(
+            @RequestBody RefundTicketReqDTO requestParam) {
+        // 复用执行前校验和选票逻辑，确保展示金额与后续真实退款一致。
+        return Results.success(ticketService.previewTicketRefund(requestParam));
     }
 }

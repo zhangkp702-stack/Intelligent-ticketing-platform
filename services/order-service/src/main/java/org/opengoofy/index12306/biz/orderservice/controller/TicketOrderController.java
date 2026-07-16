@@ -59,6 +59,19 @@ public class TicketOrderController {
     }
 
     /**
+     * 根据订单号查询当前登录用户自己的车票订单。
+     *
+     * @param orderSn 订单号
+     * @return 经过订单归属校验的订单详情
+     */
+    @GetMapping("/api/order-service/order/ticket/query/self")
+    public Result<TicketOrderDetailRespDTO> querySelfTicketOrderByOrderSn(
+            @RequestParam(value = "orderSn") String orderSn) {
+        // 用户可见的订单详情必须经过服务层归属校验，不能复用内部无身份查询接口。
+        return Results.success(orderService.querySelfTicketOrderByOrderSn(orderSn));
+    }
+
+    /**
      * 根据子订单记录id查询车票子订单详情
      */
     @GetMapping("/api/order-service/order/item/ticket/query")

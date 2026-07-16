@@ -47,6 +47,16 @@ public interface TicketOrderRemoteService {
     @GetMapping("/api/order-service/order/ticket/query")
     Result<TicketOrderDetailRespDTO> queryTicketOrderByOrderSn(@RequestParam(value = "orderSn") String orderSn);
 
+    /**
+     * 根据订单号查询当前登录用户自己的订单。
+     *
+     * @param orderSn 订单号
+     * @return 经过订单服务归属校验的订单详情
+     */
+    @GetMapping("/api/order-service/order/ticket/query/self")
+    Result<TicketOrderDetailRespDTO> querySelfTicketOrderByOrderSn(
+            @RequestParam(value = "orderSn") String orderSn);
+
 
     /**
      * 跟据子订单记录id查询车票子订单详情

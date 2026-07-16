@@ -6,7 +6,11 @@ import org.opengoofy.index12306.ai.mcpserver.client.TicketBusinessClient;
 import org.opengoofy.index12306.ai.mcpserver.security.McpCallerIdentity;
 import org.opengoofy.index12306.ai.mcpserver.security.McpRequestAuthenticator;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderPage;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderDetailView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderOperationPreview;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PassengerView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PaymentStatusView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundPreview;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.StationMatch;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TicketSearchResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainStop;
@@ -214,6 +218,132 @@ public class TicketQueryTools {
 
         // 订单服务根据已验证用户请求头限定数据归属。
         return businessClient.listOrders(current, size, identity);
+    }
+
+    /**
+     * 查询当前登录用户自己的订单详情和服务端计算的可操作项。
+     *
+     * @param orderSn 订单号
+     * @param meta Agent 签名的 MCP 元数据
+     * @return 不包含证件号的订单详情
+     */
+    @McpTool(
+            name = "get_my_order_detail",
+            description = "根据订单号查询当前登录用户自己的订单状态、可操作项和脱敏车票明细。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "查询我的订单详情",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false))
+    public OrderDetailView getMyOrderDetail(
+            @McpToolParam(description = "list_my_orders 返回的 orderSn") String orderSn,
+            McpMeta meta) {
+        requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+
+        // 订单详情接口在订单服务端再次验证归属，工具层不接受用户标识参数。
+        return businessClient.getOrderDetail(orderSn.trim(), identity);
+    }
+
+    /**
+     * 只读预检查当前用户订单是否允许取消。
+     *
+     * @param orderSn 订单号
+     * @param meta Agent 签名的 MCP 元数据
+     * @return 订单取消预检查结果
+     */
+    @McpTool(
+            name = "preview_order_cancellation",
+            description = "只读检查当前用户订单是否允许取消，不会修改订单或释放座位。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "预检查取消订单",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false))
+    public OrderOperationPreview previewOrderCancellation(
+            @McpToolParam(description = "当前用户订单号") String orderSn,
+            McpMeta meta) {
+        requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+
+        // 预检查结果由持久化订单状态计算，模型不能自行判断是否允许取消。
+        return businessClient.previewCancellation(orderSn.trim(), identity);
+    }
+
+    /**
+     * 只读预览当前用户指定范围的退票金额和车票明细。
+     *
+     * @param orderSn 订单号
+     * @param type 退款类型，0 为部分退款，1 为全部退款
+     * @param orderItemIds 部分退款的子订单记录标识
+     * @param meta Agent 签名的 MCP 元数据
+     * @return 退票预览结果
+     */
+    @McpTool(
+            name = "preview_ticket_refund",
+            description = "只读预览当前用户可退车票和预计退款金额，不会发起真实退款。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "预览退票",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false))
+    public RefundPreview previewTicketRefund(
+            @McpToolParam(description = "当前用户订单号") String orderSn,
+            @McpToolParam(description = "退款类型：0 部分退款，1 全部退款") Integer type,
+            @McpToolParam(required = false, description = "部分退款时填写 get_my_order_detail 返回的子订单 ID")
+            List<String> orderItemIds,
+            McpMeta meta) {
+        requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
+        Assert.notNull(type, "type must not be null");
+        Assert.isTrue(type == 0 || type == 1, "type must be 0 or 1");
+        List<String> normalizedIds = orderItemIds == null ? List.of() : orderItemIds.stream()
+                .map(itemId -> itemId == null ? "" : itemId.trim())
+                .toList();
+        Assert.isTrue(normalizedIds.size() <= 5, "orderItemIds must not contain more than 5 items");
+        Assert.isTrue(type != 0 || !normalizedIds.isEmpty(),
+                "orderItemIds must not be empty for partial refund");
+        Set<String> uniqueIds = new HashSet<>();
+        for (String orderItemId : normalizedIds) {
+            requirePattern(orderItemId, "orderItemId", TRAIN_ID_PATTERN);
+            Assert.isTrue(uniqueIds.add(orderItemId), "orderItemId must be unique");
+        }
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+
+        // 票务服务会复用真实退款前的选票和金额逻辑，但该工具不会调用支付服务。
+        return businessClient.previewRefund(orderSn.trim(), type, normalizedIds, identity);
+    }
+
+    /**
+     * 查询当前用户订单关联支付单的状态。
+     *
+     * @param orderSn 订单号
+     * @param meta Agent 签名的 MCP 元数据
+     * @return 支付状态
+     */
+    @McpTool(
+            name = "query_pay_status",
+            description = "查询当前登录用户订单的支付状态，只读取支付单，不创建支付。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "查询支付状态",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false))
+    public PaymentStatusView queryPayStatus(
+            @McpToolParam(description = "当前用户订单号") String orderSn,
+            McpMeta meta) {
+        requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+
+        // 支付状态查询前由票务服务验证订单归属，避免订单号越权探测。
+        return businessClient.queryPaymentStatus(orderSn.trim(), identity);
     }
 
     /**

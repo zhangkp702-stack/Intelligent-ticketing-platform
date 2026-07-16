@@ -29,6 +29,11 @@ import java.util.List;
 public class RefundTicketReqDTO {
 
     /**
+     * 可选退款请求标识，缺失时由服务端根据用户和退票范围生成
+     */
+    private String requestId;
+
+    /**
      * 订单号
      */
     private String orderSn;

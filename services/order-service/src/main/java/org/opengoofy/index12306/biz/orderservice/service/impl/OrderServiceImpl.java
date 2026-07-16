@@ -70,6 +70,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
 
 /**
  * 订单服务接口层实现
@@ -88,16 +92,53 @@ public class OrderServiceImpl implements OrderService {
     private final DelayCloseOrderSendProduce delayCloseOrderSendProduce;
     private final UserRemoteService userRemoteService;
 
+    /**
+     * 根据订单号查询内部订单详情，不执行终端用户归属校验。
+     *
+     * @param orderSn 订单号
+     * @return 订单详情
+     */
     @Override
     public TicketOrderDetailRespDTO queryTicketOrderByOrderSn(String orderSn) {
-        LambdaQueryWrapper<OrderDO> queryWrapper = Wrappers.lambdaQuery(OrderDO.class)
-                .eq(OrderDO::getOrderSn, orderSn);
-        OrderDO orderDO = orderMapper.selectOne(queryWrapper);
+        // 内部调用仍保留原接口，但统一处理订单不存在，避免空实体转换产生异常。
+        OrderDO orderDO = requireOrder(orderSn);
+        return buildOrderDetail(orderDO);
+    }
+
+    /**
+     * 查询当前登录用户自己的订单详情并返回可操作状态。
+     *
+     * @param orderSn 订单号
+     * @return 经过归属校验的订单详情
+     */
+    @Override
+    public TicketOrderDetailRespDTO querySelfTicketOrderByOrderSn(String orderSn) {
+        // 订单号不能作为授权凭据，必须同时匹配网关注入的当前用户标识。
+        OrderDO orderDO = requireOrder(orderSn);
+        verifyOrderOwner(orderDO);
+        return buildOrderDetail(orderDO);
+    }
+
+    /**
+     * 把订单实体和子订单明细转换为统一订单详情。
+     *
+     * @param orderDO 订单实体
+     * @return 包含可操作标记的订单详情
+     */
+    private TicketOrderDetailRespDTO buildOrderDetail(OrderDO orderDO) {
         TicketOrderDetailRespDTO result = BeanUtil.convert(orderDO, TicketOrderDetailRespDTO.class);
         LambdaQueryWrapper<OrderItemDO> orderItemQueryWrapper = Wrappers.lambdaQuery(OrderItemDO.class)
-                .eq(OrderItemDO::getOrderSn, orderSn);
+                .eq(OrderItemDO::getOrderSn, orderDO.getOrderSn());
         List<OrderItemDO> orderItemDOList = orderItemMapper.selectList(orderItemQueryWrapper);
         result.setPassengerDetails(BeanUtil.convert(orderItemDOList, TicketOrderPassengerDetailRespDTO.class));
+
+        // 可操作标记只依据持久化订单状态和发车时间计算，模型不能自行推断。
+        boolean beforeDeparture = isBeforeDeparture(orderDO);
+        result.setCanCancel(Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus()));
+        result.setCanPay(Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus()));
+        result.setCanRefund(beforeDeparture
+                && (Objects.equals(orderDO.getStatus(), OrderStatusEnum.ALREADY_PAID.getStatus())
+                || Objects.equals(orderDO.getStatus(), OrderStatusEnum.PARTIAL_REFUND.getStatus())));
         return result;
     }
 
@@ -197,31 +238,52 @@ public class OrderServiceImpl implements OrderService {
         if (Objects.isNull(orderDO) || orderDO.getStatus() != OrderStatusEnum.PENDING_PAYMENT.getStatus()) {
             return false;
         }
-        // 原则上订单关闭和订单取消这两个方法可以复用，为了区分未来考虑到的场景，这里对方法进行拆分但复用逻辑
-        return cancelTickOrder(requestParam);
+        // 延迟关单属于内部任务，不依赖终端用户上下文，但仍复用相同原子状态更新。
+        return cancelTickOrderInternal(orderSn, false);
     }
 
+    /**
+     * 取消当前登录用户自己的待支付订单，重复取消已关闭订单时幂等返回成功。
+     *
+     * @param requestParam 取消订单请求
+     * @return 订单已经或本次成功进入关闭状态时返回 true
+     */
     @Transactional(rollbackFor = Exception.class)
     @Override
     public boolean cancelTickOrder(CancelTicketOrderReqDTO requestParam) {
-        String orderSn = requestParam.getOrderSn();
-        LambdaQueryWrapper<OrderDO> queryWrapper = Wrappers.lambdaQuery(OrderDO.class)
-                .eq(OrderDO::getOrderSn, orderSn);
-        OrderDO orderDO = orderMapper.selectOne(queryWrapper);
-        if (orderDO == null) {
-            throw new ServiceException(OrderCanalErrorCodeEnum.ORDER_CANAL_UNKNOWN_ERROR);
-        } else if (orderDO.getStatus() != OrderStatusEnum.PENDING_PAYMENT.getStatus()) {
-            throw new ServiceException(OrderCanalErrorCodeEnum.ORDER_CANAL_STATUS_ERROR);
-        }
+        // 外部取消入口必须校验订单归属，内部延迟关单不会调用此分支。
+        return cancelTickOrderInternal(requestParam.getOrderSn(), true);
+    }
+
+    /**
+     * 在订单维度分布式锁内完成关闭状态和子订单状态更新。
+     *
+     * @param orderSn 订单号
+     * @param verifyOwner 是否校验当前登录用户为订单所有者
+     * @return 订单已经或本次成功关闭时返回 true
+     */
+    private boolean cancelTickOrderInternal(String orderSn, boolean verifyOwner) {
         RLock lock = redissonClient.getLock(StrBuilder.create("order:canal:order_sn_").append(orderSn).toString());
         if (!lock.tryLock()) {
             throw new ClientException(OrderCanalErrorCodeEnum.ORDER_CANAL_REPETITION_ERROR);
         }
         try {
+            // 获取锁后重新读取状态，保证并发取消不会同时通过状态判断。
+            OrderDO orderDO = requireOrder(orderSn);
+            if (verifyOwner) {
+                verifyOrderOwner(orderDO);
+            }
+            if (Objects.equals(orderDO.getStatus(), OrderStatusEnum.CLOSED.getStatus())) {
+                return true;
+            }
+            if (!Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus())) {
+                throw new ServiceException(OrderCanalErrorCodeEnum.ORDER_CANAL_STATUS_ERROR);
+            }
             OrderDO updateOrderDO = new OrderDO();
             updateOrderDO.setStatus(OrderStatusEnum.CLOSED.getStatus());
             LambdaUpdateWrapper<OrderDO> updateWrapper = Wrappers.lambdaUpdate(OrderDO.class)
-                    .eq(OrderDO::getOrderSn, orderSn);
+                    .eq(OrderDO::getOrderSn, orderSn)
+                    .eq(OrderDO::getStatus, OrderStatusEnum.PENDING_PAYMENT.getStatus());
             int updateResult = orderMapper.update(updateOrderDO, updateWrapper);
             if (updateResult <= 0) {
                 throw new ServiceException(OrderCanalErrorCodeEnum.ORDER_CANAL_ERROR);
@@ -306,8 +368,64 @@ public class OrderServiceImpl implements OrderService {
             OrderItemDO orderItemDO = orderItemMapper.selectOne(orderItemQueryWrapper);
             TicketOrderDetailSelfRespDTO actualResult = BeanUtil.convert(orderDO, TicketOrderDetailSelfRespDTO.class);
             BeanUtil.convertIgnoreNullAndBlank(orderItemDO, actualResult);
+            // 本人订单列表补充订单号、状态和服务端计算的可操作项，供后续安全详情查询使用。
+            boolean beforeDeparture = isBeforeDeparture(orderDO);
+            actualResult.setCanCancel(Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus()));
+            actualResult.setCanPay(Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus()));
+            actualResult.setCanRefund(beforeDeparture
+                    && (Objects.equals(orderDO.getStatus(), OrderStatusEnum.ALREADY_PAID.getStatus())
+                    || Objects.equals(orderDO.getStatus(), OrderStatusEnum.PARTIAL_REFUND.getStatus())));
             return actualResult;
         });
+    }
+
+    /**
+     * 根据订单号读取必须存在的订单实体。
+     *
+     * @param orderSn 订单号
+     * @return 订单实体
+     */
+    private OrderDO requireOrder(String orderSn) {
+        // 所有订单详情、取消和归属校验都复用同一不存在语义。
+        LambdaQueryWrapper<OrderDO> queryWrapper = Wrappers.lambdaQuery(OrderDO.class)
+                .eq(OrderDO::getOrderSn, orderSn);
+        OrderDO orderDO = orderMapper.selectOne(queryWrapper);
+        if (orderDO == null) {
+            throw new ServiceException(OrderCanalErrorCodeEnum.ORDER_CANAL_UNKNOWN_ERROR);
+        }
+        return orderDO;
+    }
+
+    /**
+     * 校验订单属于网关注入的当前登录用户。
+     *
+     * @param orderDO 待访问订单
+     */
+    private void verifyOrderOwner(OrderDO orderDO) {
+        // 用户上下文缺失和用户不匹配使用同一安全提示，避免通过订单号探测他人订单。
+        if (UserContext.getUserId() == null || !UserContext.getUserId().equals(orderDO.getUserId())) {
+            throw new ClientException("订单不存在或无权访问");
+        }
+    }
+
+    /**
+     * 根据乘车日期和发车时刻判断列车是否尚未发车。
+     *
+     * @param orderDO 订单实体
+     * @return 当前时间早于订单实际发车时间时返回 true
+     */
+    private boolean isBeforeDeparture(OrderDO orderDO) {
+        if (orderDO.getRidingDate() == null || orderDO.getDepartureTime() == null) {
+            return false;
+        }
+
+        // 订单将乘车日期和每日发车时刻分开保存，需要组合后再判断退票截止边界。
+        ZoneId zoneId = ZoneId.systemDefault();
+        LocalDate ridingDate = java.time.Instant.ofEpochMilli(orderDO.getRidingDate().getTime())
+                .atZone(zoneId).toLocalDate();
+        LocalTime departureTime = java.time.Instant.ofEpochMilli(orderDO.getDepartureTime().getTime())
+                .atZone(zoneId).toLocalTime();
+        return LocalDateTime.of(ridingDate, departureTime).isAfter(LocalDateTime.now(zoneId));
     }
 
     private List<Integer> buildOrderStatusList(TicketOrderPageQueryReqDTO requestParam) {

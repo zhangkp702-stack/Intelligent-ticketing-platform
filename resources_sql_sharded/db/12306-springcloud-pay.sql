@@ -389,6 +389,7 @@ CREATE TABLE `t_pay_9`
 CREATE TABLE `t_refund`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `refund_request_id` varchar(64) NOT NULL COMMENT '退款请求幂等标识',
     `pay_sn`         varchar(64)  DEFAULT NULL COMMENT '支付流水号',
     `order_sn`       varchar(64)  DEFAULT NULL COMMENT '订单号',
     `trade_no`       varchar(64)  DEFAULT NULL COMMENT '三方交易凭证号',
@@ -412,6 +413,7 @@ CREATE TABLE `t_refund`
     `update_time`    datetime     DEFAULT NULL COMMENT '修改时间',
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标记 0：未删除 1：删除',
     PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_refund_request_id_card` (`refund_request_id`, `id_card`) USING BTREE,
     KEY              `idx_user_id` (`user_id`) USING BTREE,
     KEY              `idx_order_sn` (`order_sn`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退款记录表';

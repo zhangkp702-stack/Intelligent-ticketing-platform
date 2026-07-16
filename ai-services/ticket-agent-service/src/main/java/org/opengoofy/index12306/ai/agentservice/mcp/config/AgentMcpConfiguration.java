@@ -22,7 +22,11 @@ public class AgentMcpConfiguration {
             "query_tickets",
             "query_train_stops",
             "list_my_passengers",
-            "list_my_orders");
+            "list_my_orders",
+            "get_my_order_detail",
+            "preview_order_cancellation",
+            "preview_ticket_refund",
+            "query_pay_status");
 
     /**
      * 在 MCP 客户端启用时注册身份签名转换器。
@@ -38,7 +42,7 @@ public class AgentMcpConfiguration {
     }
 
     /**
-     * 仅允许阶段五定义的五个只读工具进入模型工具集合。
+     * 仅允许显式白名单中的只读查询和预览工具进入模型工具集合。
      *
      * @return MCP 工具发现过滤器
      */

@@ -4,7 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.opengoofy.index12306.ai.mcpserver.config.TicketMcpProperties;
 import org.opengoofy.index12306.ai.mcpserver.security.McpCallerIdentity;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderPage;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderDetailView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderOperationPreview;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderTicketView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PaymentStatusView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PassengerView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.SeatAvailability;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.StationMatch;
@@ -14,6 +18,8 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainTicket;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PurchasedTicketView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundableTicketView;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundPreview;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -231,6 +237,7 @@ public class TicketBusinessClient {
                 break;
             }
             orders.add(new OrderView(
+                    text(item, "orderSn"),
                     text(item, "departure"),
                     text(item, "arrival"),
                     text(item, "ridingDate"),
@@ -242,13 +249,132 @@ public class TicketBusinessClient {
                     text(item, "seatNumber"),
                     text(item, "realName"),
                     integer(item, "ticketType"),
-                    integer(item, "amount")));
+                    integer(item, "amount"),
+                    integer(item, "status"),
+                    bool(item, "canCancel"),
+                    bool(item, "canPay"),
+                    bool(item, "canRefund")));
         }
         return new OrderPage(
                 data.path("current").asLong(current),
                 data.path("size").asLong(boundedSize),
                 data.path("total").asLong(orders.size()),
                 List.copyOf(orders));
+    }
+
+    /**
+     * 查询当前登录用户自己的完整订单详情，并删除证件号等敏感字段。
+     *
+     * @param orderSn 订单号
+     * @param identity 已验证调用者身份
+     * @return 脱敏订单详情
+     */
+    public OrderDetailView getOrderDetail(String orderSn, McpCallerIdentity identity) {
+        // 订单服务安全详情接口会再次校验订单号属于当前用户。
+        JsonNode root = orderClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/api/order-service/order/ticket/query/self")
+                        .queryParam("orderSn", orderSn)
+                        .build())
+                .headers(headers -> addIdentity(headers, identity))
+                .retrieve()
+                .body(JsonNode.class);
+        return toOrderDetail(requireData(root));
+    }
+
+    /**
+     * 只读预检查当前用户订单是否允许取消。
+     *
+     * @param orderSn 订单号
+     * @param identity 已验证调用者身份
+     * @return 订单可操作状态
+     */
+    public OrderOperationPreview previewCancellation(String orderSn, McpCallerIdentity identity) {
+        // 预检查由票务服务完成，不修改订单、座位或缓存。
+        JsonNode root = ticketClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/api/ticket-service/ticket/cancel/preview")
+                        .queryParam("orderSn", orderSn)
+                        .build())
+                .headers(headers -> addIdentity(headers, identity))
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireData(root);
+        return new OrderOperationPreview(
+                text(data, "orderSn"),
+                integer(data, "orderStatus"),
+                bool(data, "canCancel"),
+                bool(data, "canPay"),
+                bool(data, "canRefund"),
+                text(data, "reason"));
+    }
+
+    /**
+     * 只读预览当前用户指定范围的可退车票和预计退款金额。
+     *
+     * @param orderSn 订单号
+     * @param type 退款类型
+     * @param orderItemIds 部分退款子订单记录标识
+     * @param identity 已验证调用者身份
+     * @return 退票预览
+     */
+    public RefundPreview previewRefund(
+            String orderSn,
+            int type,
+            List<String> orderItemIds,
+            McpCallerIdentity identity) {
+        // 请求体只描述预览范围，票务服务不会调用支付退款接口。
+        Map<String, Object> request = Map.of(
+                "orderSn", orderSn,
+                "type", type,
+                "subOrderRecordIdReqList", orderItemIds);
+        JsonNode root = ticketClient.post()
+                .uri("/api/ticket-service/ticket/refund/preview")
+                .headers(headers -> addIdentity(headers, identity))
+                .body(request)
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireData(root);
+        List<RefundableTicketView> items = new ArrayList<>();
+        for (JsonNode item : iterable(data.path("items"))) {
+            items.add(new RefundableTicketView(
+                    text(item, "orderItemId"),
+                    text(item, "realName"),
+                    integer(item, "seatType"),
+                    text(item, "carriageNumber"),
+                    text(item, "seatNumber"),
+                    integer(item, "status"),
+                    integer(item, "refundableAmount")));
+        }
+        return new RefundPreview(
+                text(data, "orderSn"),
+                integer(data, "type"),
+                bool(data, "refundable"),
+                integer(data, "refundAmount"),
+                List.copyOf(items),
+                text(data, "reason"));
+    }
+
+    /**
+     * 查询当前用户订单的支付状态。
+     *
+     * @param orderSn 订单号
+     * @param identity 已验证调用者身份
+     * @return 支付状态
+     */
+    public PaymentStatusView queryPaymentStatus(String orderSn, McpCallerIdentity identity) {
+        // 票务服务会先验证订单归属，再向支付服务查询支付单。
+        JsonNode root = ticketClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/api/ticket-service/ticket/pay/query")
+                        .queryParam("orderSn", orderSn)
+                        .build())
+                .headers(headers -> addIdentity(headers, identity))
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireData(root);
+        return new PaymentStatusView(
+                text(data, "orderSn"),
+                integer(data, "totalAmount"),
+                integer(data, "status"),
+                text(data, "gmtPayment"));
     }
 
     /**
@@ -337,6 +463,42 @@ public class TicketBusinessClient {
                 text(train, "saleTime"),
                 integer(train, "saleStatus"),
                 List.copyOf(seats));
+    }
+
+    /**
+     * 将订单服务详情转换为不包含证件号和手机号的 MCP 结果。
+     *
+     * @param order 下游订单详情
+     * @return 脱敏订单详情
+     */
+    private OrderDetailView toOrderDetail(JsonNode order) {
+        // 只保留订单操作和展示需要的车票字段，忽略证件类型、证件号和用户名。
+        List<OrderTicketView> tickets = new ArrayList<>();
+        for (JsonNode item : iterable(order.path("passengerDetails"))) {
+            tickets.add(new OrderTicketView(
+                    text(item, "id"),
+                    text(item, "realName"),
+                    integer(item, "seatType"),
+                    text(item, "carriageNumber"),
+                    text(item, "seatNumber"),
+                    integer(item, "ticketType"),
+                    integer(item, "amount"),
+                    integer(item, "status")));
+        }
+        return new OrderDetailView(
+                text(order, "orderSn"),
+                text(order, "trainId"),
+                text(order, "trainNumber"),
+                text(order, "departure"),
+                text(order, "arrival"),
+                text(order, "ridingDate"),
+                text(order, "departureTime"),
+                text(order, "arrivalTime"),
+                integer(order, "status"),
+                bool(order, "canCancel"),
+                bool(order, "canPay"),
+                bool(order, "canRefund"),
+                List.copyOf(tickets));
     }
 
     /**

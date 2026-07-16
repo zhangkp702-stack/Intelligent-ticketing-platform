@@ -54,7 +54,10 @@ import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.RefundTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.TicketOrderItemQueryReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.TicketPageQueryReqDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.OrderOperationPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketItemRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
@@ -102,6 +105,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -112,6 +116,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -138,6 +143,8 @@ import static org.opengoofy.index12306.biz.ticketservice.toolkit.DateUtil.conver
 @Service
 @RequiredArgsConstructor
 public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> implements TicketService, CommandLineRunner {
+
+    private static final int ORDER_ITEM_PAID_STATUS = 10;
 
     private final TrainMapper trainMapper;
     private final TrainStationRelationMapper trainStationRelationMapper;
@@ -546,18 +553,50 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
 
     @Override
     public PayInfoRespDTO getPayInfo(String orderSn) {
-        return payRemoteService.getPayInfo(orderSn).getData();
+        // 支付状态属于订单私有数据，查询支付服务前先验证订单归属。
+        requireSelfOrder(orderSn);
+        Result<PayInfoRespDTO> payInfoResult = payRemoteService.getPayInfo(orderSn);
+        if (!payInfoResult.isSuccess() || payInfoResult.getData() == null) {
+            throw new ServiceException("支付单不存在或查询失败");
+        }
+        return payInfoResult.getData();
+    }
+
+    /**
+     * 预检查当前用户订单是否允许取消、支付或退票。
+     *
+     * @param orderSn 订单号
+     * @return 由订单服务计算的可操作状态
+     */
+    @Override
+    public OrderOperationPreviewRespDTO previewCancelTicketOrder(String orderSn) {
+        org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO order =
+                requireSelfOrder(orderSn);
+
+        // 预览只返回稳定状态和安全原因，不触发订单、座位或缓存更新。
+        return OrderOperationPreviewRespDTO.builder()
+                .orderSn(order.getOrderSn())
+                .orderStatus(order.getStatus())
+                .canCancel(Boolean.TRUE.equals(order.getCanCancel()))
+                .canPay(Boolean.TRUE.equals(order.getCanPay()))
+                .canRefund(Boolean.TRUE.equals(order.getCanRefund()))
+                .reason(Boolean.TRUE.equals(order.getCanCancel()) ? null : "当前订单状态不允许取消")
+                .build();
     }
 
     @ILog
     @Override
     public void cancelTicketOrder(CancelTicketOrderReqDTO requestParam) {
+        // 在任何库存回滚前验证订单属于当前用户且仍允许取消。
+        org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO ticketOrderDetail =
+                requireSelfOrder(requestParam.getOrderSn());
+        if (!Boolean.TRUE.equals(ticketOrderDetail.getCanCancel())) {
+            throw new ServiceException("当前订单状态不允许取消");
+        }
         Result<Void> cancelOrderResult = ticketOrderRemoteService.cancelTicketOrder(requestParam);
         if (!cancelOrderResult.isSuccess()) {
-            return;
+            throw new ServiceException("取消订单失败");
         }
-        Result<org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO> ticketOrderDetailResult = ticketOrderRemoteService.queryTicketOrderByOrderSn(requestParam.getOrderSn());
-        org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO ticketOrderDetail = ticketOrderDetailResult.getData();
         String trainId = String.valueOf(ticketOrderDetail.getTrainId());
         String departure = ticketOrderDetail.getDeparture();
         String arrival = ticketOrderDetail.getArrival();
@@ -592,46 +631,189 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             }
         }
     }
+
+    /**
+     * 只读预览当前用户按指定范围可退的车票和预计退款金额。
+     *
+     * @param requestParam 订单号、退款类型和可选子订单范围
+     * @return 不产生真实退款的预览结果
+     */
+    @Override
+    public RefundTicketPreviewRespDTO previewTicketRefund(RefundTicketReqDTO requestParam) {
+        // 预览与执行使用同一选票和金额计算逻辑，防止确认前后参数含义漂移。
+        return buildRefundPlan(requestParam).preview();
+    }
+
+    /**
+     * 校验当前用户退票范围并以幂等请求标识调用支付退款。
+     *
+     * @param requestParam 退票请求
+     * @return 可追踪退款结果
+     */
     @Override
     public RefundTicketRespDTO commonTicketRefund(RefundTicketReqDTO requestParam) {
-        // 责任链模式，验证 1：参数必�?
-        refundReqDTOAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_REFUND_TICKET_FILTER.name(), requestParam);
-        Result<org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO> orderDetailRespDTOResult = ticketOrderRemoteService.queryTicketOrderByOrderSn(requestParam.getOrderSn());
-        if (!orderDetailRespDTOResult.isSuccess() && Objects.isNull(orderDetailRespDTOResult.getData())) {
-            throw new ServiceException("车票订单不存在");
+        RefundPlan plan = buildRefundPlan(requestParam);
+        if (!Boolean.TRUE.equals(plan.preview().getRefundable())) {
+            throw new ServiceException(plan.preview().getReason());
         }
-        org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO ticketOrderDetailRespDTO = orderDetailRespDTOResult.getData();
-        List<TicketOrderPassengerDetailRespDTO> passengerDetails = ticketOrderDetailRespDTO.getPassengerDetails();
-        if (CollectionUtil.isEmpty(passengerDetails)) {
-            throw new ServiceException("车票子订单不存在");
-        }
+
+        // 请求标识优先采用调用方提供值，缺失时按用户、订单和退票范围生成稳定标识。
+        String requestId = normalizeRefundRequestId(requestParam, plan.items());
         RefundReqDTO refundReqDTO = new RefundReqDTO();
-        if (RefundTypeEnum.PARTIAL_REFUND.getType().equals(requestParam.getType())) {
-            TicketOrderItemQueryReqDTO ticketOrderItemQueryReqDTO = new TicketOrderItemQueryReqDTO();
-            ticketOrderItemQueryReqDTO.setOrderSn(requestParam.getOrderSn());
-            ticketOrderItemQueryReqDTO.setOrderItemRecordIds(requestParam.getSubOrderRecordIdReqList());
-            Result<List<TicketOrderPassengerDetailRespDTO>> queryTicketItemOrderById = ticketOrderRemoteService.queryTicketItemOrderById(ticketOrderItemQueryReqDTO);
-            List<TicketOrderPassengerDetailRespDTO> partialRefundPassengerDetails = passengerDetails.stream()
-                    .filter(item -> queryTicketItemOrderById.getData().contains(item))
-                    .collect(Collectors.toList());
-            refundReqDTO.setRefundTypeEnum(RefundTypeEnum.PARTIAL_REFUND);
-            refundReqDTO.setRefundDetailReqDTOList(partialRefundPassengerDetails);
-        } else if (RefundTypeEnum.FULL_REFUND.getType().equals(requestParam.getType())) {
-            refundReqDTO.setRefundTypeEnum(RefundTypeEnum.FULL_REFUND);
-            refundReqDTO.setRefundDetailReqDTOList(passengerDetails);
-        }
-        if (CollectionUtil.isNotEmpty(passengerDetails)) {
-            Integer partialRefundAmount = passengerDetails.stream()
-                    .mapToInt(TicketOrderPassengerDetailRespDTO::getAmount)
-                    .sum();
-            refundReqDTO.setRefundAmount(partialRefundAmount);
-        }
+        refundReqDTO.setRequestId(requestId);
+        refundReqDTO.setRefundTypeEnum(RefundTypeEnum.PARTIAL_REFUND.getType().equals(requestParam.getType())
+                ? RefundTypeEnum.PARTIAL_REFUND : RefundTypeEnum.FULL_REFUND);
+        refundReqDTO.setRefundDetailReqDTOList(plan.items());
+        refundReqDTO.setRefundAmount(plan.preview().getRefundAmount());
         refundReqDTO.setOrderSn(requestParam.getOrderSn());
         Result<RefundRespDTO> refundRespDTOResult = payRemoteService.commonRefund(refundReqDTO);
-        if (!refundRespDTOResult.isSuccess() && Objects.isNull(refundRespDTOResult.getData())) {
+        if (!refundRespDTOResult.isSuccess() || Objects.isNull(refundRespDTOResult.getData())) {
             throw new ServiceException("车票订单退款失败");
         }
-        return null; // 暂时返回空实现
+        RefundRespDTO payResult = refundRespDTOResult.getData();
+
+        // 票务服务只返回退款跟踪所需字段，不暴露支付渠道内部请求。
+        RefundTicketRespDTO response = new RefundTicketRespDTO();
+        response.setRequestId(payResult.getRequestId());
+        response.setOrderSn(payResult.getOrderSn());
+        response.setType(requestParam.getType());
+        response.setRefundAmount(payResult.getRefundAmount());
+        response.setStatus(payResult.getStatus());
+        response.setTradeNo(payResult.getTradeNo());
+        return response;
+    }
+
+    /**
+     * 构造退票预览和后续支付退款所需的同一份不可变选票计划。
+     *
+     * @param requestParam 退票范围
+     * @return 退票预览和选中的订单明细
+     */
+    private RefundPlan buildRefundPlan(RefundTicketReqDTO requestParam) {
+        // 责任链先校验订单号、退款类型和部分退票明细是否完整。
+        refundReqDTOAbstractChainContext.handler(
+                TicketChainMarkEnum.TRAIN_REFUND_TICKET_FILTER.name(), requestParam);
+        org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO order =
+                requireSelfOrder(requestParam.getOrderSn());
+        if (!Boolean.TRUE.equals(order.getCanRefund())) {
+            return new RefundPlan(
+                    RefundTicketPreviewRespDTO.builder()
+                            .orderSn(requestParam.getOrderSn())
+                            .type(requestParam.getType())
+                            .refundable(false)
+                            .refundAmount(0)
+                            .items(List.of())
+                            .reason("当前订单状态或发车时间不允许退票")
+                            .build(),
+                    List.of());
+        }
+
+        // 全部退款选择尚未退票的明细；部分退款只采用订单服务按记录 ID 返回的明细。
+        List<TicketOrderPassengerDetailRespDTO> selectedItems;
+        if (RefundTypeEnum.PARTIAL_REFUND.getType().equals(requestParam.getType())) {
+            TicketOrderItemQueryReqDTO query = new TicketOrderItemQueryReqDTO();
+            query.setOrderSn(requestParam.getOrderSn());
+            query.setOrderItemRecordIds(requestParam.getSubOrderRecordIdReqList());
+            Result<List<TicketOrderPassengerDetailRespDTO>> selectedResult =
+                    ticketOrderRemoteService.queryTicketItemOrderById(query);
+            if (!selectedResult.isSuccess() || CollectionUtil.isEmpty(selectedResult.getData())) {
+                throw new ServiceException("未找到指定的可退车票");
+            }
+            selectedItems = selectedResult.getData();
+            long requestedCount = requestParam.getSubOrderRecordIdReqList().stream().distinct().count();
+            if (selectedItems.size() != requestedCount) {
+                throw new ServiceException("部分退票车票范围不完整");
+            }
+        } else {
+            selectedItems = order.getPassengerDetails();
+        }
+        selectedItems = selectedItems.stream()
+                .filter(item -> Objects.equals(item.getStatus(), ORDER_ITEM_PAID_STATUS))
+                .toList();
+        if (selectedItems.isEmpty()) {
+            throw new ServiceException("当前选择中没有可退车票");
+        }
+
+        // 退款金额只汇总本次选择且仍处于已支付状态的车票，修复部分退票按全单计算的问题。
+        int refundAmount = selectedItems.stream()
+                .map(TicketOrderPassengerDetailRespDTO::getAmount)
+                .filter(Objects::nonNull)
+                .mapToInt(Integer::intValue)
+                .sum();
+        List<RefundTicketItemRespDTO> previewItems = selectedItems.stream()
+                .map(item -> RefundTicketItemRespDTO.builder()
+                        .orderItemId(item.getId())
+                        .realName(item.getRealName())
+                        .seatType(item.getSeatType())
+                        .carriageNumber(item.getCarriageNumber())
+                        .seatNumber(item.getSeatNumber())
+                        .status(item.getStatus())
+                        .refundableAmount(item.getAmount())
+                        .build())
+                .toList();
+        RefundTicketPreviewRespDTO preview = RefundTicketPreviewRespDTO.builder()
+                .orderSn(requestParam.getOrderSn())
+                .type(requestParam.getType())
+                .refundable(true)
+                .refundAmount(refundAmount)
+                .items(previewItems)
+                .build();
+        return new RefundPlan(preview, selectedItems);
+    }
+
+    /**
+     * 查询并校验当前登录用户自己的订单。
+     *
+     * @param orderSn 订单号
+     * @return 经过订单服务归属校验的订单详情
+     */
+    private org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO requireSelfOrder(
+            String orderSn) {
+        // 终端用户可触发的支付、取消和退票流程统一使用安全订单详情接口。
+        Result<org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO> result =
+                ticketOrderRemoteService.querySelfTicketOrderByOrderSn(orderSn);
+        if (!result.isSuccess() || result.getData() == null) {
+            throw new ServiceException("订单不存在或无权访问");
+        }
+        return result.getData();
+    }
+
+    /**
+     * 生成或规范化退款请求幂等标识。
+     *
+     * @param requestParam 原始退票请求
+     * @param selectedItems 本次选择的车票明细
+     * @return 不超过数据库长度限制的稳定请求标识
+     */
+    private String normalizeRefundRequestId(
+            RefundTicketReqDTO requestParam,
+            List<TicketOrderPassengerDetailRespDTO> selectedItems) {
+        if (StrUtil.isNotBlank(requestParam.getRequestId())) {
+            if (requestParam.getRequestId().trim().length() > 64) {
+                throw new ServiceException("退款请求标识过长");
+            }
+            return requestParam.getRequestId().trim();
+        }
+
+        // 未提供请求标识时按用户、订单、类型和有序子订单 ID 生成确定性 UUID。
+        String itemIds = selectedItems.stream()
+                .map(TicketOrderPassengerDetailRespDTO::getId)
+                .sorted()
+                .collect(Collectors.joining(","));
+        String source = UserContext.getUserId() + "|" + requestParam.getOrderSn()
+                + "|" + requestParam.getType() + "|" + itemIds;
+        return UUID.nameUUIDFromBytes(source.getBytes(StandardCharsets.UTF_8))
+                .toString()
+                .replace("-", "");
+    }
+
+    /**
+     * @param preview 对用户展示的退票预览
+     * @param items 后续真实退款使用的订单明细
+     */
+    private record RefundPlan(
+            RefundTicketPreviewRespDTO preview,
+            List<TicketOrderPassengerDetailRespDTO> items) {
     }
 
     private List<String> buildDepartureStationList(List<TicketListDTO> seatResults) {

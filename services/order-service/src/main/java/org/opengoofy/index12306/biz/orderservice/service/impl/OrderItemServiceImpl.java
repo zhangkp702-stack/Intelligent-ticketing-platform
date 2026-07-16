@@ -36,7 +36,9 @@ import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderItemQueryReq
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.service.OrderItemService;
 import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
+import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
+import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
@@ -101,8 +103,22 @@ public class OrderItemServiceImpl extends ServiceImpl<OrderItemMapper, OrderItem
         }
     }
 
+    /**
+     * 查询当前登录用户订单中指定的子订单记录。
+     *
+     * @param requestParam 订单号和子订单记录标识
+     * @return 当前用户可访问的子订单明细
+     */
     @Override
     public List<TicketOrderPassengerDetailRespDTO> queryTicketItemOrderById(TicketOrderItemQueryReqDTO requestParam) {
+        // 先校验订单归属，避免仅凭订单号和子订单标识查询他人的乘车信息。
+        OrderDO orderDO = orderMapper.selectOne(Wrappers.lambdaQuery(OrderDO.class)
+                .eq(OrderDO::getOrderSn, requestParam.getOrderSn()));
+        if (orderDO == null || UserContext.getUserId() == null
+                || !UserContext.getUserId().equals(orderDO.getUserId())) {
+            throw new ClientException("订单不存在或无权访问");
+        }
+        // 归属校验通过后，再按订单范围查询选中的子订单明细。
         LambdaQueryWrapper<OrderItemDO> queryWrapper = Wrappers.lambdaQuery(OrderItemDO.class)
                 .eq(OrderItemDO::getOrderSn, requestParam.getOrderSn())
                 .in(OrderItemDO::getId, requestParam.getOrderItemRecordIds());

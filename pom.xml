@@ -11,6 +11,7 @@
         <java.version>17</java.version>
         <spotless-maven-plugin.version>2.22.1</spotless-maven-plugin.version>
         <skip.checkstyle.check>true</skip.checkstyle.check>
+        <skipTests>true</skipTests>
         <maven-common-plugin.version>3.1.0</maven-common-plugin.version>
         <maven.compiler.target>17</maven.compiler.target>
         <maven.compiler.source>17</maven.compiler.source>
@@ -74,7 +75,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-common-plugin.version}</version>
                 <configuration>
-                    <skipTests>true</skipTests>
+                    <skipTests>${skipTests}</skipTests>
                 </configuration>
             </plugin>
 
@@ -83,7 +84,7 @@
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>${maven-common-plugin.version}</version>
                 <configuration>
-                    <skipTests>true</skipTests>
+                    <skipTests>${skipTests}</skipTests>
                 </configuration>
             </plugin>
 

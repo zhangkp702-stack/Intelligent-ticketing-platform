@@ -24,6 +24,8 @@ import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.RefundTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.TicketPageQueryReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.OrderOperationPreviewRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
@@ -85,6 +87,14 @@ public interface TicketService extends IService<TicketDO> {
     PayInfoRespDTO getPayInfo(String orderSn);
 
     /**
+     * 预检查当前用户订单是否允许取消。
+     *
+     * @param orderSn 订单号
+     * @return 取消、支付和退票可操作状态
+     */
+    OrderOperationPreviewRespDTO previewCancelTicketOrder(String orderSn);
+
+    /**
      * 取消车票订单
      *
      * @param requestParam 取消车票订单入参
@@ -98,4 +108,12 @@ public interface TicketService extends IService<TicketDO> {
      * @return 退款返回详情
      */
     RefundTicketRespDTO commonTicketRefund(RefundTicketReqDTO requestParam);
+
+    /**
+     * 只读预览当前用户按指定范围退票的车票和金额。
+     *
+     * @param requestParam 退票预览参数
+     * @return 退票预览结果
+     */
+    RefundTicketPreviewRespDTO previewTicketRefund(RefundTicketReqDTO requestParam);
 }

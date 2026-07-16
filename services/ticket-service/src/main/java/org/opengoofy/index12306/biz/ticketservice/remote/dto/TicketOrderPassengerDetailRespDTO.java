@@ -33,6 +33,11 @@ import lombok.NoArgsConstructor;
 public class TicketOrderPassengerDetailRespDTO {
 
     /**
+     * 子订单记录 ID
+     */
+    private String id;
+
+    /**
      * 用户id
      */
     private Long userId;
