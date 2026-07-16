@@ -32,14 +32,14 @@ public class AgentActionController {
     /**
      * 创建智能体操作控制器。
      *
-     * @param purchaseActionService 购票草案与确认服务
+     * @param purchaseActionService 高风险操作草案与确认服务
      */
     public AgentActionController(PurchaseActionService purchaseActionService) {
         this.purchaseActionService = purchaseActionService;
     }
 
     /**
-     * 消费一次性确认令牌并执行已经展示给用户的购票草案。
+     * 消费一次性确认令牌并执行已经展示给用户的购票、取消或退票草案。
      *
      * @param userId 网关注入的用户标识
      * @param username 网关注入的用户名

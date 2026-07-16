@@ -9,6 +9,8 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PassengerView
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.OrderDetailView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedCancellationResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefundResult;
 import org.springaicommunity.mcp.annotation.McpMeta;
 import org.springaicommunity.mcp.annotation.McpTool;
 
@@ -34,7 +36,7 @@ import static org.mockito.Mockito.when;
 class TicketQueryToolsTests {
 
     /**
-     * 验证九个只读工具和一个受保护购票工具都由 MCP 服务提供。
+     * 验证九个只读工具和三个受保护写工具都由 MCP 服务提供。
      */
     @Test
     void registersOnlyExpectedReadOnlyTools() {
@@ -55,7 +57,9 @@ class TicketQueryToolsTests {
                 "preview_order_cancellation",
                 "preview_ticket_refund",
                 "query_pay_status",
-                "execute_confirmed_ticket_purchase");
+                "execute_confirmed_ticket_purchase",
+                "execute_confirmed_order_cancellation",
+                "execute_confirmed_ticket_refund");
     }
 
     /**
@@ -149,5 +153,86 @@ class TicketQueryToolsTests {
                 .hasMessageContaining("confirmed draft");
         verify(businessClient).purchase(
                 "train-100", "北京南", "上海虹桥", passengers, chooseSeats, identity);
+    }
+
+    /**
+     * 验证真实取消工具要求订单状态快照与签名草案完全一致。
+     *
+     * @throws Exception SHA-256 算法不可用时抛出
+     */
+    @Test
+    void confirmedCancellationRequiresMatchingSignedPayload() throws Exception {
+        McpRequestAuthenticator authenticator = mock(McpRequestAuthenticator.class);
+        TicketBusinessClient businessClient = mock(TicketBusinessClient.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        McpMeta meta = new McpMeta(java.util.Map.of());
+
+        // 指纹字段顺序与 Agent 的 CancellationPayload 记录保持一致。
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+        payload.put("orderSn", "order-2001");
+        payload.put("orderStatus", 10);
+        String json = objectMapper.writeValueAsString(payload);
+        String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(json.getBytes(StandardCharsets.UTF_8)));
+        McpCallerIdentity identity = new McpCallerIdentity(
+                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a",
+                "action-2", hash);
+        ConfirmedCancellationResult result = new ConfirmedCancellationResult("order-2001", true);
+        when(authenticator.authenticate(meta)).thenReturn(identity);
+        when(businessClient.cancelOrder("order-2001", identity)).thenReturn(result);
+        TicketQueryTools tools = new TicketQueryTools(authenticator, businessClient, objectMapper);
+
+        // 完整匹配时调用取消接口，订单状态被替换时在业务调用前拒绝。
+        assertThat(tools.executeConfirmedOrderCancellation(
+                "action-2", "order-2001", 10, meta)).isEqualTo(result);
+        assertThatThrownBy(() -> tools.executeConfirmedOrderCancellation(
+                "action-2", "order-2001", 20, meta))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("confirmed draft");
+        verify(businessClient).cancelOrder("order-2001", identity);
+    }
+
+    /**
+     * 验证真实退票工具要求范围和预计金额与签名草案完全一致。
+     *
+     * @throws Exception SHA-256 算法不可用时抛出
+     */
+    @Test
+    void confirmedRefundRequiresMatchingSignedPayload() throws Exception {
+        McpRequestAuthenticator authenticator = mock(McpRequestAuthenticator.class);
+        TicketBusinessClient businessClient = mock(TicketBusinessClient.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+        McpMeta meta = new McpMeta(java.util.Map.of());
+        List<String> itemIds = List.of("item-1");
+
+        // 退款请求 ID 不参与草案指纹，退款范围和金额使用 Agent 记录字段顺序。
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+        payload.put("orderSn", "order-3001");
+        payload.put("type", 0);
+        payload.put("orderItemIds", itemIds);
+        payload.put("expectedRefundAmount", 5000);
+        String json = objectMapper.writeValueAsString(payload);
+        String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(json.getBytes(StandardCharsets.UTF_8)));
+        McpCallerIdentity identity = new McpCallerIdentity(
+                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a",
+                "action-3", hash);
+        ConfirmedRefundResult result = new ConfirmedRefundResult(
+                "refund-1", "order-3001", 0, 5000, 1);
+        when(authenticator.authenticate(meta)).thenReturn(identity);
+        when(businessClient.refundTicket(
+                "refund-1", "order-3001", 0, itemIds, identity)).thenReturn(result);
+        TicketQueryTools tools = new TicketQueryTools(authenticator, businessClient, objectMapper);
+
+        // 完整匹配时执行退款，预计金额变化时在业务调用前拒绝。
+        assertThat(tools.executeConfirmedTicketRefund(
+                "action-3", "refund-1", "order-3001", 0, itemIds, 5000, meta))
+                .isEqualTo(result);
+        assertThatThrownBy(() -> tools.executeConfirmedTicketRefund(
+                "action-3", "refund-1", "order-3001", 0, itemIds, 4500, meta))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("confirmed draft");
+        verify(businessClient).refundTicket(
+                "refund-1", "order-3001", 0, itemIds, identity);
     }
 }

@@ -111,16 +111,18 @@ public final class PurchaseActionModels {
 
     /**
      * @param actionId 草案标识
+     * @param actionType 操作类型
      * @param status 最终或当前状态
-     * @param orderSn 购票成功订单号
-     * @param result 脱敏购票结果
+     * @param orderSn 业务订单号
+     * @param result 脱敏操作结果
      * @param failureCategory 稳定失败分类
      */
     public record ActionStatusView(
             String actionId,
+            String actionType,
             AgentActionStatus status,
             String orderSn,
-            PurchaseExecutionResult result,
+            Object result,
             String failureCategory) {
     }
 

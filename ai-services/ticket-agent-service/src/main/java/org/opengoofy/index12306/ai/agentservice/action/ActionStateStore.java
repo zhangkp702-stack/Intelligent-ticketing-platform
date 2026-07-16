@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -72,6 +73,27 @@ public class ActionStateStore {
             String payloadJson,
             String payloadHash,
             Instant expiresAt) {
+        return createDraft(
+                context, AgentActionType.TICKET_PURCHASE, payloadJson, payloadHash, expiresAt);
+    }
+
+    /**
+     * 在当前运行中轮次内幂等创建指定类型的高风险操作草案。
+     *
+     * @param context 已验证的对话请求上下文
+     * @param actionType 操作类型
+     * @param payloadJson 规范参数 JSON
+     * @param payloadHash 参数指纹
+     * @param expiresAt 确认截止时间
+     * @return 新建或同参数已有草案
+     */
+    @Transactional
+    public ActionDraftEntity createDraft(
+            AgentRequestContext context,
+            AgentActionType actionType,
+            String payloadJson,
+            String payloadHash,
+            Instant expiresAt) {
         // 再次校验会话和轮次归属，避免本地工具上下文被错误组合后写入跨用户草案。
         ConversationEntity conversation = conversationRepository.findById(context.conversationId())
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
@@ -86,19 +108,18 @@ public class ActionStateStore {
             throw new IllegalStateException("只有当前运行中轮次可以创建操作草案");
         }
 
-        // 模型重试同一工具时复用原草案，但拒绝在同一轮次偷偷替换已经展示的购票参数。
-        ActionDraftEntity existing = actionRepository
-                .findByTurnIdAndActionType(context.turnId(), AgentActionType.TICKET_PURCHASE)
-                .orElse(null);
-        if (existing != null) {
-            if (!existing.getPayloadHash().equals(payloadHash)) {
-                throw new IllegalStateException("当前轮次已经生成了不同参数的购票草案");
+        // 一个回答轮次只能产生一个待确认操作，模型重试相同参数时复用原草案。
+        List<ActionDraftEntity> existingActions = actionRepository.findAllByTurnId(context.turnId());
+        if (!existingActions.isEmpty()) {
+            ActionDraftEntity existing = existingActions.get(0);
+            if (existing.getActionType() != actionType || !existing.getPayloadHash().equals(payloadHash)) {
+                throw new IllegalStateException("当前轮次已经生成了不同的操作草案");
             }
             return existing;
         }
-        ActionDraftEntity created = ActionDraftEntity.createPurchase(
+        ActionDraftEntity created = ActionDraftEntity.create(
                 context.userId(), context.conversationId(), context.topicId(), context.turnId(),
-                payloadJson, payloadHash, expiresAt, clock.instant());
+                actionType, payloadJson, payloadHash, expiresAt, clock.instant());
         return actionRepository.save(created);
     }
 
@@ -111,9 +132,8 @@ public class ActionStateStore {
      */
     @Transactional
     public Optional<ActionDraftEntity> findByTurn(String userId, String turnId) {
-        ActionDraftEntity action = actionRepository
-                .findByTurnIdAndActionType(turnId, AgentActionType.TICKET_PURCHASE)
-                .orElse(null);
+        List<ActionDraftEntity> actions = actionRepository.findAllByTurnId(turnId);
+        ActionDraftEntity action = actions.isEmpty() ? null : actions.get(0);
         if (action == null) {
             return Optional.empty();
         }
@@ -173,7 +193,8 @@ public class ActionStateStore {
         executionRepository.save(execution);
         action.startExecution(execution.getId(), now);
         return new ClaimedAction(
-                action.getId(), execution.getId(), requestId, action.getUserId(), action.getConversationId(),
+                action.getId(), execution.getId(), requestId, action.getActionType(),
+                action.getUserId(), action.getConversationId(),
                 action.getTopicId(), action.getTurnId(), action.getPayloadJson(), action.getPayloadHash());
     }
 
@@ -271,6 +292,7 @@ public class ActionStateStore {
      * @param actionId 草案标识
      * @param executionId 执行记录标识
      * @param requestId 确认请求标识
+     * @param actionType 操作类型
      * @param userId 用户标识
      * @param conversationId 会话标识
      * @param topicId 主题标识
@@ -282,6 +304,7 @@ public class ActionStateStore {
             String actionId,
             String executionId,
             String requestId,
+            AgentActionType actionType,
             String userId,
             String conversationId,
             String topicId,

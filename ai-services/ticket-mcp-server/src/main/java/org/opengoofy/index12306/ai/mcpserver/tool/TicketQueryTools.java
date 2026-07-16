@@ -16,6 +16,8 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TicketSearchR
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainStop;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedCancellationResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefundResult;
 import org.springaicommunity.mcp.annotation.McpMeta;
 import org.springaicommunity.mcp.annotation.McpTool;
 import org.springaicommunity.mcp.annotation.McpToolParam;
@@ -412,6 +414,108 @@ public class TicketQueryTools {
     }
 
     /**
+     * 执行已经由 Agent 数据库状态机确认并领取执行权的真实取消订单操作。
+     *
+     * @param actionId 已确认草案标识
+     * @param orderSn 订单号
+     * @param orderStatus 用户确认时的订单状态
+     * @param meta Agent 签名且包含草案和参数指纹的 MCP 元数据
+     * @return 脱敏取消结果
+     */
+    @McpTool(
+            name = "execute_confirmed_order_cancellation",
+            description = "仅供 Agent 确认状态机内部调用的真实取消工具，不允许回答模型直接调用。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "执行已确认取消",
+                    readOnlyHint = false,
+                    destructiveHint = true,
+                    idempotentHint = false,
+                    openWorldHint = false))
+    public ConfirmedCancellationResult executeConfirmedOrderCancellation(
+            @McpToolParam(description = "已消费确认令牌的草案 ID") String actionId,
+            @McpToolParam(description = "当前用户订单号") String orderSn,
+            @McpToolParam(description = "创建草案时的订单状态") Integer orderStatus,
+            McpMeta meta) {
+        requirePattern(actionId, "actionId", TRAIN_ID_PATTERN);
+        requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
+        Assert.notNull(orderStatus, "orderStatus must not be null");
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+
+        // 操作标识和取消快照必须与 Agent 数据库签名证明完全一致。
+        Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
+        CancellationPayloadProof payload = new CancellationPayloadProof(orderSn.trim(), orderStatus);
+        Assert.isTrue(fingerprint(payload).equals(identity.payloadHash()),
+                "cancellation payload does not match confirmed draft");
+
+        // 身份和参数证明通过后才调用一次现有取消接口，业务服务仍会校验实时状态。
+        return businessClient.cancelOrder(payload.orderSn(), identity);
+    }
+
+    /**
+     * 执行已经由 Agent 数据库状态机确认并领取执行权的真实退票操作。
+     *
+     * @param actionId 已确认草案标识
+     * @param requestId 幂等退款请求标识
+     * @param orderSn 订单号
+     * @param type 退款类型
+     * @param orderItemIds 已确认的子订单记录标识
+     * @param expectedRefundAmount 用户确认时的预计退款金额
+     * @param meta Agent 签名且包含草案和参数指纹的 MCP 元数据
+     * @return 不包含第三方交易凭证的退款结果
+     */
+    @McpTool(
+            name = "execute_confirmed_ticket_refund",
+            description = "仅供 Agent 确认状态机内部调用的真实退票工具，不允许回答模型直接调用。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "执行已确认退票",
+                    readOnlyHint = false,
+                    destructiveHint = true,
+                    idempotentHint = false,
+                    openWorldHint = false))
+    public ConfirmedRefundResult executeConfirmedTicketRefund(
+            @McpToolParam(description = "已消费确认令牌的草案 ID") String actionId,
+            @McpToolParam(description = "本次退款幂等请求 ID") String requestId,
+            @McpToolParam(description = "当前用户订单号") String orderSn,
+            @McpToolParam(description = "退款类型：0 部分退款，1 全部退款") Integer type,
+            @McpToolParam(description = "已确认的子订单记录 ID") List<String> orderItemIds,
+            @McpToolParam(description = "用户确认时的预计退款金额") Integer expectedRefundAmount,
+            McpMeta meta) {
+        requirePattern(actionId, "actionId", TRAIN_ID_PATTERN);
+        requireText(requestId, "requestId", 64);
+        requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
+        Assert.notNull(type, "type must not be null");
+        Assert.isTrue(type == 0 || type == 1, "type must be 0 or 1");
+        Assert.notEmpty(orderItemIds, "orderItemIds must not be empty");
+        Assert.isTrue(orderItemIds.size() <= 5, "orderItemIds must not contain more than 5 items");
+        Assert.notNull(expectedRefundAmount, "expectedRefundAmount must not be null");
+        Assert.isTrue(expectedRefundAmount >= 0, "expectedRefundAmount must not be negative");
+
+        // 子订单标识必须唯一且按 Agent 草案规范排序，避免同一范围存在多种指纹表示。
+        Set<String> uniqueIds = new HashSet<>();
+        List<String> normalizedIds = orderItemIds.stream().map(itemId -> {
+            requirePattern(itemId, "orderItemId", TRAIN_ID_PATTERN);
+            String normalized = itemId.trim();
+            Assert.isTrue(uniqueIds.add(normalized), "orderItemId must be unique");
+            return normalized;
+        }).sorted().toList();
+        Assert.isTrue(normalizedIds.equals(orderItemIds), "orderItemIds must use canonical order");
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+
+        // 幂等请求标识不参与草案指纹，其他退款范围和金额必须与确认快照完全一致。
+        Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
+        RefundPayloadProof payload = new RefundPayloadProof(
+                orderSn.trim(), type, normalizedIds, expectedRefundAmount);
+        Assert.isTrue(fingerprint(payload).equals(identity.payloadHash()),
+                "refund payload does not match confirmed draft");
+
+        // 业务服务会再次执行归属、状态、范围和支付退款校验。
+        return businessClient.refundTicket(
+                requestId.trim(), payload.orderSn(), payload.type(), payload.orderItemIds(), identity);
+    }
+
+    /**
      * 校验必填文本的非空和最大长度。
      *
      * @param value 待校验文本
@@ -456,18 +560,18 @@ public class TicketQueryTools {
     }
 
     /**
-     * 计算与 Agent 草案端一致的规范购票参数指纹。
+     * 计算与 Agent 草案端一致的规范参数指纹。
      *
-     * @param payload 规范购票参数
+     * @param payload 规范操作参数
      * @return SHA-256 十六进制指纹
      */
-    private String fingerprint(PurchasePayloadProof payload) {
+    private String fingerprint(Object payload) {
         try {
             // 两端都按同名记录字段序列化，确保确认后任何参数变化都会导致指纹不一致。
             byte[] json = objectMapper.writeValueAsString(payload).getBytes(StandardCharsets.UTF_8);
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json));
         } catch (JsonProcessingException | NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("Unable to verify confirmed purchase payload", ex);
+            throw new IllegalStateException("Unable to verify confirmed action payload", ex);
         }
     }
 
@@ -484,5 +588,25 @@ public class TicketQueryTools {
             String arrival,
             List<ConfirmedPurchasePassenger> passengers,
             List<String> chooseSeats) {
+    }
+
+    /**
+     * @param orderSn 订单号
+     * @param orderStatus 创建草案时的订单状态
+     */
+    private record CancellationPayloadProof(String orderSn, Integer orderStatus) {
+    }
+
+    /**
+     * @param orderSn 订单号
+     * @param type 退款类型
+     * @param orderItemIds 已确认的子订单记录标识
+     * @param expectedRefundAmount 用户确认时的预计退款金额
+     */
+    private record RefundPayloadProof(
+            String orderSn,
+            Integer type,
+            List<String> orderItemIds,
+            Integer expectedRefundAmount) {
     }
 }

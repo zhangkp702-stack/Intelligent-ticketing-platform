@@ -279,6 +279,28 @@ public final class TicketToolResult {
     }
 
     /**
+     * @param orderSn 已提交取消的订单号
+     * @param cancelled 是否已完成取消请求
+     */
+    public record ConfirmedCancellationResult(String orderSn, Boolean cancelled) {
+    }
+
+    /**
+     * @param requestId 幂等退款请求标识
+     * @param orderSn 订单号
+     * @param type 退款类型
+     * @param refundAmount 实际退款金额
+     * @param status 退款状态
+     */
+    public record ConfirmedRefundResult(
+            String requestId,
+            String orderSn,
+            Integer type,
+            Integer refundAmount,
+            Integer status) {
+    }
+
+    /**
      * @param seatType 席别编码
      * @param carriageNumber 车厢号
      * @param seatNumber 座位号

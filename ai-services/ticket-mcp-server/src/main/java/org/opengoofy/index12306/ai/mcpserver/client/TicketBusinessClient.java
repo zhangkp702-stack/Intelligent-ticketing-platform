@@ -17,6 +17,8 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainStop;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainTicket;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedCancellationResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefundResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PurchasedTicketView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundableTicketView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundPreview;
@@ -433,6 +435,66 @@ public class TicketBusinessClient {
     }
 
     /**
+     * 使用已验证身份和已确认参数调用现有取消订单接口。
+     *
+     * @param orderSn 订单号
+     * @param identity 已验证且包含操作证明的调用者身份
+     * @return 脱敏取消结果
+     */
+    public ConfirmedCancellationResult cancelOrder(
+            String orderSn,
+            McpCallerIdentity identity) {
+        // 票务服务会再次校验订单归属和当前可取消状态，再执行座位及订单回滚。
+        JsonNode root = ticketClient.post()
+                .uri("/api/ticket-service/ticket/cancel")
+                .headers(headers -> addIdentity(headers, identity))
+                .body(Map.of("orderSn", orderSn))
+                .retrieve()
+                .body(JsonNode.class);
+        requireSuccess(root);
+        return new ConfirmedCancellationResult(orderSn, true);
+    }
+
+    /**
+     * 使用已验证身份和已确认范围调用现有退票接口。
+     *
+     * @param requestId 幂等退款请求标识
+     * @param orderSn 订单号
+     * @param type 退款类型
+     * @param orderItemIds 选中的子订单记录标识
+     * @param identity 已验证且包含操作证明的调用者身份
+     * @return 不包含第三方交易凭证的退款结果
+     */
+    public ConfirmedRefundResult refundTicket(
+            String requestId,
+            String orderSn,
+            Integer type,
+            List<String> orderItemIds,
+            McpCallerIdentity identity) {
+        // 请求标识复用确认请求 ID，网络结果不确定时客户端不得换标识自动重试。
+        Map<String, Object> request = Map.of(
+                "requestId", requestId,
+                "orderSn", orderSn,
+                "type", type,
+                "subOrderRecordIdReqList", orderItemIds);
+        JsonNode root = ticketClient.post()
+                .uri("/api/ticket-service/ticket/refund")
+                .headers(headers -> addIdentity(headers, identity))
+                .body(request)
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireData(root);
+
+        // 第三方退款交易号不返回 Agent，只保留状态核对需要的稳定字段。
+        return new ConfirmedRefundResult(
+                text(data, "requestId"),
+                text(data, "orderSn"),
+                integer(data, "type"),
+                integer(data, "refundAmount"),
+                integer(data, "status"));
+    }
+
+    /**
      * 将车次 JSON 转换为不包含内部库存实现细节的工具响应。
      *
      * @param train 下游车次节点
@@ -508,16 +570,28 @@ public class TicketBusinessClient {
      * @return 业务数据节点
      */
     private JsonNode requireData(JsonNode root) {
-        // 仅 code=0 视为成功，错误消息做长度限制后转为工具失败。
-        if (root == null || !SUCCESS_CODE.equals(root.path("code").asText())) {
-            String message = root == null ? "empty downstream response" : root.path("message").asText("downstream error");
-            throw new IllegalStateException("Ticket service query failed: " + abbreviate(message, 200));
-        }
+        // 先验证统一响应信封，再要求查询和有结果写操作必须包含 data。
+        requireSuccess(root);
         JsonNode data = root.get("data");
         if (data == null || data.isNull()) {
             throw new IllegalStateException("Ticket service query returned no data");
         }
         return data;
+    }
+
+    /**
+     * 验证旧业务服务统一响应信封是否成功，允许成功响应的 data 为空。
+     *
+     * @param root 完整响应节点
+     */
+    private void requireSuccess(JsonNode root) {
+        // 仅 code=0 视为成功，错误消息做长度限制后转为工具失败。
+        if (root == null || !SUCCESS_CODE.equals(root.path("code").asText())) {
+            String message = root == null
+                    ? "empty downstream response"
+                    : root.path("message").asText("downstream error");
+            throw new IllegalStateException("Ticket service query failed: " + abbreviate(message, 200));
+        }
     }
 
     /**

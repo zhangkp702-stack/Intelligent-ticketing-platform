@@ -55,8 +55,11 @@ public class AgentChatService {
     private static final String PURCHASE_ACTION_PROMPT = """
             当用户明确要求购票且车次、出发站、到达站、乘车人和席别均已确定时，必须调用 prepare_ticket_purchase 生成购票草案。
             prepare_ticket_purchase 只保存草案，不会创建订单；调用后应提示用户核对结构化确认信息并显式确认。
+            当用户明确要求取消未支付订单且已经确定本人订单号时，必须调用 prepare_order_cancellation 生成取消草案。
+            当用户明确要求退票且已经确定本人订单号、全部或部分退票范围时，必须调用 prepare_ticket_refund 生成退票草案。
+            取消或退票前应先查询本人订单详情；部分退票必须使用详情返回的子订单 ID，不得根据姓名猜测。
             不得声称已经购票，不得要求或复述确认令牌，不得尝试调用任何真实购票、退票、取消或支付工具。
-            参数不完整时先提问；不得猜测乘车人、席别、车次或站点。
+            参数不完整时先提问；不得猜测乘车人、席别、车次、站点、订单号或退票范围。
             """;
 
     private static final String SYSTEM_PROMPT = """

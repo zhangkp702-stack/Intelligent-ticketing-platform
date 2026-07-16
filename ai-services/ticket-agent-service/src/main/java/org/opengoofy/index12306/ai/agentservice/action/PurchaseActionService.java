@@ -13,8 +13,9 @@ import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.Purc
 import org.opengoofy.index12306.ai.agentservice.action.config.AgentActionProperties;
 import org.opengoofy.index12306.ai.agentservice.action.domain.ActionDraftEntity;
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
-import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
+import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatException;
+import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -32,7 +33,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 创建购票草案、签发确认视图并在显式确认后执行一次真实购票。
+ * 创建购票草案，并统一签发和执行购票、取消及退票的显式确认操作。
  */
 @Service
 public class PurchaseActionService {
@@ -44,6 +45,8 @@ public class PurchaseActionService {
     private final ActionStateStore stateStore;
     private final ConfirmationTokenService tokenService;
     private final ObjectProvider<ConfirmedPurchaseExecutor> executorProvider;
+    private final ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider;
+    private final TicketOperationActionService ticketOperationActionService;
     private final AgentActionProperties properties;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -54,6 +57,8 @@ public class PurchaseActionService {
      * @param stateStore 操作状态事务服务
      * @param tokenService 确认令牌服务
      * @param executorProvider 专用 MCP 写执行器
+     * @param ticketOperationExecutorProvider 取消和退票专用 MCP 写执行器
+     * @param ticketOperationActionService 取消和退票草案服务
      * @param properties 操作确认配置
      * @param objectMapper JSON 序列化器
      * @param clock 统一时钟
@@ -62,12 +67,16 @@ public class PurchaseActionService {
             ActionStateStore stateStore,
             ConfirmationTokenService tokenService,
             ObjectProvider<ConfirmedPurchaseExecutor> executorProvider,
+            ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider,
+            TicketOperationActionService ticketOperationActionService,
             AgentActionProperties properties,
             ObjectMapper objectMapper,
             Clock clock) {
         this.stateStore = stateStore;
         this.tokenService = tokenService;
         this.executorProvider = executorProvider;
+        this.ticketOperationExecutorProvider = ticketOperationExecutorProvider;
+        this.ticketOperationActionService = ticketOperationActionService;
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -98,7 +107,7 @@ public class PurchaseActionService {
     }
 
     /**
-     * 返回轮次中等待确认的购票草案及服务端签发令牌。
+     * 返回轮次中等待确认的高风险操作草案及服务端签发令牌。
      *
      * @param userId 当前用户标识
      * @param turnId 轮次标识
@@ -111,17 +120,19 @@ public class PurchaseActionService {
         }
 
         // 确认令牌只进入服务端结构化事件，不作为模型工具结果返回。
-        PurchasePayload payload = readPayload(action.getPayloadJson());
+        String actionSummary = action.getActionType() == AgentActionType.TICKET_PURCHASE
+                ? summary(readPayload(action.getPayloadJson()))
+                : ticketOperationActionService.summary(action);
         return Optional.of(new ActionConfirmationView(
-                action.getId(), action.getActionType().name(), action.getStatus(), summary(payload),
+                action.getId(), action.getActionType().name(), action.getStatus(), actionSummary,
                 action.getConfirmationExpiresAt(), tokenService.issue(action)));
     }
 
     /**
-     * 原子消费用户确认并通过专用 MCP 写执行器创建真实订单。
+     * 原子消费用户确认并通过对应专用 MCP 写执行器完成一次真实操作。
      *
      * @param command 包含身份、幂等键和确认令牌的命令
-     * @return 最新操作状态和脱敏购票结果
+     * @return 最新操作状态和脱敏业务结果
      */
     public ActionStatusView confirm(ConfirmPurchaseCommand command) {
         validateConfirmationCommand(command);
@@ -133,12 +144,24 @@ public class PurchaseActionService {
         if (current.getStatus() != AgentActionStatus.AWAITING_CONFIRMATION) {
             throw conflict("ACTION_NOT_CONFIRMABLE", "操作已经确认、终止或正在执行");
         }
-        ConfirmedPurchaseExecutor executor = executorProvider.getIfAvailable();
-        if (executor == null) {
-            throw new AgentChatException(
-                    HttpStatus.SERVICE_UNAVAILABLE,
-                    "WRITE_MCP_UNAVAILABLE",
-                    "购票执行服务暂时不可用，请稍后重新生成草案");
+        ConfirmedPurchaseExecutor purchaseExecutor = null;
+        ConfirmedTicketOperationExecutor ticketOperationExecutor = null;
+        if (current.getActionType() == AgentActionType.TICKET_PURCHASE) {
+            // 购票继续使用只发现真实下单工具的隔离执行器。
+            purchaseExecutor = executorProvider.getIfAvailable();
+            if (purchaseExecutor == null) {
+                throw writeMcpUnavailable("购票执行服务暂时不可用，请稍后重新生成草案");
+            }
+        } else {
+            // 取消和退票在消费令牌前重新预览，避免执行用户未确认的新状态或新金额。
+            AgentRequestContext context = new AgentRequestContext(
+                    command.requestId(), command.userId(), command.username(),
+                    current.getConversationId(), current.getTurnId(), current.getTopicId());
+            ticketOperationActionService.revalidate(current, context);
+            ticketOperationExecutor = ticketOperationExecutorProvider.getIfAvailable();
+            if (ticketOperationExecutor == null) {
+                throw writeMcpUnavailable("订单操作执行服务暂时不可用，请重新生成草案");
+            }
         }
 
         // 短事务先消费确认并创建执行记录，提交后才进行可能耗时的 MCP 网络调用。
@@ -155,28 +178,43 @@ public class PurchaseActionService {
 
         try {
             // 专用执行器不会注册到回答模型，只能接收已经领取执行权的数据库快照。
-            String safeResultJson = executor.execute(claimed, command.username());
-            PurchaseExecutionResult result = readResult(safeResultJson);
-            if (!StringUtils.hasText(result.orderSn())) {
-                throw new IllegalStateException("购票结果缺少订单号");
+            String safeResultJson = claimed.actionType() == AgentActionType.TICKET_PURCHASE
+                    ? purchaseExecutor.execute(claimed, command.username())
+                    : ticketOperationExecutor.execute(claimed, command.username());
+            Object result;
+            String orderSn;
+            if (claimed.actionType() == AgentActionType.TICKET_PURCHASE) {
+                PurchaseExecutionResult purchaseResult = readResult(safeResultJson);
+                result = purchaseResult;
+                orderSn = purchaseResult.orderSn();
+            } else {
+                result = ticketOperationActionService.readResult(claimed.actionType(), safeResultJson);
+                orderSn = ticketOperationActionService.resultReference(claimed.actionType(), result);
+            }
+            if (!StringUtils.hasText(orderSn)) {
+                throw new IllegalStateException("操作结果缺少订单号");
             }
             stateStore.succeed(
-                    claimed.actionId(), safeResultJson, result.orderSn(), fingerprint(safeResultJson));
+                    claimed.actionId(), safeResultJson, orderSn, fingerprint(safeResultJson));
             return new ActionStatusView(
-                    claimed.actionId(), AgentActionStatus.SUCCEEDED, result.orderSn(), result, null);
+                    claimed.actionId(), claimed.actionType().name(),
+                    AgentActionStatus.SUCCEEDED, orderSn, result, null);
         } catch (RuntimeException ex) {
-            // 真实写请求发出后无法证明未成功，因此标记 UNKNOWN 并要求查询订单，绝不自动重试。
+            // 真实写请求发出后无法证明未成功，因此统一标记 UNKNOWN，绝不自动重试。
+            String unknownCategory = claimed.actionType() == AgentActionType.TICKET_PURCHASE
+                    ? "PURCHASE_RESULT_UNKNOWN"
+                    : ticketOperationActionService.unknownCategory(claimed.actionType());
             stateStore.markUnknown(
-                    claimed.actionId(), "PURCHASE_RESULT_UNKNOWN", ex.getClass().getName());
+                    claimed.actionId(), unknownCategory, ex.getClass().getName());
             throw new AgentChatException(
                     HttpStatus.BAD_GATEWAY,
-                    "PURCHASE_RESULT_UNKNOWN",
-                    "购票结果暂时无法确认，请先查询本人订单，切勿重复提交");
+                    unknownCategory,
+                    "操作结果暂时无法确认，请先查询本人订单和支付状态，切勿重复提交");
         }
     }
 
     /**
-     * 查询当前用户购票草案的持久化状态和脱敏结果。
+     * 查询当前用户高风险操作的持久化状态和脱敏结果。
      *
      * @param userId 当前用户标识
      * @param actionId 草案标识
@@ -193,11 +231,31 @@ public class PurchaseActionService {
      * @return 安全状态视图
      */
     private ActionStatusView toStatusView(ActionDraftEntity action) {
-        PurchaseExecutionResult result = StringUtils.hasText(action.getResultJson())
-                ? readResult(action.getResultJson()) : null;
+        Object result = null;
+        if (StringUtils.hasText(action.getResultJson())) {
+            // 按草案类型恢复稳定结果，状态接口不会返回原始 MCP 信封。
+            result = action.getActionType() == AgentActionType.TICKET_PURCHASE
+                    ? readResult(action.getResultJson())
+                    : ticketOperationActionService.readResult(
+                            action.getActionType(), action.getResultJson());
+        }
         return new ActionStatusView(
-                action.getId(), action.getStatus(), action.getResultReference(),
+                action.getId(), action.getActionType().name(),
+                action.getStatus(), action.getResultReference(),
                 result, action.getFailureCategory());
+    }
+
+    /**
+     * 创建写 MCP 服务不可用异常。
+     *
+     * @param message 用户提示
+     * @return HTTP 503 异常
+     */
+    private AgentChatException writeMcpUnavailable(String message) {
+        return new AgentChatException(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "WRITE_MCP_UNAVAILABLE",
+                message);
     }
 
     /**

@@ -74,6 +74,7 @@ public class ActionDraftEntity extends AgentBaseEntity {
             String conversationId,
             String topicId,
             String turnId,
+            AgentActionType actionType,
             String payloadJson,
             String payloadHash,
             Instant confirmationExpiresAt,
@@ -83,7 +84,7 @@ public class ActionDraftEntity extends AgentBaseEntity {
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId");
         this.topicId = Objects.requireNonNull(topicId, "topicId");
         this.turnId = Objects.requireNonNull(turnId, "turnId");
-        this.actionType = AgentActionType.TICKET_PURCHASE;
+        this.actionType = Objects.requireNonNull(actionType, "actionType");
         this.status = AgentActionStatus.AWAITING_CONFIRMATION;
         this.payloadJson = Objects.requireNonNull(payloadJson, "payloadJson");
         this.payloadHash = Objects.requireNonNull(payloadHash, "payloadHash");
@@ -114,7 +115,37 @@ public class ActionDraftEntity extends AgentBaseEntity {
             Instant now) {
         // 创建时仅保存不可执行草案，任何业务订单都尚未产生。
         return new ActionDraftEntity(
-                userId, conversationId, topicId, turnId,
+                userId, conversationId, topicId, turnId, AgentActionType.TICKET_PURCHASE,
+                payloadJson, payloadHash, confirmationExpiresAt, now);
+    }
+
+    /**
+     * 创建等待用户确认的通用高风险操作草案。
+     *
+     * @param userId 用户标识
+     * @param conversationId 会话标识
+     * @param topicId 主题标识
+     * @param turnId 创建草案的轮次标识
+     * @param actionType 操作类型
+     * @param payloadJson 规范化参数 JSON
+     * @param payloadHash 参数指纹
+     * @param confirmationExpiresAt 确认截止时间
+     * @param now 创建时间
+     * @return 新操作草案
+     */
+    public static ActionDraftEntity create(
+            String userId,
+            String conversationId,
+            String topicId,
+            String turnId,
+            AgentActionType actionType,
+            String payloadJson,
+            String payloadHash,
+            Instant confirmationExpiresAt,
+            Instant now) {
+        // 所有高风险操作统一从待确认状态开始，草案创建本身不调用任何业务写接口。
+        return new ActionDraftEntity(
+                userId, conversationId, topicId, turnId, actionType,
                 payloadJson, payloadHash, confirmationExpiresAt, now);
     }
 

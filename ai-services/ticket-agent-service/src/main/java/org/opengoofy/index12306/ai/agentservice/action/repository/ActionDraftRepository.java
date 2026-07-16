@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -23,6 +24,14 @@ public interface ActionDraftRepository extends JpaRepository<ActionDraftEntity, 
      * @return 已有草案
      */
     Optional<ActionDraftEntity> findByTurnIdAndActionType(String turnId, AgentActionType actionType);
+
+    /**
+     * 查询同一轮次已经生成的全部高风险操作草案。
+     *
+     * @param turnId 对话轮次标识
+     * @return 当前轮次草案列表
+     */
+    List<ActionDraftEntity> findAllByTurnId(String turnId);
 
     /**
      * 使用数据库写锁读取草案，保护确认令牌的一次性消费。
