@@ -58,6 +58,9 @@ management:
 
 index12306:
   agent:
+    action:
+      confirmation-secret: ${TICKET_AGENT_CONFIRMATION_SECRET:${TICKET_MCP_INTERNAL_SECRET:}}
+      confirmation-ttl: 5m
     mcp:
       internal-secret: ${TICKET_MCP_INTERNAL_SECRET:}
     memory:

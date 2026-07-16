@@ -11,6 +11,9 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.StationMatch;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TicketSearchResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainStop;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainTicket;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PurchasedTicketView;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -21,9 +24,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
- * 通过现有票务、用户和订单 HTTP 接口读取业务数据，并将响应收敛为 MCP 白名单字段。
+ * 通过现有票务、用户和订单 HTTP 接口访问业务能力，并将响应收敛为 MCP 白名单字段。
  */
 @Component
 public class TicketBusinessClient {
@@ -243,6 +249,61 @@ public class TicketBusinessClient {
                 data.path("size").asLong(boundedSize),
                 data.path("total").asLong(orders.size()),
                 List.copyOf(orders));
+    }
+
+    /**
+     * 使用已验证身份和已确认参数调用现有购票接口，并删除证件号等敏感响应字段。
+     *
+     * @param trainId 车次内部标识
+     * @param departure 出发站名称
+     * @param arrival 到达站名称
+     * @param passengers 乘车人与席别
+     * @param chooseSeats 可选座位偏好
+     * @param identity 已验证且包含操作证明的调用者身份
+     * @return 脱敏购票结果
+     */
+    public ConfirmedPurchaseResult purchase(
+            String trainId,
+            String departure,
+            String arrival,
+            List<ConfirmedPurchasePassenger> passengers,
+            List<String> chooseSeats,
+            McpCallerIdentity identity) {
+        // 购票前读取当前用户乘车人白名单，拒绝模型或客户端拼入其他用户的乘车人标识。
+        Set<String> ownedPassengerIds = listPassengers(identity).stream()
+                .map(PassengerView::passengerId)
+                .collect(Collectors.toSet());
+        if (passengers.stream().anyMatch(passenger -> !ownedPassengerIds.contains(passenger.passengerId()))) {
+            throw new SecurityException("Purchase contains a passenger not owned by current user");
+        }
+
+        // 调用既有购票流程以继续复用库存扣减、订单创建、限流和风控规则。
+        Map<String, Object> request = Map.of(
+                "trainId", trainId,
+                "departure", departure,
+                "arrival", arrival,
+                "passengers", passengers,
+                "chooseSeats", chooseSeats);
+        JsonNode root = ticketClient.post()
+                .uri("/api/ticket-service/ticket/purchase")
+                .headers(headers -> addIdentity(headers, identity))
+                .body(request)
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireData(root);
+
+        // 只保留确认结果展示所需字段，证件类型和证件号不得返回 Agent 或写入操作表。
+        List<PurchasedTicketView> tickets = new ArrayList<>();
+        for (JsonNode detail : iterable(data.path("ticketOrderDetails"))) {
+            tickets.add(new PurchasedTicketView(
+                    integer(detail, "seatType"),
+                    text(detail, "carriageNumber"),
+                    text(detail, "seatNumber"),
+                    text(detail, "realName"),
+                    integer(detail, "ticketType"),
+                    integer(detail, "amount")));
+        }
+        return new ConfirmedPurchaseResult(text(data, "orderSn"), List.copyOf(tickets));
     }
 
     /**

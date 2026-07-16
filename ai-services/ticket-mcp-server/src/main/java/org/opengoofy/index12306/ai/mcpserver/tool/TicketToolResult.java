@@ -3,7 +3,7 @@ package org.opengoofy.index12306.ai.mcpserver.tool;
 import java.util.List;
 
 /**
- * 票务只读 MCP 工具对模型公开的脱敏、限量响应结构。
+ * 票务 MCP 工具使用的脱敏、限量响应结构。
  */
 public final class TicketToolResult {
 
@@ -128,6 +128,37 @@ public final class TicketToolResult {
             String trainNumber,
             String departureTime,
             String arrivalTime,
+            Integer seatType,
+            String carriageNumber,
+            String seatNumber,
+            String realName,
+            Integer ticketType,
+            Integer amount) {
+    }
+
+    /**
+     * @param passengerId 当前用户乘车人标识
+     * @param seatType 席别编码
+     */
+    public record ConfirmedPurchasePassenger(String passengerId, Integer seatType) {
+    }
+
+    /**
+     * @param orderSn 新建订单号
+     * @param tickets 不包含证件号的车票明细
+     */
+    public record ConfirmedPurchaseResult(String orderSn, List<PurchasedTicketView> tickets) {
+    }
+
+    /**
+     * @param seatType 席别编码
+     * @param carriageNumber 车厢号
+     * @param seatNumber 座位号
+     * @param realName 乘车人姓名
+     * @param ticketType 票种
+     * @param amount 金额，单位沿用票务服务定义
+     */
+    public record PurchasedTicketView(
             Integer seatType,
             String carriageNumber,
             String seatNumber,

@@ -1,6 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
 import org.junit.jupiter.api.Test;
+import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
@@ -119,6 +120,7 @@ class AgentChatServiceTests {
         ConversationMemoryService memory = mock(ConversationMemoryService.class);
         TopicRoutingService topicRouting = mock(TopicRoutingService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
+        PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
         when(providers.orderedStream()).thenReturn(Stream.empty());
 
@@ -127,6 +129,7 @@ class AgentChatServiceTests {
                 memory,
                 topicRouting,
                 model,
+                purchaseActionService,
                 new McpToolContextFactory(),
                 providers,
                 Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC));

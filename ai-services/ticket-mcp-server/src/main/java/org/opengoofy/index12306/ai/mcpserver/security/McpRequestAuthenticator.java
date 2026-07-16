@@ -71,6 +71,8 @@ public class McpRequestAuthenticator {
         String conversationId = required(meta, "conversationId");
         String turnId = required(meta, "turnId");
         String topicId = optional(meta, "topicId");
+        String actionId = optional(meta, "actionId");
+        String payloadHash = optional(meta, "payloadHash");
         String timestampText = required(meta, "timestamp");
         String nonce = required(meta, "nonce");
         String signature = required(meta, "signature");
@@ -88,14 +90,16 @@ public class McpRequestAuthenticator {
 
         // 使用恒定时间比较签名，失败时移除随机数以避免无效请求占满缓存。
         String canonical = canonical(
-                requestId, userId, username, conversationId, turnId, topicId, timestampText, nonce);
+                requestId, userId, username, conversationId, turnId, topicId,
+                actionId, payloadHash, timestampText, nonce);
         byte[] expected = sign(canonical);
         byte[] actual = decode(signature);
         if (!MessageDigest.isEqual(expected, actual)) {
             usedNonces.remove(nonce);
             throw new SecurityException("Invalid MCP identity signature");
         }
-        return new McpCallerIdentity(requestId, userId, username, conversationId, turnId, topicId);
+        return new McpCallerIdentity(
+                requestId, userId, username, conversationId, turnId, topicId, actionId, payloadHash);
     }
 
     /**

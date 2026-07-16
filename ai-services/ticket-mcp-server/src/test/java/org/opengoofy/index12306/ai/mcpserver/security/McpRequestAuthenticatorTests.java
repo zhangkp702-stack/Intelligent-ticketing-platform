@@ -94,7 +94,8 @@ class McpRequestAuthenticatorTests {
         // 固定字段顺序必须与 Agent 签名器和 MCP 鉴权器一致。
         String timestampText = Long.toString(timestamp);
         String canonical = String.join("\n",
-                "request-a", userId, "alice", "conversation-a", "turn-a", "topic-a", timestampText, nonce);
+                "request-a", userId, "alice", "conversation-a", "turn-a", "topic-a",
+                "", "", timestampText, nonce);
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
         String signature = Base64.getUrlEncoder().withoutPadding()

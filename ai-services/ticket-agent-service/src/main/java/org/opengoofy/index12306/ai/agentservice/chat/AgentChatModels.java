@@ -1,5 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
+import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionConfirmationView;
+
 /**
  * 对话入口使用的请求、响应和流式事件模型集合。
  */
@@ -64,6 +66,7 @@ public final class AgentChatModels {
      * @param topicId 主题标识
      * @param content 最终助手回答
      * @param reused 是否复用幂等请求的既有回答
+     * @param action 可选的待确认操作视图
      */
     public record ChatResult(
             String requestId,
@@ -71,7 +74,8 @@ public final class AgentChatModels {
             String turnId,
             String topicId,
             String content,
-            boolean reused) {
+            boolean reused,
+            ActionConfirmationView action) {
     }
 
     /**
@@ -80,6 +84,7 @@ public final class AgentChatModels {
     public enum EventType {
         META,
         DELTA,
+        ACTION_REQUIRED,
         DONE,
         ERROR
     }
@@ -97,6 +102,7 @@ public final class AgentChatModels {
      * @param reused 是否复用既有回答
      * @param failureCategory 稳定失败分类
      * @param message 安全的用户提示
+     * @param action 仅在 ACTION_REQUIRED 事件中返回的确认视图
      */
     public record ChatEvent(
             EventType type,
@@ -108,7 +114,8 @@ public final class AgentChatModels {
             String content,
             boolean reused,
             String failureCategory,
-            String message) {
+            String message,
+            ActionConfirmationView action) {
 
         /**
          * 创建开始输出前的元数据事件。
@@ -122,7 +129,7 @@ public final class AgentChatModels {
                 boolean reused) {
             return new ChatEvent(
                     EventType.META, context.requestId(), context.conversationId(), context.turnId(),
-                    context.topicId(), null, null, reused, null, null);
+                    context.topicId(), null, null, reused, null, null, null);
         }
 
         /**
@@ -137,7 +144,23 @@ public final class AgentChatModels {
                 String delta) {
             return new ChatEvent(
                     EventType.DELTA, context.requestId(), context.conversationId(), context.turnId(),
-                    context.topicId(), delta, null, false, null, null);
+                    context.topicId(), delta, null, false, null, null, null);
+        }
+
+        /**
+         * 创建要求用户显式确认高风险操作的结构化事件。
+         *
+         * @param context 当前请求上下文
+         * @param action 待确认操作及一次性令牌
+         * @return 操作确认事件
+         */
+        public static ChatEvent actionRequired(
+                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                ActionConfirmationView action) {
+            // 确认令牌只通过服务端结构化事件返回，不写入模型回答正文。
+            return new ChatEvent(
+                    EventType.ACTION_REQUIRED, context.requestId(), context.conversationId(), context.turnId(),
+                    context.topicId(), null, null, false, null, null, action);
         }
 
         /**
@@ -154,7 +177,7 @@ public final class AgentChatModels {
                 boolean reused) {
             return new ChatEvent(
                     EventType.DONE, context.requestId(), context.conversationId(), context.turnId(),
-                    context.topicId(), null, content, reused, null, null);
+                    context.topicId(), null, content, reused, null, null, null);
         }
 
         /**
@@ -168,7 +191,7 @@ public final class AgentChatModels {
         public static ChatEvent error(ChatCommand command, String category, String safeMessage) {
             return new ChatEvent(
                     EventType.ERROR, command.requestId(), command.conversationId(), null, null,
-                    null, null, false, category, safeMessage);
+                    null, null, false, category, safeMessage, null);
         }
     }
 

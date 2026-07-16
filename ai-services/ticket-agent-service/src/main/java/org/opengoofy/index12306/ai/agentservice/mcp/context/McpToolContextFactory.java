@@ -18,6 +18,8 @@ public class McpToolContextFactory {
     public static final String CONVERSATION_ID = "conversationId";
     public static final String TURN_ID = "turnId";
     public static final String TOPIC_ID = "topicId";
+    public static final String ACTION_ID = "actionId";
+    public static final String PAYLOAD_HASH = "payloadHash";
 
     /**
      * 生成模型不可编辑、随后会被签名的工具上下文属性。
@@ -34,6 +36,25 @@ public class McpToolContextFactory {
         result.put(CONVERSATION_ID, context.conversationId());
         result.put(TURN_ID, context.turnId());
         result.put(TOPIC_ID, valueOrEmpty(context.topicId()));
+        return Map.copyOf(result);
+    }
+
+    /**
+     * 生成仅供确认执行器使用的写操作工具上下文。
+     *
+     * @param context 当前 Agent 请求上下文
+     * @param actionId 已消费确认令牌的草案标识
+     * @param payloadHash 数据库中不可变购票参数指纹
+     * @return 包含写操作证明字段的不可变上下文
+     */
+    public Map<String, Object> createConfirmedAction(
+            AgentRequestContext context,
+            String actionId,
+            String payloadHash) {
+        // 先复用身份字段，再加入只由服务端状态机提供的操作证明关联字段。
+        Map<String, Object> result = new LinkedHashMap<>(create(context));
+        result.put(ACTION_ID, actionId);
+        result.put(PAYLOAD_HASH, payloadHash);
         return Map.copyOf(result);
     }
 

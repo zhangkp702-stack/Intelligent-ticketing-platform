@@ -1,5 +1,7 @@
 package org.opengoofy.index12306.ai.mcpserver.tool;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.opengoofy.index12306.ai.mcpserver.client.TicketBusinessClient;
 import org.opengoofy.index12306.ai.mcpserver.security.McpCallerIdentity;
 import org.opengoofy.index12306.ai.mcpserver.security.McpRequestAuthenticator;
@@ -8,6 +10,8 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PassengerView
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.StationMatch;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TicketSearchResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainStop;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
 import org.springaicommunity.mcp.annotation.McpMeta;
 import org.springaicommunity.mcp.annotation.McpTool;
 import org.springaicommunity.mcp.annotation.McpToolParam;
@@ -16,11 +20,17 @@ import org.springframework.util.Assert;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * 面向购票智能体注册的只读票务 MCP 工具，所有方法先鉴权再访问业务服务。
+ * 面向购票智能体注册的票务 MCP 工具，所有方法先鉴权再访问业务服务。
  */
 @Component
 public class TicketQueryTools {
@@ -31,16 +41,22 @@ public class TicketQueryTools {
 
     private final McpRequestAuthenticator authenticator;
     private final TicketBusinessClient businessClient;
+    private final ObjectMapper objectMapper;
 
     /**
-     * 创建只读票务工具集合。
+     * 创建包含只读查询和受保护购票执行能力的票务工具集合。
      *
      * @param authenticator MCP 身份鉴权器
-     * @param businessClient 票务业务查询客户端
+     * @param businessClient 票务业务客户端
+     * @param objectMapper 参数指纹序列化器
      */
-    public TicketQueryTools(McpRequestAuthenticator authenticator, TicketBusinessClient businessClient) {
+    public TicketQueryTools(
+            McpRequestAuthenticator authenticator,
+            TicketBusinessClient businessClient,
+            ObjectMapper objectMapper) {
         this.authenticator = authenticator;
         this.businessClient = businessClient;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -201,6 +217,71 @@ public class TicketQueryTools {
     }
 
     /**
+     * 执行已经由 Agent 数据库状态机确认并领取执行权的真实购票操作。
+     *
+     * @param actionId 已确认草案标识
+     * @param trainId 车次内部标识
+     * @param departure 出发站名称
+     * @param arrival 到达站名称
+     * @param passengers 当前用户乘车人与席别
+     * @param chooseSeats 可选座位偏好
+     * @param meta Agent 签名且包含草案和参数指纹的 MCP 元数据
+     * @return 不包含证件信息的购票结果
+     */
+    @McpTool(
+            name = "execute_confirmed_ticket_purchase",
+            description = "仅供 Agent 确认状态机内部调用的真实购票工具，不允许回答模型直接调用。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "执行已确认购票",
+                    readOnlyHint = false,
+                    destructiveHint = true,
+                    idempotentHint = false,
+                    openWorldHint = false))
+    public ConfirmedPurchaseResult executeConfirmedPurchase(
+            @McpToolParam(description = "已消费确认令牌的草案 ID") String actionId,
+            @McpToolParam(description = "query_tickets 返回的 trainId") String trainId,
+            @McpToolParam(description = "出发站完整名称") String departure,
+            @McpToolParam(description = "到达站完整名称") String arrival,
+            @McpToolParam(description = "乘车人 ID 与席别编码列表") List<ConfirmedPurchasePassenger> passengers,
+            @McpToolParam(description = "座位偏好列表，没有偏好时为空数组") List<String> chooseSeats,
+            McpMeta meta) {
+        requirePattern(actionId, "actionId", TRAIN_ID_PATTERN);
+        requirePattern(trainId, "trainId", TRAIN_ID_PATTERN);
+        requireText(departure, "departure", MAX_STATION_NAME_LENGTH);
+        requireText(arrival, "arrival", MAX_STATION_NAME_LENGTH);
+        Assert.isTrue(!departure.trim().equals(arrival.trim()), "departure and arrival must differ");
+        Assert.notEmpty(passengers, "passengers must not be empty");
+        Assert.isTrue(passengers.size() <= 5, "passengers must not contain more than 5 items");
+        Assert.notNull(chooseSeats, "chooseSeats must not be null");
+        Assert.isTrue(chooseSeats.size() <= passengers.size(), "chooseSeats contains too many items");
+
+        // 乘车人标识必须唯一且席别位于票务服务公开编码范围。
+        Set<String> passengerIds = new HashSet<>();
+        for (ConfirmedPurchasePassenger passenger : passengers) {
+            Assert.notNull(passenger, "passenger must not be null");
+            requirePattern(passenger.passengerId(), "passengerId", TRAIN_ID_PATTERN);
+            Assert.isTrue(passengerIds.add(passenger.passengerId()), "passengerId must be unique");
+            Assert.notNull(passenger.seatType(), "seatType must not be null");
+            Assert.isTrue(passenger.seatType() >= 0 && passenger.seatType() <= 14,
+                    "seatType must be between 0 and 14");
+        }
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+
+        // 草案标识和参数指纹都在 HMAC 元数据中，工具参数被替换时立即拒绝真实写调用。
+        Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
+        PurchasePayloadProof payload = new PurchasePayloadProof(
+                trainId.trim(), departure.trim(), arrival.trim(), List.copyOf(passengers), List.copyOf(chooseSeats));
+        Assert.isTrue(fingerprint(payload).equals(identity.payloadHash()),
+                "purchase payload does not match confirmed draft");
+
+        // 身份和参数证明全部通过后才调用一次现有购票接口。
+        return businessClient.purchase(
+                payload.trainId(), payload.departure(), payload.arrival(),
+                payload.passengers(), payload.chooseSeats(), identity);
+    }
+
+    /**
      * 校验必填文本的非空和最大长度。
      *
      * @param value 待校验文本
@@ -242,5 +323,36 @@ public class TicketQueryTools {
         } catch (DateTimeParseException ex) {
             throw new IllegalArgumentException("departureDate must use yyyy-MM-dd format", ex);
         }
+    }
+
+    /**
+     * 计算与 Agent 草案端一致的规范购票参数指纹。
+     *
+     * @param payload 规范购票参数
+     * @return SHA-256 十六进制指纹
+     */
+    private String fingerprint(PurchasePayloadProof payload) {
+        try {
+            // 两端都按同名记录字段序列化，确保确认后任何参数变化都会导致指纹不一致。
+            byte[] json = objectMapper.writeValueAsString(payload).getBytes(StandardCharsets.UTF_8);
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json));
+        } catch (JsonProcessingException | NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("Unable to verify confirmed purchase payload", ex);
+        }
+    }
+
+    /**
+     * @param trainId 车次内部标识
+     * @param departure 出发站名称
+     * @param arrival 到达站名称
+     * @param passengers 乘车人与席别
+     * @param chooseSeats 座位偏好
+     */
+    private record PurchasePayloadProof(
+            String trainId,
+            String departure,
+            String arrival,
+            List<ConfirmedPurchasePassenger> passengers,
+            List<String> chooseSeats) {
     }
 }

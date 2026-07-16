@@ -71,12 +71,15 @@ public class SignedMcpMetadataConverter implements ToolContextToMcpMetaConverter
         String conversationId = required(context, McpToolContextFactory.CONVERSATION_ID);
         String turnId = required(context, McpToolContextFactory.TURN_ID);
         String topicId = optional(context, McpToolContextFactory.TOPIC_ID);
+        String actionId = optional(context, McpToolContextFactory.ACTION_ID);
+        String payloadHash = optional(context, McpToolContextFactory.PAYLOAD_HASH);
         String timestamp = Long.toString(clock.millis());
         String nonce = createNonce();
 
         // 签名覆盖全部身份、会话和防重放字段，任一字段被修改都会校验失败。
         String canonical = String.join("\n",
-                requestId, userId, username, conversationId, turnId, topicId, timestamp, nonce);
+                requestId, userId, username, conversationId, turnId, topicId,
+                actionId, payloadHash, timestamp, nonce);
         String signature = Base64.getUrlEncoder().withoutPadding().encodeToString(sign(canonical));
 
         // 返回新映射，避免改写 ChatClient 持有的原始工具上下文。
@@ -87,6 +90,8 @@ public class SignedMcpMetadataConverter implements ToolContextToMcpMetaConverter
         metadata.put(McpToolContextFactory.CONVERSATION_ID, conversationId);
         metadata.put(McpToolContextFactory.TURN_ID, turnId);
         metadata.put(McpToolContextFactory.TOPIC_ID, topicId);
+        metadata.put(McpToolContextFactory.ACTION_ID, actionId);
+        metadata.put(McpToolContextFactory.PAYLOAD_HASH, payloadHash);
         metadata.put("timestamp", timestamp);
         metadata.put("nonce", nonce);
         metadata.put("signature", signature);

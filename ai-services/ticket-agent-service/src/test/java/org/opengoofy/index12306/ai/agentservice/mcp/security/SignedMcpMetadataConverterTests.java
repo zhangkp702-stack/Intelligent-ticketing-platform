@@ -59,6 +59,8 @@ class SignedMcpMetadataConverterTests {
                 "conversation-a",
                 "turn-a",
                 "topic-a",
+                "",
+                "",
                 metadata.get("timestamp").toString(),
                 metadata.get("nonce").toString());
         Mac mac = Mac.getInstance("HmacSHA256");
