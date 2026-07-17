@@ -27,6 +27,7 @@ import {getWeekNumber, getTicketNumber} from '@/utils'
 import {
   fetchTicketSearch,
   fetchStationAll,
+  fetchReachableStations,
   fetchTrainStation
 } from '@/service/index'
 import {SEAT_CLASS_TYPE_LIST, TRAIN_BRAND_LIST, TRAIN_TAG} from '@/constants'
@@ -59,10 +60,12 @@ const state = reactive({
   trainBrandListSelect: null,
   trainList: [],
   stationList: [],
+  reachableStationList: [],
   trainStationList: [],
   loading: false,
   pageLoading: false,
-  searchLoading: false
+  searchLoading: false,
+  reachableStationLoading: false
 })
 
 const rowState = reactive({
@@ -502,6 +505,45 @@ const handlePriceShow = (price) => {
   }
 }
 
+/**
+ * 根据当前出发站加载沿列车行驶方向可直达的目的站。
+ *
+ * @param {string} departureCode 出发站编码
+ * @returns {Promise<void>} 可达站点加载完成后的 Promise
+ */
+const loadReachableStations = async (departureCode) => {
+  state.reachableStationList = []
+  if (!departureCode) {
+    headSearch.toStation = undefined
+    return
+  }
+
+  // 请求后端按车次线路聚合的可达站点，避免目的地下拉框展示无效站点。
+  state.reachableStationLoading = true
+  try {
+    const res = await fetchReachableStations({departureCode})
+    if (!res.success) {
+      headSearch.toStation = undefined
+      message.error(res.message)
+      return
+    }
+    state.reachableStationList = res.data ?? []
+
+    // 出发站变化后，仅保留仍然可以从新起点到达的原目的站。
+    const destinationReachable = state.reachableStationList.some(
+        (item) => item.code === headSearch.toStation
+    )
+    if (!destinationReachable) {
+      headSearch.toStation = undefined
+    }
+  } catch (error) {
+    headSearch.toStation = undefined
+    message.error('可达站点加载失败，请稍后重试')
+  } finally {
+    state.reachableStationLoading = false
+  }
+}
+
 onMounted(() => {
   state.pageLoading = true
   Promise.all([
@@ -510,7 +552,8 @@ onMounted(() => {
       toStation: headSearch.toStation,
       departureDate: dayjs(new Date()).format('YYYY-MM-DD')
     }),
-    fetchStationAll()
+    fetchStationAll(),
+    loadReachableStations(headSearch.fromStation)
   ]).then(([ticketRes, stationRes]) => {
     if (!ticketRes.success) return message.error(ticketRes.message)
     if (ticketRes.data.trainList) {
@@ -533,12 +576,18 @@ onMounted(() => {
   })
 })
 
-const exchangeCity = () => {
+/**
+ * 交换出发站和目的站，并重新校验交换后的目的站是否可达。
+ *
+ * @returns {Promise<void>} 可达站点重新加载完成后的 Promise
+ */
+const exchangeCity = async () => {
   const [a, b] = [toRaw(headSearch.fromStation), toRaw(headSearch.toStation)]
-  console.log(a, b)
-
   headSearch.fromStation = b
   headSearch.toStation = a
+
+  // 交换方向后重新获取新出发站对应的可达目的站。
+  await loadReachableStations(headSearch.fromStation)
 }
 
 const handleTrainClick = (trainId) => {
@@ -591,6 +640,7 @@ const handleBook = (record) => {
                         :style="{ width: '150px' }"
                         :show-arrow="false"
                         :show-search="true"
+                        @change="loadReachableStations"
                         :options="
                       state.stationList.map((item) => ({
                         label: item.name,
@@ -633,8 +683,12 @@ const handleBook = (record) => {
                         :style="{ width: '150px' }"
                         :show-arrow="false"
                         :show-search="true"
+                        :loading="state.reachableStationLoading"
+                        :disabled="
+                          !headSearch.fromStation || state.reachableStationLoading
+                        "
                         :options="
-                      state.stationList.map((item) => ({
+                      state.reachableStationList.map((item) => ({
                         label: item.name,
                         value: item.code
                       }))
@@ -1176,6 +1230,14 @@ const handleBook = (record) => {
                   '--'
                 }}
               </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 0)?.price ??
+                      text?.find((item) => item?.type === 12)?.price
+                  )
+                }}
+              </div>
             </template>
             <template #firstSeat="{ text }">
               <div
@@ -1189,6 +1251,13 @@ const handleBook = (record) => {
                   getTicketNumber(
                       text?.find((item) => item?.type === 1)?.quantity
                   )?.label ?? '--'
+                }}
+              </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 1)?.price
+                  )
                 }}
               </div>
             </template>
@@ -1211,6 +1280,14 @@ const handleBook = (record) => {
                   '--'
                 }}
               </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 2)?.price ??
+                      text?.find((item) => item?.type === 3)?.price
+                  )
+                }}
+              </div>
             </template>
             <template #bed="{ text }">
               <div
@@ -1226,10 +1303,24 @@ const handleBook = (record) => {
                   )?.label ?? '--'
                 }}
               </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 10)?.price
+                  )
+                }}
+              </div>
             </template>
             <template #deluxSoftBed="{ text }">
               <div>
                 {{ text?.find((item) => item?.type === 9)?.quantity ?? '--' }}
+              </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 9)?.price
+                  )
+                }}
               </div>
             </template>
             <template #firstBed="{ text }">
@@ -1249,6 +1340,14 @@ const handleBook = (record) => {
                       text?.find((item) => item?.type === 4)?.quantity
                   )?.label ??
                   '--'
+                }}
+              </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 6)?.price ??
+                      text?.find((item) => item?.type === 4)?.price
+                  )
                 }}
               </div>
             </template>
@@ -1271,6 +1370,14 @@ const handleBook = (record) => {
                   '--'
                 }}
               </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 7)?.price ??
+                      text?.find((item) => item?.type === 5)?.price
+                  )
+                }}
+              </div>
             </template>
             <template #firstSoftSeat="{ text }">
               <div
@@ -1286,6 +1393,13 @@ const handleBook = (record) => {
                   )?.label ?? '--'
                 }}
               </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 11)?.price
+                  )
+                }}
+              </div>
             </template>
             <template #hardSeat="{ text }">
               <div
@@ -1299,6 +1413,13 @@ const handleBook = (record) => {
                   getTicketNumber(
                       text?.find((item) => item?.type === 8)?.quantity
                   )?.label ?? '--'
+                }}
+              </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 8)?.price
+                  )
                 }}
               </div>
             </template>
@@ -1317,6 +1438,13 @@ const handleBook = (record) => {
                   )?.label ?? '--'
                 }}
               </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 13)?.price
+                  )
+                }}
+              </div>
             </template>
             <template #other="{ text }">
               <div
@@ -1331,6 +1459,13 @@ const handleBook = (record) => {
                   getTicketNumber(
                       text?.find((item) => item?.type === 14)?.quantity
                   )?.label ?? '--'
+                }}
+              </div>
+              <div class="seat-price">
+                {{
+                  handlePriceShow(
+                      text?.find((item) => item?.type === 14)?.price
+                  )
                 }}
               </div>
             </template>
@@ -1410,6 +1545,14 @@ const handleBook = (record) => {
   :deep(.ant-spin-dot) {
     font-size: 20px;
   }
+}
+
+.seat-price {
+  margin-top: 2px;
+  color: #fc8302;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .card-container {

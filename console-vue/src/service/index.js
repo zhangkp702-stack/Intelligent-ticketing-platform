@@ -117,6 +117,21 @@ const fetchStationAll = async () => {
   return data
 }
 
+/**
+ * 查询指定出发站沿现有车次线路可以直达的目的站。
+ *
+ * @param {{departureCode: string}} params 出发站编码参数
+ * @returns {Promise<object>} 可达站点接口响应
+ */
+const fetchReachableStations = async (params) => {
+  const { data } = await http({
+    method: 'GET',
+    url: '/api/ticket-service/station/reachable',
+    params
+  })
+  return data
+}
+
 const fechUserInfo = async (params) => {
   const { data } = await http({
     method: 'GET',
@@ -265,6 +280,7 @@ export {
   fetchOrderBySn,
   fetchPay,
   fetchStationAll,
+  fetchReachableStations,
   fechUserInfo,
   fetchTrainStation,
   fetchTicketList,

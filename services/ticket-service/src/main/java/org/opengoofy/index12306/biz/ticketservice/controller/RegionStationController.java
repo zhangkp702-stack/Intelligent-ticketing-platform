@@ -25,6 +25,7 @@ import org.opengoofy.index12306.biz.ticketservice.service.RegionStationService;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.web.Results;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -53,5 +54,17 @@ public class RegionStationController {
     @GetMapping("/api/ticket-service/station/all")
     public Result<List<StationQueryRespDTO>> listAllStation() {
         return Results.success(regionStationService.listAllStation());
+    }
+
+    /**
+     * 根据出发站查询当前列车线路中可直达的目的站。
+     *
+     * @param departureCode 出发站编码
+     * @return 可直达目的站集合
+     */
+    @GetMapping("/api/ticket-service/station/reachable")
+    public Result<List<StationQueryRespDTO>> listReachableStation(
+            @RequestParam("departureCode") String departureCode) {
+        return Results.success(regionStationService.listReachableStation(departureCode));
     }
 }

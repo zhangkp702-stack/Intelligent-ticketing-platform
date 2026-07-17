@@ -43,4 +43,12 @@ public interface RegionStationService {
      * @return 车站返回数据集合
      */
     List<StationQueryRespDTO> listAllStation();
+
+    /**
+     * 根据出发站查询所有可直达的后续站点。
+     *
+     * @param departureCode 出发站编码
+     * @return 可直达站点集合
+     */
+    List<StationQueryRespDTO> listReachableStation(String departureCode);
 }

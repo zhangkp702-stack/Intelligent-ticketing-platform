@@ -26,8 +26,10 @@ import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.RegionStationQueryTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.RegionDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.StationDO;
+import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainStationRelationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.RegionMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.StationMapper;
+import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationRelationMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.RegionStationQueryReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RegionStationQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.StationQueryRespDTO;
@@ -41,8 +43,13 @@ import org.opengoofy.index12306.framework.starter.convention.exception.ClientExc
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.Index12306Constant.ADVANCE_TICKET_DAY;
@@ -60,6 +67,7 @@ public class RegionStationImpl implements RegionStationService {
 
     private final RegionMapper regionMapper;
     private final StationMapper stationMapper;
+    private final TrainStationRelationMapper trainStationRelationMapper;
     private final DistributedCache distributedCache;
     private final RedissonClient redissonClient;
 
@@ -116,6 +124,77 @@ public class RegionStationImpl implements RegionStationService {
                 ADVANCE_TICKET_DAY,
                 TimeUnit.DAYS
         );
+    }
+
+    /**
+     * 根据出发站编码查询所有车次中位于该站之后的可达站点。
+     *
+     * @param departureCode 出发站编码
+     * @return 去重后的可达站点集合
+     */
+    @Override
+    public List<StationQueryRespDTO> listReachableStation(String departureCode) {
+        if (StrUtil.isBlank(departureCode)) {
+            return Collections.emptyList();
+        }
+
+        // 先将前端使用的站点编码转换为车次关系表保存的站点名称。
+        StationDO departureStation = stationMapper.selectOne(
+                Wrappers.lambdaQuery(StationDO.class)
+                        .eq(StationDO::getCode, departureCode)
+        );
+        if (departureStation == null) {
+            return Collections.emptyList();
+        }
+
+        // 城市选项汇总区域内全部车站，具体车站选项则严格按照该站过滤线路。
+        LambdaQueryWrapper<TrainStationRelationDO> reachableStationQuery =
+                Wrappers.lambdaQuery(TrainStationRelationDO.class)
+                        .select(TrainStationRelationDO::getArrival, TrainStationRelationDO::getEndRegion);
+        if (departureCode.equals(departureStation.getRegion())) {
+            reachableStationQuery.eq(TrainStationRelationDO::getStartRegion, departureStation.getRegionName());
+        } else {
+            reachableStationQuery.eq(TrainStationRelationDO::getDeparture, departureStation.getName());
+        }
+
+        // 关系表已按列车行驶方向保存出发站与所有后续站的组合，同时提取具体车站和城市选项。
+        List<TrainStationRelationDO> reachableRelations = trainStationRelationMapper.selectList(
+                reachableStationQuery.groupBy(
+                        TrainStationRelationDO::getArrival,
+                        TrainStationRelationDO::getEndRegion
+                )
+        );
+        if (CollUtil.isEmpty(reachableRelations)) {
+            return Collections.emptyList();
+        }
+        List<String> reachableStationNames = new ArrayList<>();
+        List<String> reachableRegionNames = new ArrayList<>();
+        reachableRelations.forEach(each -> {
+            reachableStationNames.add(each.getArrival());
+            reachableRegionNames.add(each.getEndRegion());
+        });
+
+        // 将具体目的站名称转换回前端下拉框需要的站点编码和展示信息。
+        List<StationDO> reachableStations = stationMapper.selectList(
+                Wrappers.lambdaQuery(StationDO.class)
+                        .in(StationDO::getName, reachableStationNames)
+                        .orderByAsc(StationDO::getName)
+        );
+
+        // 同时保留城市级选项，兼容页面原有的北京、上海等城市查询方式。
+        List<RegionDO> reachableRegions = regionMapper.selectList(
+                Wrappers.lambdaQuery(RegionDO.class)
+                        .in(RegionDO::getName, reachableRegionNames)
+                        .orderByAsc(RegionDO::getName)
+        );
+        Map<String, StationQueryRespDTO> reachableStationMap = new LinkedHashMap<>();
+        BeanUtil.convert(reachableRegions, StationQueryRespDTO.class)
+                .forEach(each -> reachableStationMap.put(each.getCode(), each));
+        BeanUtil.convert(reachableStations, StationQueryRespDTO.class)
+                .forEach(each -> reachableStationMap.putIfAbsent(each.getCode(), each));
+        return reachableStationMap.values().stream()
+                .sorted(Comparator.comparing(StationQueryRespDTO::getName))
+                .toList();
     }
 
     private  List<RegionStationQueryRespDTO> safeGetRegionStation(final String key, CacheLoader<String> loader, String param) {
