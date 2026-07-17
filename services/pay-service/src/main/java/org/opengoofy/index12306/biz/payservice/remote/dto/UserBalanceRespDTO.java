@@ -15,30 +15,18 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto.base;
+package org.opengoofy.index12306.biz.payservice.remote.dto;
 
-import lombok.AllArgsConstructor;
-import lombok.Builder;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
 /**
- * 退款返回
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 用户余额服务响应。
  */
 @Data
-@NoArgsConstructor
-@AllArgsConstructor
-@Builder
-public final class RefundResponse {
+public class UserBalanceRespDTO {
 
     /**
-     * 退款状态
+     * 当前余额，单位为分
      */
-    private Integer status;
-
-    /**
-     * 第三方交易凭证
-     */
-    private String tradeNo;
+    private Long balance;
 }

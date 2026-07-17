@@ -22,6 +22,7 @@ spring:
                 blackPathPre:
                   - /api/user-service/passenger
                   - /api/user-service/query
+                  - /api/user-service/balance
                   - /api/user-service/logout
                   - /api/user-service/deletion
 
@@ -41,6 +42,11 @@ spring:
           uri: lb://index12306-pay${unique-name:}-service/api/pay-service/**
           predicates:
             - Path=/api/pay-service/**
+          filters:
+            - name: TokenValidate
+              args:
+                blackPathPre:
+                  - /api/pay-service
 
         - id: index12306-order-service
           uri: lb://index12306-order${unique-name:}-service/api/order-service/**

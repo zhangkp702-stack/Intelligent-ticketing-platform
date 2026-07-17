@@ -15,46 +15,20 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto.base;
+package org.opengoofy.index12306.biz.payservice.dto;
 
-import lombok.Getter;
-import lombok.Setter;
-import org.opengoofy.index12306.framework.starter.distributedid.toolkit.SnowflakeIdUtil;
+import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
 
 /**
- * 抽象退款入参实体
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 余额支付请求，客户端只需要提交订单号。
  */
-public abstract class AbstractRefundRequest implements RefundRequest {
+@Data
+public class BalancePayReqDTO {
 
     /**
-     * 交易环境，H5、小程序、网站等
+     * 待支付订单号
      */
-    @Getter
-    @Setter
-    private Integer tradeType;
-
-    /**
-     * 订单号
-     */
-    @Getter
-    @Setter
+    @NotBlank
     private String orderSn;
-
-    /**
-     * 支付渠道
-     */
-    @Getter
-    @Setter
-    private Integer channel;
-
-    @Override
-    public AliRefundRequest getAliRefundRequest() {
-        return null;
-    }
-
-    @Override
-    public String buildMark() {
-        return null;
-    }
 }

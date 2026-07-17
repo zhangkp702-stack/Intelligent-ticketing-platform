@@ -17,14 +17,11 @@
 
 package org.opengoofy.index12306.biz.payservice.controller;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.opengoofy.index12306.biz.payservice.convert.PayRequestConvert;
-import org.opengoofy.index12306.biz.payservice.dto.PayCommand;
+import org.opengoofy.index12306.biz.payservice.dto.BalancePayReqDTO;
+import org.opengoofy.index12306.biz.payservice.dto.BalancePayRespDTO;
 import org.opengoofy.index12306.biz.payservice.dto.PayInfoRespDTO;
-import org.opengoofy.index12306.biz.payservice.dto.PayRespDTO;
-import org.opengoofy.index12306.biz.payservice.dto.RefundReqDTO;
-import org.opengoofy.index12306.biz.payservice.dto.RefundRespDTO;
-import org.opengoofy.index12306.biz.payservice.dto.base.PayRequest;
 import org.opengoofy.index12306.biz.payservice.service.PayService;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.web.Results;
@@ -45,14 +42,15 @@ public class PayController {
     private final PayService payService;
 
     /**
-     * 公共支付接口
-     * 对接常用支付方式，比如：支付宝、微信以及银行卡等
+     * 使用当前登录用户的站内余额支付订单。
+     *
+     * @param requestParam 待支付订单号
+     * @return 余额支付结果
      */
     @PostMapping("/api/pay-service/pay/create")
-    public Result<PayRespDTO> pay(@RequestBody PayCommand requestParam) {
-        PayRequest payRequest = PayRequestConvert.command2PayRequest(requestParam);
-        PayRespDTO result = payService.commonPay(payRequest);
-        return Results.success(result);
+    public Result<BalancePayRespDTO> pay(@RequestBody @Valid BalancePayReqDTO requestParam) {
+        // 金额和标题由服务端订单数据生成，客户端不能自行指定支付金额。
+        return Results.success(payService.balancePay(requestParam));
     }
 
     /**
@@ -71,13 +69,4 @@ public class PayController {
         return Results.success(payService.getPayInfoByPaySn(paySn));
     }
 
-    /**
-     * 公共退款接口
-     * 后续为了方便开发系列退款相关接口，已迁移 {@link RefundController#commonRefund(RefundReqDTO)}
-     */
-    @Deprecated
-    @PostMapping("/api/pay-service/refund")
-    public Result<RefundRespDTO> refund(@RequestBody RefundReqDTO requestParam) {
-        return Results.success(payService.commonRefund(requestParam));
-    }
 }

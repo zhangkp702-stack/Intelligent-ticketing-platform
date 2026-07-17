@@ -15,21 +15,34 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto.base;
+package org.opengoofy.index12306.biz.payservice.remote.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.Date;
 
 /**
- * 支付回调请求入参
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 订单余额支付确认参数。
  */
-public interface PayCallbackRequest {
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class BalancePaymentConfirmReqDTO {
 
     /**
-     * 获取阿里支付回调入参
+     * 订单号
      */
-    AliPayCallbackRequest getAliPayCallBackRequest();
+    private String orderSn;
 
     /**
-     * 构建查找支付回调策略实现类标识
+     * 支付渠道
      */
-    String buildMark();
+    private Integer channel;
+
+    /**
+     * 支付时间
+     */
+    private Date payTime;
 }

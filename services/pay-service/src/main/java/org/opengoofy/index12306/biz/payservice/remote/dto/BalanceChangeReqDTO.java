@@ -15,32 +15,27 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto.base;
+package org.opengoofy.index12306.biz.payservice.remote.dto;
 
-import lombok.Getter;
-import lombok.Setter;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
- * 抽象支付回调入参实体
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 支付服务调用用户余额接口的请求。
  */
-public abstract class AbstractPayCallbackRequest implements PayCallbackRequest {
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class BalanceChangeReqDTO {
 
-    @Getter
-    @Setter
-    private String orderSn;
+    /**
+     * 业务幂等号
+     */
+    private String bizNo;
 
-    @Getter
-    @Setter
-    private String orderRequestId;
-
-    @Override
-    public AliPayCallbackRequest getAliPayCallBackRequest() {
-        return null;
-    }
-
-    @Override
-    public String buildMark() {
-        return null;
-    }
+    /**
+     * 变动金额，单位为分
+     */
+    private Long amount;
 }

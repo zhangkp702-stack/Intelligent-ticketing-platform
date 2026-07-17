@@ -28,9 +28,9 @@ import lombok.RequiredArgsConstructor;
 public enum PayChannelEnum {
 
     /**
-     * 支付宝
+     * 站内余额
      */
-    ALI_PAY(0, "ALI_PAY", "支付宝");
+    BALANCE(0, "BALANCE", "站内余额");
 
     @Getter
     private final Integer code;

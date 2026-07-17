@@ -17,12 +17,9 @@
 
 package org.opengoofy.index12306.biz.payservice.service;
 
-import org.opengoofy.index12306.biz.payservice.dto.PayCallbackReqDTO;
+import org.opengoofy.index12306.biz.payservice.dto.BalancePayReqDTO;
+import org.opengoofy.index12306.biz.payservice.dto.BalancePayRespDTO;
 import org.opengoofy.index12306.biz.payservice.dto.PayInfoRespDTO;
-import org.opengoofy.index12306.biz.payservice.dto.PayRespDTO;
-import org.opengoofy.index12306.biz.payservice.dto.RefundReqDTO;
-import org.opengoofy.index12306.biz.payservice.dto.RefundRespDTO;
-import org.opengoofy.index12306.biz.payservice.dto.base.PayRequest;
 
 /**
  * 支付接口层
@@ -31,19 +28,12 @@ import org.opengoofy.index12306.biz.payservice.dto.base.PayRequest;
 public interface PayService {
 
     /**
-     * 创建支付单
+     * 使用当前用户余额支付订单
      *
-     * @param requestParam 创建支付单实体
-     * @return 支付返回详情
+     * @param requestParam 待支付订单
+     * @return 余额支付结果
      */
-    PayRespDTO commonPay(PayRequest requestParam);
-
-    /**
-     * 支付单回调
-     *
-     * @param requestParam 回调支付单实体
-     */
-    void callbackPay(PayCallbackReqDTO requestParam);
+    BalancePayRespDTO balancePay(BalancePayReqDTO requestParam);
 
     /**
      * 跟据订单号查询支付单详情
@@ -61,11 +51,4 @@ public interface PayService {
      */
     PayInfoRespDTO getPayInfoByPaySn(String paySn);
 
-    /**
-     * 公共退款接口
-     *
-     * @param requestParam 退款请求参数
-     * @return 退款返回详情
-     */
-    RefundRespDTO commonRefund(RefundReqDTO requestParam);
 }

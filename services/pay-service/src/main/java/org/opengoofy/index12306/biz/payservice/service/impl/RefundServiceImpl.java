@@ -24,31 +24,27 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.opengoofy.index12306.biz.payservice.common.enums.TradeStatusEnum;
-import org.opengoofy.index12306.biz.payservice.convert.RefundRequestConvert;
 import org.opengoofy.index12306.biz.payservice.dao.entity.PayDO;
 import org.opengoofy.index12306.biz.payservice.dao.entity.RefundDO;
 import org.opengoofy.index12306.biz.payservice.dao.mapper.PayMapper;
 import org.opengoofy.index12306.biz.payservice.dao.mapper.RefundMapper;
-import org.opengoofy.index12306.biz.payservice.dto.RefundCommand;
 import org.opengoofy.index12306.biz.payservice.dto.RefundCreateDTO;
 import org.opengoofy.index12306.biz.payservice.dto.RefundReqDTO;
 import org.opengoofy.index12306.biz.payservice.dto.RefundRespDTO;
-import org.opengoofy.index12306.biz.payservice.dto.base.RefundRequest;
-import org.opengoofy.index12306.biz.payservice.dto.base.RefundResponse;
-import org.opengoofy.index12306.biz.payservice.handler.AliRefundNativeHandler;
 import org.opengoofy.index12306.biz.payservice.mq.event.RefundResultCallbackOrderEvent;
 import org.opengoofy.index12306.biz.payservice.mq.produce.RefundResultCallbackOrderSendProduce;
 import org.opengoofy.index12306.biz.payservice.remote.TicketOrderRemoteService;
+import org.opengoofy.index12306.biz.payservice.remote.UserBalanceRemoteService;
+import org.opengoofy.index12306.biz.payservice.remote.dto.BalanceChangeReqDTO;
 import org.opengoofy.index12306.biz.payservice.remote.dto.TicketOrderDetailRespDTO;
+import org.opengoofy.index12306.biz.payservice.remote.dto.UserBalanceRespDTO;
 import org.opengoofy.index12306.biz.payservice.service.RefundService;
 import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
-import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractStrategyChoose;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.util.Date;
 import java.util.List;
 import java.util.Objects;
@@ -66,11 +62,11 @@ public class RefundServiceImpl implements RefundService {
     private final PayMapper payMapper;
     private final RefundMapper refundMapper;
     private final TicketOrderRemoteService ticketOrderRemoteService;
-    private final AbstractStrategyChoose abstractStrategyChoose;
+    private final UserBalanceRemoteService userBalanceRemoteService;
     private final RefundResultCallbackOrderSendProduce refundResultCallbackOrderSendProduce;
 
     /**
-     * 按退款请求标识幂等执行支付渠道退款并返回可追踪结果。
+     * 按退款请求标识幂等退回站内余额并返回可追踪结果。
      *
      * @param requestParam 退款金额、范围和请求标识
      * @return 已存在或本次创建的退款结果
@@ -82,7 +78,7 @@ public class RefundServiceImpl implements RefundService {
             throw new ServiceException("退款请求标识不能为空");
         }
 
-        // 相同请求已经落库时直接返回原结果，避免再次调用第三方退款渠道。
+        // 相同请求已经落库时直接返回原结果，避免再次增加账户余额。
         List<RefundDO> existingRefunds = findRefunds(requestParam.getRequestId());
         if (!existingRefunds.isEmpty()) {
             return buildRefundResult(requestParam, existingRefunds);
@@ -113,18 +109,17 @@ public class RefundServiceImpl implements RefundService {
         RefundCreateDTO refundCreateDTO = BeanUtil.convert(requestParam, RefundCreateDTO.class);
         refundCreateDTO.setPaySn(payDO.getPaySn());
         createRefund(refundCreateDTO);
-        /**
-         * {@link AliRefundNativeHandler}
-         */
-        // 策略模式：通过策略模式封装退款渠道和退款场景，用户退款时动态选择对应的退款组件
-        RefundCommand refundCommand = BeanUtil.convert(payDO, RefundCommand.class);
-        refundCommand.setPayAmount(new BigDecimal(requestParam.getRefundAmount()));
-        RefundRequest refundRequest = RefundRequestConvert.command2RefundRequest(refundCommand);
-        RefundResponse result = abstractStrategyChoose.chooseAndExecuteResp(refundRequest.buildMark(), refundRequest);
-        if (result == null || result.getStatus() == null) {
-            throw new ServiceException("退款渠道未返回有效结果");
+        // 用户服务按退款请求号幂等入账，本地事务重试不会重复增加余额。
+        Result<UserBalanceRespDTO> creditResult = userBalanceRemoteService.credit(
+                new BalanceChangeReqDTO(
+                        requestParam.getRequestId(),
+                        requestParam.getRefundAmount().longValue()));
+        if (!creditResult.isSuccess() || creditResult.getData() == null) {
+            throw new ServiceException("余额退款失败");
         }
-        payDO.setStatus(result.getStatus());
+        int refundStatus = TradeStatusEnum.TRADE_CLOSED.tradeCode();
+        String refundTradeNo = "BALANCE_REFUND_" + requestParam.getRequestId();
+        payDO.setStatus(refundStatus);
         LambdaUpdateWrapper<PayDO> updateWrapper = Wrappers.lambdaUpdate(PayDO.class)
                 .eq(PayDO::getOrderSn, requestParam.getOrderSn());
         int updateResult = payMapper.update(payDO, updateWrapper);
@@ -135,15 +130,15 @@ public class RefundServiceImpl implements RefundService {
         LambdaUpdateWrapper<RefundDO> refundUpdateWrapper = Wrappers.lambdaUpdate(RefundDO.class)
                 .eq(RefundDO::getRefundRequestId, requestParam.getRequestId());
         RefundDO refundDO = new RefundDO();
-        refundDO.setTradeNo(result.getTradeNo());
-        refundDO.setStatus(result.getStatus());
+        refundDO.setTradeNo(refundTradeNo);
+        refundDO.setStatus(refundStatus);
         int refundUpdateResult = refundMapper.update(refundDO, refundUpdateWrapper);
         if (refundUpdateResult <= 0) {
             log.error("修改退款单退款结果失败，退款单信息：{}", JSON.toJSONString(refundDO));
             throw new ServiceException("修改退款单退款结果失败");
         }
         // 退款成功，回调订单服务告知退款结果，修改订单流转状态
-        if (Objects.equals(result.getStatus(), TradeStatusEnum.TRADE_CLOSED.tradeCode())) {
+        if (Objects.equals(refundStatus, TradeStatusEnum.TRADE_CLOSED.tradeCode())) {
             RefundResultCallbackOrderEvent refundResultCallbackOrderEvent = RefundResultCallbackOrderEvent.builder()
                     .orderSn(requestParam.getOrderSn())
                     .refundTypeEnum(requestParam.getRefundTypeEnum())
@@ -157,8 +152,8 @@ public class RefundServiceImpl implements RefundService {
         response.setRequestId(requestParam.getRequestId());
         response.setOrderSn(requestParam.getOrderSn());
         response.setRefundAmount(requestParam.getRefundAmount());
-        response.setStatus(result.getStatus());
-        response.setTradeNo(result.getTradeNo());
+        response.setStatus(refundStatus);
+        response.setTradeNo(refundTradeNo);
         return response;
     }
 
@@ -169,7 +164,8 @@ public class RefundServiceImpl implements RefundService {
      */
     private void createRefund(RefundCreateDTO requestParam) {
         // 订单详情只用于补齐退款审计字段，支付服务本身不向终端用户暴露该内部接口。
-        Result<TicketOrderDetailRespDTO> queryTicketResult = ticketOrderRemoteService.queryTicketOrderByOrderSn(requestParam.getOrderSn());
+        Result<TicketOrderDetailRespDTO> queryTicketResult =
+                ticketOrderRemoteService.querySelfTicketOrderByOrderSn(requestParam.getOrderSn());
         if (!queryTicketResult.isSuccess() || Objects.isNull(queryTicketResult.getData())) {
             throw new ServiceException("车票订单不存在");
         }

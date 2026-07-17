@@ -17,39 +17,43 @@
 
 package org.opengoofy.index12306.biz.payservice.remote;
 
-import org.opengoofy.index12306.biz.payservice.remote.dto.BalancePaymentConfirmReqDTO;
-import org.opengoofy.index12306.biz.payservice.remote.dto.TicketOrderDetailRespDTO;
+import org.opengoofy.index12306.biz.payservice.remote.dto.BalanceChangeReqDTO;
+import org.opengoofy.index12306.biz.payservice.remote.dto.UserBalanceRespDTO;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestParam;
 
 /**
- * 车票订单远程服务调用
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 用户余额远程服务。
  */
-@FeignClient(value = "index12306-order${unique-name:}-service", url = "${aggregation.remote-url:}")
-public interface TicketOrderRemoteService {
+@FeignClient(value = "index12306-user${unique-name:}-service", url = "${aggregation.remote-url:}")
+public interface UserBalanceRemoteService {
 
     /**
-     * 跟据订单号查询车票订单
+     * 查询当前用户余额。
      *
-     * @param orderSn 列车订单号
-     * @return 列车订单记录
+     * @return 当前余额
      */
-    @GetMapping("/api/order-service/order/ticket/query/self")
-    Result<TicketOrderDetailRespDTO> querySelfTicketOrderByOrderSn(
-            @RequestParam(value = "orderSn") String orderSn);
+    @GetMapping("/api/user-service/balance")
+    Result<UserBalanceRespDTO> queryBalance();
 
     /**
-     * 同步确认当前用户订单已经完成余额支付。
+     * 幂等扣减当前用户余额。
      *
-     * @param requestParam 支付确认参数
-     * @return 确认结果
+     * @param requestParam 支付业务号与金额
+     * @return 扣款后的余额
      */
-    @PostMapping("/internal/order-service/order/ticket/balance-pay/confirm")
-    Result<Boolean> confirmBalancePayment(
-            @RequestBody BalancePaymentConfirmReqDTO requestParam);
+    @PostMapping("/internal/user-service/balance/debit")
+    Result<UserBalanceRespDTO> debit(@RequestBody BalanceChangeReqDTO requestParam);
+
+    /**
+     * 幂等退回当前用户余额。
+     *
+     * @param requestParam 退款业务号与金额
+     * @return 退款后的余额
+     */
+    @PostMapping("/internal/user-service/balance/credit")
+    Result<UserBalanceRespDTO> credit(@RequestBody BalanceChangeReqDTO requestParam);
 }

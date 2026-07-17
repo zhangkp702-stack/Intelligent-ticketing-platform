@@ -15,28 +15,40 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.payservice.dto.base;
+package org.opengoofy.index12306.biz.payservice.dto;
 
-import java.math.BigDecimal;
+import lombok.Builder;
+import lombok.Data;
 
 /**
- * 退款入参接口
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 余额支付结果。
  */
-public interface RefundRequest {
+@Data
+@Builder
+public class BalancePayRespDTO {
 
     /**
-     * 获取阿里退款入参
+     * 订单号
      */
-    AliRefundRequest getAliRefundRequest();
+    private String orderSn;
 
     /**
-     * 获取订单号
+     * 支付流水号
      */
-    String getOrderSn();
+    private String paySn;
 
     /**
-     * 构建查找支付策略实现类标识
+     * 实付金额，单位为分
      */
-    String buildMark();
+    private Integer amount;
+
+    /**
+     * 支付后账户余额，单位为分
+     */
+    private Long balance;
+
+    /**
+     * 支付状态
+     */
+    private Integer status;
 }
