@@ -93,6 +93,10 @@ public class ModelAttemptRecorder {
                         "outcome", event.outcome().name())
                 .register(meterRegistry)
                 .record(Duration.ofMillis(event.durationMillis()));
+        LOGGER.info(
+                "Agent模型调用完成，role={}, provider={}, candidate={}, outcome={}, category={}, durationMs={}",
+                event.role(), event.providerId(), event.candidateId(), event.outcome(), category,
+                event.durationMillis());
 
         // 仅在内存中保存固定数量的最近事件，阶段 3 再替换为持久化审计表。
         synchronized (recentEvents) {

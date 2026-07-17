@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.mcp.audit;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.mcp.audit.ToolCallAuditService.ToolCallAuditEvent;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,6 +21,9 @@ class ToolCallAuditPersistenceTests {
 
     @Autowired
     private ToolCallRepository repository;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     /**
      * 验证工具名称、关联上下文、指纹、计数和耗时可以持久化。
@@ -49,5 +53,13 @@ class ToolCallAuditPersistenceTests {
         assertThat(persisted.getInvocationNo()).isEqualTo(1);
         assertThat(persisted.getResponseItemCount()).isEqualTo(3);
         assertThat(persisted.getRequestFingerprint()).hasSize(64);
+
+        // 指标只按有限工具名和结果分类记录，不包含请求标识或工具参数。
+        assertThat(meterRegistry.get("agent.tool.calls")
+                .tags("tool", "query_tickets", "outcome", "SUCCESS", "category", "NONE")
+                .counter().count()).isEqualTo(1);
+        assertThat(meterRegistry.get("agent.tool.call.duration")
+                .tags("tool", "query_tickets", "outcome", "SUCCESS")
+                .timer().totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(38);
     }
 }

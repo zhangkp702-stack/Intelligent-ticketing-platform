@@ -20,6 +20,8 @@ import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
 import org.opengoofy.index12306.ai.agentservice.model.routing.ModelRoutingException;
 import org.opengoofy.index12306.ai.agentservice.model.routing.RoutedChatModelService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -47,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -56,6 +59,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Service
 public class AgentChatService {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(AgentChatService.class);
     private static final int MAX_MESSAGE_LENGTH = 4000;
     private static final int MAX_TITLE_LENGTH = 200;
     private static final String PURCHASE_ACTION_PROMPT = """
@@ -85,6 +89,7 @@ public class AgentChatService {
     private final ObjectProvider<ToolCallbackProvider> toolCallbackProviders;
     private final Clock clock;
     private final AgentChatProperties chatProperties;
+    private final AgentChatMetrics chatMetrics;
     private final ConcurrentMap<String, Sinks.One<Void>> activeTurnCancels = new ConcurrentHashMap<>();
 
     /**
@@ -98,6 +103,7 @@ public class AgentChatService {
      * @param toolCallbackProviders 已启用的安全工具提供器
      * @param clock 统一时钟
      * @param chatProperties 在线对话超时配置
+     * @param chatMetrics 在线对话首事件、首个文本增量和总耗时指标
      */
     public AgentChatService(
             ConversationMemoryService conversationMemoryService,
@@ -107,7 +113,8 @@ public class AgentChatService {
             McpToolContextFactory mcpToolContextFactory,
             ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
             Clock clock,
-            AgentChatProperties chatProperties) {
+            AgentChatProperties chatProperties,
+            AgentChatMetrics chatMetrics) {
         this.conversationMemoryService = conversationMemoryService;
         this.topicRoutingService = topicRoutingService;
         this.routedChatModelService = routedChatModelService;
@@ -116,6 +123,7 @@ public class AgentChatService {
         this.toolCallbackProviders = toolCallbackProviders;
         this.clock = clock;
         this.chatProperties = chatProperties;
+        this.chatMetrics = chatMetrics;
     }
 
     /**
@@ -146,8 +154,32 @@ public class AgentChatService {
     public Flux<ChatEvent> stream(ChatCommand command) {
         validateCommand(command);
 
-        // 为当前请求登记独立取消信号，使显式取消不依赖浏览器断开是否已传递到网关。
-        return Flux.defer(() -> streamWithCancellation(command));
+        // 日志和指标都从订阅时刻开始，覆盖路由、模型、工具和最终持久化的完整在线链路。
+        return chatMetrics.observe(Flux.defer(() -> {
+            long startedNanos = System.nanoTime();
+            LOGGER.info("Agent对话开始，requestId={}, conversationId={}",
+                    command.requestId(), command.conversationId());
+            return streamWithCancellation(command)
+                    .doOnNext(event -> {
+                        if (event.type() == AgentChatModels.EventType.META) {
+                            LOGGER.info("Agent主题路由完成，requestId={}, turnId={}, topicId={}, reused={}",
+                                    event.requestId(), event.turnId(), event.topicId(), event.reused());
+                        } else if (event.type() == AgentChatModels.EventType.DONE) {
+                            LOGGER.info("Agent对话完成，requestId={}, turnId={}, contentLength={}, durationMs={}",
+                                    event.requestId(), event.turnId(),
+                                    event.content() == null ? 0 : event.content().length(),
+                                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+                        }
+                    })
+                    .doOnError(exception -> LOGGER.warn(
+                            "Agent对话失败，requestId={}, conversationId={}, exceptionType={}, durationMs={}",
+                            command.requestId(), command.conversationId(), exception.getClass().getSimpleName(),
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)))
+                    .doOnCancel(() -> LOGGER.info(
+                            "Agent对话订阅已取消，requestId={}, conversationId={}, durationMs={}",
+                            command.requestId(), command.conversationId(),
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)));
+        }));
     }
 
     /**
@@ -173,7 +205,10 @@ public class AgentChatService {
             // 该信号会向 Reactor 上游传播取消，从而中断模型流和可取消的工具调用。
             cancellation.tryEmitEmpty();
         }
-        return turnCancelled || cancellation != null;
+        boolean cancelled = turnCancelled || cancellation != null;
+        LOGGER.info("Agent收到取消请求，requestId={}, conversationId={}, cancelled={}",
+                request.requestId().trim(), request.conversationId().trim(), cancelled);
+        return cancelled;
     }
 
     /**

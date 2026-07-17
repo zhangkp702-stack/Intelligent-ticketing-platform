@@ -18,6 +18,8 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurc
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedCancellationResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefundResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springaicommunity.mcp.annotation.McpMeta;
 import org.springaicommunity.mcp.annotation.McpTool;
 import org.springaicommunity.mcp.annotation.McpToolParam;
@@ -41,6 +43,7 @@ import java.util.regex.Pattern;
 @Component
 public class TicketQueryTools {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(TicketQueryTools.class);
     private static final Pattern STATION_CODE_PATTERN = Pattern.compile("[A-Za-z0-9]{2,16}");
     private static final Pattern TRAIN_ID_PATTERN = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final int MAX_STATION_NAME_LENGTH = 50;
@@ -88,6 +91,7 @@ public class TicketQueryTools {
         // 先校验模型可控输入，再验证模型不可见的签名身份。
         requireText(keyword, "keyword", MAX_STATION_NAME_LENGTH);
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("resolve_station", "resolveStation", identity);
 
         // 站点解析结果由票务服务提供，工具层只负责边界校验和安全转发。
         return businessClient.resolveStation(keyword.trim(), identity);
@@ -128,6 +132,7 @@ public class TicketQueryTools {
         requireText(arrival, "arrival", MAX_STATION_NAME_LENGTH);
         LocalDate parsedDate = parseDate(departureDate);
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("query_tickets", "queryTickets", identity);
 
         // 通过已验证身份调用既有余票接口并返回服务端限量结果。
         return businessClient.queryTickets(
@@ -162,6 +167,7 @@ public class TicketQueryTools {
         // 列车标识仅允许稳定字符集，身份仍由签名元数据提供。
         requirePattern(trainId, "trainId", TRAIN_ID_PATTERN);
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("query_train_stops", "queryTrainStops", identity);
 
         // 经停查询只读取列车运行数据，不触发库存或订单操作。
         return businessClient.queryTrainStops(trainId.trim(), identity);
@@ -186,6 +192,7 @@ public class TicketQueryTools {
     public List<PassengerView> listMyPassengers(McpMeta meta) {
         // 用户身份不接受模型参数，只从经过 HMAC 校验的 MCP 元数据中取得。
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("list_my_passengers", "listMyPassengers", identity);
 
         // 下游响应经过字段白名单转换，不返回 actualIdCard 或 actualPhone。
         return businessClient.listPassengers(identity);
@@ -217,6 +224,7 @@ public class TicketQueryTools {
         Assert.isTrue(current >= 1, "current must be greater than or equal to 1");
         Assert.isTrue(size >= 1 && size <= 20, "size must be between 1 and 20");
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("list_my_orders", "listMyOrders", identity);
 
         // 订单服务根据已验证用户请求头限定数据归属。
         return businessClient.listOrders(current, size, identity);
@@ -244,6 +252,7 @@ public class TicketQueryTools {
             McpMeta meta) {
         requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("get_my_order_detail", "getMyOrderDetail", identity);
 
         // 订单详情接口在订单服务端再次验证归属，工具层不接受用户标识参数。
         return businessClient.getOrderDetail(orderSn.trim(), identity);
@@ -271,6 +280,7 @@ public class TicketQueryTools {
             McpMeta meta) {
         requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("preview_order_cancellation", "previewOrderCancellation", identity);
 
         // 预检查结果由持久化订单状态计算，模型不能自行判断是否允许取消。
         return businessClient.previewCancellation(orderSn.trim(), identity);
@@ -316,6 +326,7 @@ public class TicketQueryTools {
             Assert.isTrue(uniqueIds.add(orderItemId), "orderItemId must be unique");
         }
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("preview_ticket_refund", "previewTicketRefund", identity);
 
         // 票务服务会复用真实退款前的选票和金额逻辑，但该工具不会调用支付服务。
         return businessClient.previewRefund(orderSn.trim(), type, normalizedIds, identity);
@@ -343,6 +354,7 @@ public class TicketQueryTools {
             McpMeta meta) {
         requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("query_pay_status", "queryPayStatus", identity);
 
         // 支付状态查询前由票务服务验证订单归属，避免订单号越权探测。
         return businessClient.queryPaymentStatus(orderSn.trim(), identity);
@@ -399,6 +411,7 @@ public class TicketQueryTools {
                     "seatType must be between 0 and 14");
         }
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("execute_confirmed_ticket_purchase", "executeConfirmedPurchase", identity);
 
         // 草案标识和参数指纹都在 HMAC 元数据中，工具参数被替换时立即拒绝真实写调用。
         Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
@@ -441,6 +454,8 @@ public class TicketQueryTools {
         requirePattern(orderSn, "orderSn", TRAIN_ID_PATTERN);
         Assert.notNull(orderStatus, "orderStatus must not be null");
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation(
+                "execute_confirmed_order_cancellation", "executeConfirmedOrderCancellation", identity);
 
         // 操作标识和取消快照必须与 Agent 数据库签名证明完全一致。
         Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
@@ -502,6 +517,7 @@ public class TicketQueryTools {
         }).sorted().toList();
         Assert.isTrue(normalizedIds.equals(orderItemIds), "orderItemIds must use canonical order");
         McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("execute_confirmed_ticket_refund", "executeConfirmedTicketRefund", identity);
 
         // 幂等请求标识不参与草案指纹，其他退款范围和金额必须与确认快照完全一致。
         Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
@@ -513,6 +529,20 @@ public class TicketQueryTools {
         // 业务服务会再次执行归属、状态、范围和支付退款校验。
         return businessClient.refundTicket(
                 requestId.trim(), payload.orderSn(), payload.type(), payload.orderItemIds(), identity);
+    }
+
+    /**
+     * 记录已经通过身份鉴权并实际进入的 MCP 工具方法，不输出模型参数或用户敏感字段。
+     *
+     * @param toolName MCP 协议工具名
+     * @param methodName Java 方法名
+     * @param identity 已验证的 Agent 调用身份
+     */
+    private void logInvocation(String toolName, String methodName, McpCallerIdentity identity) {
+        // 请求、会话和轮次标识用于跨 Agent 与 MCP 服务关联同一次调用。
+        LOGGER.info(
+                "MCP工具方法已进入，tool={}, method=TicketQueryTools.{}, requestId={}, conversationId={}, turnId={}",
+                toolName, methodName, identity.requestId(), identity.conversationId(), identity.turnId());
     }
 
     /**

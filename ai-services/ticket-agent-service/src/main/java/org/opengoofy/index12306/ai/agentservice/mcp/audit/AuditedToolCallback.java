@@ -90,13 +90,25 @@ public class AuditedToolCallback implements ToolCallback {
     @Override
     public String call(String toolInput, ToolContext toolContext) {
         long started = System.nanoTime();
+        Map<String, Object> context = toolContext == null ? Map.of() : toolContext.getContext();
+        String toolName = getToolDefinition().name();
+        String requestId = text(context, McpToolContextFactory.REQUEST_ID);
+        String turnId = text(context, McpToolContextFactory.TURN_ID);
+        LOGGER.info("Agent开始调用MCP工具，tool={}, requestId={}, turnId={}", toolName, requestId, turnId);
         try {
             // 原始回调会将工具上下文转换为签名 MCP 元数据并调用远端工具。
             String result = delegate.call(toolInput, toolContext);
-            record(toolInput, toolContext, ToolCallOutcome.SUCCESS, started, null, countItems(result), null);
+            Integer responseItemCount = countItems(result);
+            LOGGER.info("Agent调用MCP工具成功，tool={}, requestId={}, turnId={}, durationMs={}, itemCount={}",
+                    toolName, requestId, turnId,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), responseItemCount);
+            record(toolInput, toolContext, ToolCallOutcome.SUCCESS, started, null, responseItemCount, null);
             return result;
         } catch (RuntimeException ex) {
             // 失败审计只保留异常类型和粗粒度类别，不保存可能含敏感信息的异常正文。
+            LOGGER.warn("Agent调用MCP工具失败，tool={}, requestId={}, turnId={}, durationMs={}, exceptionType={}",
+                    toolName, requestId, turnId,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), ex.getClass().getSimpleName());
             record(toolInput, toolContext, ToolCallOutcome.FAILURE, started, classify(ex), null,
                     ex.getClass().getName());
             throw ex;

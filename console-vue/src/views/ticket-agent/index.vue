@@ -379,7 +379,6 @@ const selectConversation = async (conversationId, force = false) => {
     } else {
       message.warning('会话消息已恢复，但操作状态加载失败')
     }
-    await scrollToBottom()
   } catch (error) {
     if (
       loadGeneration === conversationLoadGeneration &&
@@ -391,6 +390,8 @@ const selectConversation = async (conversationId, force = false) => {
   } finally {
     if (loadGeneration === conversationLoadGeneration) {
       state.loadingHistory = false
+      // 先让真实消息替换加载动画，再定位到当前会话的最新消息。
+      await scrollToBottom()
     }
   }
 }
@@ -510,7 +511,9 @@ const sendMessage = async (content) => {
   if (state.streaming || state.loadingHistory || !content?.trim()) {
     return
   }
+  const requestStartedAt = Date.now()
   let assistantMessage
+  let elapsedTimer
   let requestGeneration
   let conversationId
   try {
@@ -527,9 +530,18 @@ const sendMessage = async (content) => {
       role: 'ASSISTANT',
       content: '',
       pending: true,
+      elapsedSeconds: 0,
       requestId
     }
     state.messages.push(userMessage, assistantMessage)
+    // 后续流式增量必须写入 Vue 代理对象，直接修改入列前的原始对象不会触发页面重绘。
+    assistantMessage = state.messages[state.messages.length - 1]
+    // 按实际经过时间刷新等待秒数，浏览器后台降频后也不会因定时器次数而产生累计误差。
+    elapsedTimer = window.setInterval(() => {
+      assistantMessage.elapsedSeconds = Math.floor(
+        (Date.now() - requestStartedAt) / 1000
+      )
+    }, 1000)
     state.streaming = true
     await scrollToBottom()
 
@@ -576,6 +588,13 @@ const sendMessage = async (content) => {
       }
     }
   } finally {
+    window.clearInterval(elapsedTimer)
+    if (assistantMessage) {
+      // 流结束时再按真实时间校准一次，并保留最终耗时供用户查看。
+      assistantMessage.elapsedSeconds = Math.floor(
+        (Date.now() - requestStartedAt) / 1000
+      )
+    }
     if (
       requestGeneration === streamGeneration &&
       state.conversationId === conversationId

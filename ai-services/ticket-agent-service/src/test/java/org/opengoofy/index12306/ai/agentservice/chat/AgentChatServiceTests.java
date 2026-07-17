@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
@@ -82,6 +83,16 @@ class AgentChatServiceTests {
                 })
                 .verifyComplete();
         verify(test.memory()).completeTurn(any());
+
+        // 成功请求应分别记录首事件、首个文本增量和整轮完成耗时。
+        org.assertj.core.api.Assertions.assertThat(test.meterRegistry()
+                .get("agent.chat.time.to.first.event").timer().count()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(test.meterRegistry()
+                .get("agent.chat.time.to.first.token").timer().count()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(test.meterRegistry()
+                .get("agent.chat.requests")
+                .tags("outcome", "SUCCESS", "reused", "false")
+                .counter().count()).isEqualTo(1);
     }
 
     /**
@@ -171,6 +182,7 @@ class AgentChatServiceTests {
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
         when(providers.orderedStream()).thenReturn(Stream.empty());
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
         // 使用固定时钟保证系统提示中的当前日期不会造成测试波动。
         AgentChatService service = new AgentChatService(
@@ -181,8 +193,9 @@ class AgentChatServiceTests {
                 new McpToolContextFactory(),
                 providers,
                 Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC),
-                new AgentChatProperties(responseTimeout));
-        return new TestContext(service, memory, topicRouting, model);
+                new AgentChatProperties(responseTimeout),
+                new AgentChatMetrics(meterRegistry));
+        return new TestContext(service, memory, topicRouting, model, meterRegistry);
     }
 
     /**
@@ -217,11 +230,13 @@ class AgentChatServiceTests {
      * @param memory 会话记忆服务替身
      * @param topicRouting 主题路由服务替身
      * @param model 回答模型服务替身
+     * @param meterRegistry 测试专用指标注册表
      */
     private record TestContext(
             AgentChatService service,
             ConversationMemoryService memory,
             TopicRoutingService topicRouting,
-            RoutedChatModelService model) {
+            RoutedChatModelService model,
+            SimpleMeterRegistry meterRegistry) {
     }
 }

@@ -21,6 +21,20 @@
         </span>
         <span v-else>未返回有效内容</span>
       </div>
+      <div
+        v-if="
+          message.role === 'ASSISTANT' &&
+          typeof message.elapsedSeconds === 'number'
+        "
+        class="message-duration"
+      >
+        <LoadingOutlined v-if="message.pending" spin />
+        <span v-if="message.pending">
+          {{ message.content ? '正在生成' : '正在思考' }}，已等待
+          {{ message.elapsedSeconds }} 秒
+        </span>
+        <span v-else>本次耗时 {{ message.elapsedSeconds }} 秒</span>
+      </div>
       <Alert
         v-if="message.error && message.content"
         class="message-error"
@@ -118,6 +132,15 @@ defineProps({
 
 .error-text {
   color: #cf1322;
+}
+
+.message-duration {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+  color: #8f9598;
+  font-size: 12px;
 }
 
 .message-error {
