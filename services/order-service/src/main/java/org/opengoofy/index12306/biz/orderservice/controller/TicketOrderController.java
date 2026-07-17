@@ -18,6 +18,7 @@
 package org.opengoofy.index12306.biz.orderservice.controller;
 
 import lombok.RequiredArgsConstructor;
+import org.opengoofy.index12306.biz.orderservice.dto.req.BalancePaymentConfirmReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.CancelTicketOrderReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderCreateReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderItemQueryReqDTO;
@@ -31,6 +32,7 @@ import org.opengoofy.index12306.biz.orderservice.service.OrderService;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.web.Results;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -69,6 +71,19 @@ public class TicketOrderController {
             @RequestParam(value = "orderSn") String orderSn) {
         // 用户可见的订单详情必须经过服务层归属校验，不能复用内部无身份查询接口。
         return Results.success(orderService.querySelfTicketOrderByOrderSn(orderSn));
+    }
+
+    /**
+     * 幂等确认当前用户订单已经完成站内余额支付。
+     *
+     * @param requestParam 订单号、支付渠道和支付时间
+     * @return 首次确认或重复确认均返回 true
+     */
+    @PostMapping("/internal/order-service/order/ticket/balance-pay/confirm")
+    public Result<Boolean> confirmBalancePayment(
+            @RequestBody @Valid BalancePaymentConfirmReqDTO requestParam) {
+        // 支付服务扣款成功后同步确认订单，避免依赖支付回调消息。
+        return Results.success(orderService.confirmBalancePayment(requestParam));
     }
 
     /**

@@ -38,6 +38,7 @@ import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderItemPassengerDO
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderItemMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderMapper;
 import org.opengoofy.index12306.biz.orderservice.dto.domain.OrderStatusReversalDTO;
+import org.opengoofy.index12306.biz.orderservice.dto.req.BalancePaymentConfirmReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.CancelTicketOrderReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderCreateReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderItemCreateReqDTO;
@@ -117,6 +118,53 @@ public class OrderServiceImpl implements OrderService {
         OrderDO orderDO = requireOrder(orderSn);
         verifyOrderOwner(orderDO);
         return buildOrderDetail(orderDO);
+    }
+
+    /**
+     * 幂等确认当前用户订单已经完成站内余额支付。
+     *
+     * @param requestParam 订单号、支付渠道和支付时间
+     * @return 首次确认或重复确认均返回 true
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean confirmBalancePayment(BalancePaymentConfirmReqDTO requestParam) {
+        // 订单服务再次校验订单归属，内部确认接口不能只依赖支付服务传入的订单号。
+        OrderDO orderDO = requireOrder(requestParam.getOrderSn());
+        verifyOrderOwner(orderDO);
+        if (Objects.equals(orderDO.getStatus(), OrderStatusEnum.ALREADY_PAID.getStatus())) {
+            return true;
+        }
+        if (!Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus())) {
+            throw new ClientException("当前订单状态不允许确认支付");
+        }
+
+        // 仅允许待支付订单原子变更为已支付，避免取消和支付并发覆盖状态。
+        OrderDO updateOrder = new OrderDO();
+        updateOrder.setStatus(OrderStatusEnum.ALREADY_PAID.getStatus());
+        updateOrder.setPayType(requestParam.getChannel());
+        updateOrder.setPayTime(requestParam.getPayTime());
+        int orderUpdated = orderMapper.update(
+                updateOrder,
+                Wrappers.lambdaUpdate(OrderDO.class)
+                        .eq(OrderDO::getOrderSn, requestParam.getOrderSn())
+                        .eq(OrderDO::getStatus, OrderStatusEnum.PENDING_PAYMENT.getStatus()));
+        if (orderUpdated != 1) {
+            throw new ServiceException("确认订单支付状态失败");
+        }
+
+        // 主订单确认后同步更新全部乘车人子订单，保持订单展示和退票判断一致。
+        OrderItemDO updateOrderItem = new OrderItemDO();
+        updateOrderItem.setStatus(OrderItemStatusEnum.ALREADY_PAID.getStatus());
+        int itemUpdated = orderItemMapper.update(
+                updateOrderItem,
+                Wrappers.lambdaUpdate(OrderItemDO.class)
+                        .eq(OrderItemDO::getOrderSn, requestParam.getOrderSn())
+                        .eq(OrderItemDO::getStatus, OrderItemStatusEnum.PENDING_PAYMENT.getStatus()));
+        if (itemUpdated <= 0) {
+            throw new ServiceException("确认车票支付状态失败");
+        }
+        return true;
     }
 
     /**

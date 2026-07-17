@@ -18,6 +18,7 @@
 package org.opengoofy.index12306.biz.orderservice.service;
 
 import org.opengoofy.index12306.biz.orderservice.dto.domain.OrderStatusReversalDTO;
+import org.opengoofy.index12306.biz.orderservice.dto.req.BalancePaymentConfirmReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.CancelTicketOrderReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderCreateReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderPageQueryReqDTO;
@@ -48,6 +49,14 @@ public interface OrderService {
      * @return 经过订单归属校验的订单详情
      */
     TicketOrderDetailRespDTO querySelfTicketOrderByOrderSn(String orderSn);
+
+    /**
+     * 幂等确认当前用户订单已经完成站内余额支付。
+     *
+     * @param requestParam 支付确认参数
+     * @return 首次确认或重复确认均返回 true
+     */
+    boolean confirmBalancePayment(BalancePaymentConfirmReqDTO requestParam);
 
     /**
      * 跟据用户名分页查询车票订单
