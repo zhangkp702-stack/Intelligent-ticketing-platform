@@ -22,90 +22,49 @@ import lombok.Data;
 import org.opengoofy.index12306.framework.starter.database.base.BaseDO;
 
 /**
- * 用户信息实体
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 用户余额变动流水，负责记录支付扣款和退票退款。
  */
 @Data
-@TableName("t_user")
-public class UserDO extends BaseDO {
+@TableName("t_user_balance_flow")
+public class UserBalanceFlowDO extends BaseDO {
 
     /**
-     * id
+     * 主键
      */
     private Long id;
 
     /**
-     * 用户名
+     * 用户名，同时作为分片键
      */
     private String username;
 
     /**
-     * 密码
+     * 业务幂等号
      */
-    private String password;
+    private String bizNo;
 
     /**
-     * 真实姓名
+     * 业务类型：0 支付扣款，1 退款入账
      */
-    private String realName;
+    private Integer bizType;
 
     /**
-     * 国家/地区
+     * 变动金额，单位为分
      */
-    private String region;
+    private Long amount;
 
     /**
-     * 证件类型
+     * 变动前余额，单位为分
      */
-    private Integer idType;
+    private Long balanceBefore;
 
     /**
-     * 证件号
+     * 变动后余额，单位为分
      */
-    private String idCard;
+    private Long balanceAfter;
 
     /**
-     * 手机号
+     * 处理状态：0 处理中，1 成功
      */
-    private String phone;
-
-    /**
-     * 固定电话
-     */
-    private String telephone;
-
-    /**
-     * 邮箱
-     */
-    private String mail;
-
-    /**
-     * 旅客类型
-     */
-    private Integer userType;
-
-    /**
-     * 审核状态
-     */
-    private Integer verifyStatus;
-
-    /**
-     * 账户余额，单位为分
-     */
-    private Long balance;
-
-    /**
-     * 邮编
-     */
-    private String postCode;
-
-    /**
-     * 地址
-     */
-    private String address;
-
-    /**
-     * 注销时间戳
-     */
-    private Long deletionTime;
+    private Integer status;
 }
