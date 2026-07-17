@@ -116,7 +116,11 @@ import {
   fetchConfirmAgentAction,
   fetchCreateAgentConversation
 } from '@/service'
-import { createAgentRequestId, streamAgentChat } from '@/service/agent-stream'
+import {
+  cancelAgentChat,
+  createAgentRequestId,
+  streamAgentChat
+} from '@/service/agent-stream'
 import ConversationPanel from './components/conversation-panel'
 import MessageItem from './components/message-item'
 import ChatInput from './components/chat-input'
@@ -137,6 +141,7 @@ const terminalStatuses = [
 const pollTimers = new Map()
 let streamController
 let streamGeneration = 0
+let activeStreamRequest
 let conversationLoadGeneration = 0
 
 const state = reactive({
@@ -241,9 +246,13 @@ const mapHistoryMessage = (historyMessage) => ({
 })
 
 /**
- * 中止当前会话的流读取和状态轮询，阻止旧异步任务更新新会话。
+ * 中止当前会话的流读取和状态轮询，并异步通知后端终止对应生成任务。
+ *
+ * @returns {object | undefined} 被取消的请求标识信息
  */
 const cancelActiveConversationWork = () => {
+  const activeRequest = activeStreamRequest
+  activeStreamRequest = null
   streamGeneration += 1
   streamController?.abort()
   streamController = null
@@ -253,6 +262,11 @@ const cancelActiveConversationWork = () => {
   state.confirmingActionId = null
   state.refreshingActionId = null
   clearStatusPolls()
+  if (activeRequest) {
+    // 显式通知后端取消，网关没有立刻感知连接断开时也能终止模型任务。
+    cancelAgentChat(activeRequest).catch(() => undefined)
+  }
+  return activeRequest
 }
 
 /**
@@ -521,6 +535,7 @@ const sendMessage = async (content) => {
 
     // 同一次消息的请求标识和幂等键保持一致，网络层不得自动换键重试。
     streamController = new AbortController()
+    activeStreamRequest = { conversationId, requestId }
     await streamAgentChat({
       conversationId,
       message: content.trim(),
@@ -570,6 +585,7 @@ const sendMessage = async (content) => {
       }
       state.streaming = false
       streamController = null
+      activeStreamRequest = null
       touchActiveConversation()
       await scrollToBottom()
     }
@@ -732,10 +748,24 @@ const clearStatusPolls = () => {
 }
 
 /**
- * 主动停止当前浏览器流读取，不改变已经落库的服务端轮次状态。
+ * 主动停止当前生成并立即更新页面，服务端轮次状态由取消接口同步处理。
  */
 const stopStreaming = () => {
-  streamController?.abort()
+  const activeRequest = cancelActiveConversationWork()
+  if (!activeRequest) {
+    return
+  }
+  const assistantMessage = state.messages.find(
+    (item) => item.id === `${activeRequest.requestId}-assistant`
+  )
+  if (assistantMessage) {
+    // 先完成页面状态更新，用户不需要等待后端取消请求返回。
+    assistantMessage.pending = false
+    if (!assistantMessage.content) {
+      assistantMessage.content = '已停止生成'
+    }
+  }
+  scrollToBottom()
 }
 
 /**

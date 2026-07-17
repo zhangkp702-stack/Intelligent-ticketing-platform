@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.EventType;
+import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
@@ -24,6 +25,7 @@ import reactor.test.StepVerifier;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -111,12 +113,58 @@ class AgentChatServiceTests {
     }
 
     /**
+     * 验证模型长期不返回数据时会终止事件流并取消仍在运行的轮次。
+     */
+    @Test
+    void responseTimeoutCancelsRunningTurn() {
+        TestContext test = context(Duration.ofMillis(30));
+        ChatCommand command = command();
+        AgentRequestContext routedContext = new AgentRequestContext(
+                command.requestId(), command.userId(), command.username(),
+                command.conversationId(), "turn-1", "topic-1");
+        TopicContextService.TopicContext topicContext = new TopicContextService.TopicContext(
+                command.conversationId(), "topic-1", null, null, null, List.of(), 0);
+
+        // 构造已开始但模型永不产生首包的轮次，覆盖线上连接长期挂起的场景。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.topicRouting().route(any(), eq("message-1"))).thenReturn(
+                new TopicRoutingService.TopicRoutingResult(
+                        routedContext, RouteDecision.CREATE_NEW, BigDecimal.ONE,
+                        null, topicContext, false));
+        when(test.model().stream(any(), any(), any(), eq(false))).thenReturn(Flux.never());
+
+        // 超时应返回稳定、安全的业务异常，同时取消数据库中的运行中轮次。
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectErrorSatisfies(error -> {
+                    org.assertj.core.api.Assertions.assertThat(error)
+                            .isInstanceOf(AgentChatException.class)
+                            .hasMessage("智能体响应时间过长，本次生成已停止，请稍后重试");
+                    org.assertj.core.api.Assertions.assertThat(((AgentChatException) error).failureCategory())
+                            .isEqualTo("CHAT_TIMEOUT");
+                })
+                .verify(Duration.ofSeconds(1));
+        verify(test.memory()).cancelTurn(command.userId(), "turn-1");
+    }
+
+    /**
      * 创建不包含真实模型和工具连接的编排测试上下文。
      *
      * @return 编排服务及其外部依赖替身
      */
-    @SuppressWarnings("unchecked")
     private TestContext context() {
+        return context(Duration.ofSeconds(60));
+    }
+
+    /**
+     * 使用指定对话超时创建不包含真实模型和工具连接的编排测试上下文。
+     *
+     * @param responseTimeout 测试使用的整轮响应超时
+     * @return 编排服务及其外部依赖替身
+     */
+    @SuppressWarnings("unchecked")
+    private TestContext context(Duration responseTimeout) {
         ConversationMemoryService memory = mock(ConversationMemoryService.class);
         TopicRoutingService topicRouting = mock(TopicRoutingService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
@@ -132,7 +180,8 @@ class AgentChatServiceTests {
                 purchaseActionService,
                 new McpToolContextFactory(),
                 providers,
-                Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC));
+                Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC),
+                new AgentChatProperties(responseTimeout));
         return new TestContext(service, memory, topicRouting, model);
     }
 

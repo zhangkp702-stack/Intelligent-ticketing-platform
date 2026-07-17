@@ -15,6 +15,7 @@ import org.opengoofy.index12306.ai.agentservice.memory.repository.MessageReposit
 import org.opengoofy.index12306.ai.agentservice.memory.repository.SummaryTaskRepository;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.TopicRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -65,7 +66,7 @@ public class SummaryTaskService {
     }
 
     /**
-     * 在未压缩消息达到阈值时幂等创建摘要任务。
+     * 在未压缩消息达到阈值时使用独立事务幂等创建摘要任务。
      *
      * @param userId 用户标识
      * @param conversationId 会话标识
@@ -73,7 +74,7 @@ public class SummaryTaskService {
      * @param throughSequence 本次允许摘要覆盖到的最大消息序号
      * @return 创建或已存在的任务，未达到阈值时为空
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Optional<SummaryTaskEntity> enqueueIfNeeded(
             String userId,
             String conversationId,

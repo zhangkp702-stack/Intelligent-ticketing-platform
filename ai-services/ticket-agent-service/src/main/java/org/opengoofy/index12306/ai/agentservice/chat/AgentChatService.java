@@ -1,8 +1,10 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
+import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCancelRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatResult;
+import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionConfirmationView;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
@@ -33,6 +35,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 import java.time.Clock;
 import java.time.LocalDate;
@@ -42,6 +45,9 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -78,6 +84,8 @@ public class AgentChatService {
     private final McpToolContextFactory mcpToolContextFactory;
     private final ObjectProvider<ToolCallbackProvider> toolCallbackProviders;
     private final Clock clock;
+    private final AgentChatProperties chatProperties;
+    private final ConcurrentMap<String, Sinks.One<Void>> activeTurnCancels = new ConcurrentHashMap<>();
 
     /**
      * 创建完整对话编排服务。
@@ -89,6 +97,7 @@ public class AgentChatService {
      * @param mcpToolContextFactory MCP 显式上下文工厂
      * @param toolCallbackProviders 已启用的安全工具提供器
      * @param clock 统一时钟
+     * @param chatProperties 在线对话超时配置
      */
     public AgentChatService(
             ConversationMemoryService conversationMemoryService,
@@ -97,7 +106,8 @@ public class AgentChatService {
             PurchaseActionService purchaseActionService,
             McpToolContextFactory mcpToolContextFactory,
             ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
-            Clock clock) {
+            Clock clock,
+            AgentChatProperties chatProperties) {
         this.conversationMemoryService = conversationMemoryService;
         this.topicRoutingService = topicRoutingService;
         this.routedChatModelService = routedChatModelService;
@@ -105,6 +115,7 @@ public class AgentChatService {
         this.mcpToolContextFactory = mcpToolContextFactory;
         this.toolCallbackProviders = toolCallbackProviders;
         this.clock = clock;
+        this.chatProperties = chatProperties;
     }
 
     /**
@@ -135,8 +146,63 @@ public class AgentChatService {
     public Flux<ChatEvent> stream(ChatCommand command) {
         validateCommand(command);
 
-        // 每次订阅都从幂等轮次入口开始，数据库负责阻止网络重试重复写入消息。
-        return Flux.defer(() -> start(command));
+        // 为当前请求登记独立取消信号，使显式取消不依赖浏览器断开是否已传递到网关。
+        return Flux.defer(() -> streamWithCancellation(command));
+    }
+
+    /**
+     * 显式终止指定请求的模型流，并将仍在运行的持久化轮次置为取消状态。
+     *
+     * @param userId 当前用户标识
+     * @param request 需要取消的会话和请求标识
+     * @return 是否取消了运行中的轮次或模型流
+     */
+    public boolean cancel(String userId, ChatCancelRequest request) {
+        if (request == null) {
+            throw invalidRequest("取消请求不能为空");
+        }
+        requireText(userId, "用户标识不能为空");
+        requireText(request.conversationId(), "会话标识不能为空");
+        requireText(request.requestId(), "请求标识不能为空");
+
+        // 先持久化取消状态，保证模型客户端未能及时响应取消信号时轮次也不会永久处于运行中。
+        boolean turnCancelled = conversationMemoryService.cancelTurn(
+                userId, request.conversationId().trim(), request.requestId().trim());
+        Sinks.One<Void> cancellation = activeTurnCancels.get(request.requestId().trim());
+        if (cancellation != null) {
+            // 该信号会向 Reactor 上游传播取消，从而中断模型流和可取消的工具调用。
+            cancellation.tryEmitEmpty();
+        }
+        return turnCancelled || cancellation != null;
+    }
+
+    /**
+     * 为单次流式订阅绑定取消信号、超时处理和结束清理。
+     *
+     * @param command 已校验的对话命令
+     * @return 可取消的 SSE 事件流
+     */
+    private Flux<ChatEvent> streamWithCancellation(ChatCommand command) {
+        Sinks.One<Void> newCancellation = Sinks.one();
+        Sinks.One<Void> registeredCancellation = activeTurnCancels.putIfAbsent(
+                command.requestId(), newCancellation);
+        boolean registeredByCurrentStream = registeredCancellation == null;
+        Sinks.One<Void> cancellation = registeredByCurrentStream
+                ? newCancellation : registeredCancellation;
+
+        // 超时和显式取消都会取消上游订阅，已有的 doOnCancel 会同步终止数据库轮次。
+        return Flux.defer(() -> start(command))
+                .takeUntilOther(cancellation.asMono())
+                .timeout(chatProperties.responseTimeout())
+                .onErrorMap(TimeoutException.class, ignored -> new AgentChatException(
+                        HttpStatus.GATEWAY_TIMEOUT,
+                        "CHAT_TIMEOUT",
+                        "智能体响应时间过长，本次生成已停止，请稍后重试"))
+                .doFinally(ignored -> {
+                    if (registeredByCurrentStream) {
+                        activeTurnCancels.remove(command.requestId(), newCancellation);
+                    }
+                });
     }
 
     /**

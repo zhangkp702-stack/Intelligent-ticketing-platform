@@ -299,6 +299,34 @@ public class ConversationMemoryService {
     }
 
     /**
+     * 按会话和请求标识取消仍在执行的轮次，并校验当前用户拥有该会话。
+     *
+     * @param userId 当前用户标识
+     * @param conversationId 会话标识
+     * @param requestId 请求标识
+     * @return 找到且成功取消运行中轮次时返回 true
+     */
+    @Transactional
+    public boolean cancelTurn(String userId, String conversationId, String requestId) {
+        // 先锁定并校验会话归属，防止通过请求标识取消其他用户的轮次。
+        requireLockedConversation(userId, conversationId);
+        TurnEntity turn = turnRepository.findByConversationIdAndRequestId(conversationId, requestId)
+                .orElse(null);
+        if (turn == null) {
+            return false;
+        }
+
+        // 使用轮次行锁与正常完成流程互斥，只取消仍处于运行状态的轮次。
+        TurnEntity lockedTurn = turnRepository.findLockedById(turn.getId())
+                .orElseThrow(() -> new IllegalStateException("轮次不存在"));
+        if (lockedTurn.getStatus() != TurnStatus.RUNNING) {
+            return false;
+        }
+        lockedTurn.cancel(clock.instant());
+        return true;
+    }
+
+    /**
      * 锁定并校验会话所有权。
      *
      * @param userId 用户标识

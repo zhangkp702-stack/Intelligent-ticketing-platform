@@ -109,6 +109,15 @@ public final class AgentChatModels {
     }
 
     /**
+     * 取消指定会话中正在生成的对话轮次。
+     *
+     * @param conversationId 会话标识
+     * @param requestId 本轮生成请求标识
+     */
+    public record ChatCancelRequest(String conversationId, String requestId) {
+    }
+
+    /**
      * 编排层使用的完整对话命令。
      *
      * @param requestId 请求标识

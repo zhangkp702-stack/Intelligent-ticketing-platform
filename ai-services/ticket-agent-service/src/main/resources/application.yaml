@@ -5,7 +5,7 @@ spring:
   application:
     name: index12306-ticket-agent-service
   datasource:
-    url: ${AGENT_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/12306_agent?characterEncoding=utf8&useUnicode=true&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    url: ${AGENT_DATASOURCE_URL:jdbc:mysql://192.168.126.100/12306_agent?characterEncoding=utf8&useUnicode=true&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
     username: ${AGENT_DATASOURCE_USERNAME:root}
     password: ${AGENT_DATASOURCE_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -27,19 +27,20 @@ spring:
   cloud:
     nacos:
       discovery:
-        enabled: ${NACOS_DISCOVERY_ENABLED:false}
-        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        enabled: ${NACOS_DISCOVERY_ENABLED:true}
+        server-addr: ${NACOS_SERVER_ADDR:192.168.126.100:8848}
         username: ${NACOS_USERNAME:}
         password: ${NACOS_PASSWORD:}
   ai:
     mcp:
       client:
-        enabled: ${TICKET_MCP_CLIENT_ENABLED:false}
+        enabled: ${TICKET_MCP_CLIENT_ENABLED:true}
         name: index12306-ticket-agent-mcp-client
         version: 0.0.1
         type: SYNC
         request-timeout: 20s
         toolcallback:
+          # 原始 MCP 工具禁止自动注册；工具由签名、白名单和审计包装器安全注册。
           enabled: false
         streamable-http:
           connections:
@@ -58,6 +59,8 @@ management:
 
 index12306:
   agent:
+    chat:
+      response-timeout: 60s
     action:
       confirmation-secret: ${TICKET_AGENT_CONFIRMATION_SECRET:${TICKET_MCP_INTERNAL_SECRET:}}
       confirmation-ttl: 5m

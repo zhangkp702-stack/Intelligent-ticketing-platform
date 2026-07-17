@@ -12,11 +12,17 @@
       </div>
       <div class="message-bubble" :class="{ error: message.error }">
         <span v-if="message.content">{{ message.content }}</span>
-        <span v-else-if="message.pending" class="typing-text">正在思考</span>
+        <span v-else-if="message.error" class="error-text">
+          {{ message.error }}
+        </span>
+        <span v-else-if="message.pending" class="typing-indicator">
+          <LoadingOutlined spin />
+          <span>正在思考，请稍候</span>
+        </span>
         <span v-else>未返回有效内容</span>
       </div>
       <Alert
-        v-if="message.error"
+        v-if="message.error && message.content"
         class="message-error"
         type="error"
         show-icon
@@ -32,6 +38,7 @@
 
 <script setup>
 import { Alert, Avatar } from 'ant-design-vue'
+import { LoadingOutlined } from '@ant-design/icons-vue'
 
 defineProps({
   message: {
@@ -101,13 +108,16 @@ defineProps({
   border-color: #1e71bd;
 }
 
-.typing-text::after {
-  content: '...';
-  display: inline-block;
-  width: 20px;
-  overflow: hidden;
-  vertical-align: bottom;
-  animation: typing 1.2s steps(4, end) infinite;
+.typing-indicator {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 128px;
+  color: #666;
+}
+
+.error-text {
+  color: #cf1322;
 }
 
 .message-error {
@@ -115,13 +125,4 @@ defineProps({
   text-align: left;
 }
 
-@keyframes typing {
-  from {
-    width: 0;
-  }
-
-  to {
-    width: 20px;
-  }
-}
 </style>

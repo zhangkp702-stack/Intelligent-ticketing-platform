@@ -1,6 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
+import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCancelRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatResult;
@@ -178,6 +179,22 @@ public class AgentChatController {
                         .id(event.requestId())
                         .event(event.type().name().toLowerCase(Locale.ROOT))
                         .build());
+    }
+
+    /**
+     * 取消当前用户指定的流式生成任务。
+     *
+     * @param userId 网关注入的用户标识
+     * @param request 包含会话标识和请求标识的取消请求
+     * @return 无内容响应，取消结果由服务端轮次状态保证
+     */
+    @PostMapping("/chat/cancel")
+    public ResponseEntity<Void> cancel(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @RequestBody ChatCancelRequest request) {
+        // 服务层同时校验会话归属并取消 Reactor 订阅，不能仅依赖前端断开连接。
+        agentChatService.cancel(userId, request);
+        return ResponseEntity.noContent().build();
     }
 
     /**
