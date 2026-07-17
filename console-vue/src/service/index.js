@@ -94,7 +94,7 @@ const fetchBuyTicket = async (body) => {
 const fetchOrderBySn = async (params) => {
   const { data } = await http({
     method: 'GET',
-    url: '/api/order-service/order/ticket/query',
+    url: '/api/order-service/order/ticket/query/self',
     params
   })
   return data
@@ -105,6 +105,19 @@ const fetchPay = async (body) => {
     method: 'POST',
     url: '/api/pay-service/pay/create',
     data: body
+  })
+  return data
+}
+
+/**
+ * 查询当前登录用户的站内余额。
+ *
+ * @returns {Promise<object>} 余额接口响应，金额单位为分
+ */
+const fetchUserBalance = async () => {
+  const { data } = await http({
+    method: 'GET',
+    url: '/api/user-service/balance'
   })
   return data
 }
@@ -173,15 +186,6 @@ const fetchUserUpdate = async (body) => {
     method: 'POST',
     url: '/api/user-service/update',
     data: body
-  })
-  return data
-}
-
-const fetchOrderStatus = async (params) => {
-  const { data } = await http({
-    method: 'GET',
-    url: '/api/pay-service/pay/query/order-sn',
-    params
   })
   return data
 }
@@ -279,13 +283,13 @@ export {
   fetchBuyTicket,
   fetchOrderBySn,
   fetchPay,
+  fetchUserBalance,
   fetchStationAll,
   fetchReachableStations,
   fechUserInfo,
   fetchTrainStation,
   fetchTicketList,
   fetchOrderCancel,
-  fetchOrderStatus,
   fetchUserUpdate,
   fetchMyTicket,
   fetchRefundTicket,

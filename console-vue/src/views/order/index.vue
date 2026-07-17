@@ -1,5 +1,4 @@
 <template>
-  <div v-html="state.html"></div>
   <Space :style="{ width: '100%' }" direction="vertical">
     <Card>
       <div class="tip-wrapper">
@@ -104,7 +103,8 @@
                 color: '#fff',
                 border: 'none'
               }"
-              @click="state.open = true"
+              :disabled="state.count <= 0"
+              @click="openPaymentModal"
               >网上支付</Button
             >
           </Space>
@@ -165,66 +165,36 @@
   </Space>
   <Modal
     :visible="state.open"
-    title="请付款"
+    title="站内余额支付"
     @cancel="state.open = false"
-    width="40%"
-    :footer="null"
+    @ok="handlePay"
+    :confirm-loading="state.paying"
+    :ok-button-props="{ disabled: !hasEnoughBalance }"
+    ok-text="确认支付"
+    cancel-text="取消"
+    width="420px"
   >
-    <Spin :spinning="state.loading">
-      <div>
-        >>应付金额：<span
-          :style="{ fontSize: '20px', color: ' #dc2408', fontWeight: 'bold' }"
-          >{{ totalAmount }}
-        </span>
-        元
+    <div class="balance-payment">
+      <div class="payment-row">
+        <span>应付金额</span>
+        <strong class="payment-amount">￥{{ totalAmount.toFixed(2) }}</strong>
+      </div>
+      <div class="payment-row">
+        <span>账户余额</span>
+        <span>￥{{ balanceAmount.toFixed(2) }}</span>
       </div>
       <Divider dashed></Divider>
-      <div :style="{ overflow: 'hidden' }">
-        <div v-for="item in BANK_LIST" class="bank3">
-          <div class="bank3_5" @click="() => handlePay(item.value)">
-            <img :src="item.img" :alt="item.name" />
-          </div>
-        </div>
+      <div class="payment-row">
+        <span>支付后余额</span>
+        <strong>￥{{ remainingBalance.toFixed(2) }}</strong>
       </div>
-    </Spin>
-  </Modal>
-  <Modal
-    :visible="state.isPayingOpen"
-    title="网上支付提示"
-    :footer="null"
-    style="top: 30%"
-  >
-    <Row :gutter="[24, 6]">
-      <Col
-        :span="6"
-        :style="{
-          display: 'flex',
-          textAlign: 'end',
-          alignItems: 'center',
-          justifyContent: 'end'
-        }"
-      >
-        <Spin size="large" :spinning="true"></Spin>
-      </Col>
-      <Col :span="14">
-        <div :style="{ fontSize: '12px' }">
-          支付完成后，请不要关闭此支付验证窗口
-        </div>
-        <div :style="{ fontSize: '12px' }">
-          支付完成后请更具您支付的情况点击下面按钮。
-        </div>
-      </Col>
-    </Row>
-    <Space
-      :style="{ display: 'flex', justifyContent: 'center', marginTop: '20px' }"
-    >
-      <Button type="default" @click="() => router.push('/ticketList')"
-        >支付遇到问题</Button
-      >
-      <Button type="primary" @click="handlePayResultConfirm"
-        >支付完成</Button
-      >
-    </Space>
+      <div v-if="!hasEnoughBalance" class="balance-warning">
+        账户余额不足，请先补充余额后再支付。
+      </div>
+      <div class="payment-tip">
+        点击确认后将直接从站内余额扣款，无需跳转第三方支付页面。
+      </div>
+    </div>
   </Modal>
 </template>
 
@@ -236,29 +206,24 @@ import {
   Divider,
   Button,
   Modal,
-  message,
-  Spin,
-  Row,
-  Col
+  message
 } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import {
   fetchOrderBySn,
   fetchPay,
   fetchOrderCancel,
-  fetchOrderStatus
+  fetchUserBalance
 } from '@/service'
 import { useRoute, useRouter } from 'vue-router'
-import { onMounted, reactive, computed, watch, onUnmounted } from 'vue'
+import { onMounted, reactive, computed, onUnmounted } from 'vue'
 import {
   TICKET_TYPE_LIST,
   ID_CARD_TYPE,
-  BANK_LIST,
   SEAT_CLASS_TYPE_LIST
 } from '@/constants'
 import { getWeekNumber } from '@/utils'
 let timer = undefined
-const PAID_STATUS_LIST = [20, 30]
 
 const { query } = useRoute()
 const router = useRouter()
@@ -266,11 +231,8 @@ const state = reactive({
   count: 600000,
   currentInfo: null,
   open: false,
-  html: '',
-  loading: false,
-  isInitiatePayment: false,
-  isPaying: false,
-  isPayingOpen: false
+  balance: 0,
+  paying: false
 })
 const columns = [
   { title: '序号', dataIndex: 'id', slots: { customRender: 'id' } },
@@ -295,10 +257,15 @@ const columns = [
 onMounted(() => {
   timer = setInterval(() => {
     state.count -= 1000
-    getOrderStatus()
+    if (state.count <= 0) {
+      clearInterval(timer)
+      state.open = false
+      message.warning('订单支付时间已结束，请重新购票')
+    }
   }, 1000)
   dayjs.duration(state.count).minutes()
   getOrder()
+  getBalance().catch(() => {})
 })
 onUnmounted(() => {
   clearInterval(timer)
@@ -308,16 +275,12 @@ const getOrder = () => {
   fetchOrderBySn({ orderSn: query?.sn }).then((res) => {
     if (res.success) {
       state.currentInfo = res.data
+    } else {
+      message.error(res.message || '订单信息查询失败')
     }
   })
 }
 
-watch(
-  () => state.isPaying,
-  (newV) => {
-    state.isPayingOpen = newV
-  }
-)
 const totalAmount = computed(() => {
   let amount = 0
   state.currentInfo?.passengerDetails?.map((item) => {
@@ -326,59 +289,71 @@ const totalAmount = computed(() => {
   return amount / 100
 })
 
-const handlePay = (channel) => {
-  if (channel !== 0) {
-    return message.error('该支付方式暂未对接，请稍候...')
-  }
-  state.isInitiatePayment = true
-  state.open = false
-  state.isPayingOpen = true
-  const body = {
-    channel: 0,
-    tradeType: 0,
-    orderSn: query.sn,
-    totalAmount: totalAmount.value,
-    outOrderSn: query.sn,
-    subject: `${state.currentInfo.departure}-${state.currentInfo.arrival}`
-  }
-  fetchPay(body).then((res) => {
-    state.html = res.data?.body
-    state.loading = true
-    setTimeout(() => {
-      state.loading = false
-      window.open(`/aliPay?body=${encodeURIComponent(res.data?.body)}`)
-    }, 500)
-  })
-}
+const balanceAmount = computed(() => (state.balance || 0) / 100)
+const remainingBalance = computed(() =>
+  Math.max(balanceAmount.value - totalAmount.value, 0)
+)
+const hasEnoughBalance = computed(
+  () => balanceAmount.value >= totalAmount.value
+)
 
-const handlePayResultConfirm = () => {
-  fetchOrderStatus({ orderSn: query?.sn })
+/**
+ * 查询当前登录用户余额，支付金额统一按分从服务端返回。
+ */
+const getBalance = () => {
+  return fetchUserBalance()
     .then((res) => {
-      const status = res?.data?.status
-      if (PAID_STATUS_LIST.includes(status)) {
-        router.push(`/paySuccess?orderSn=${res.data.orderSn}`)
-        return
+      if (!res.success || res.data?.balance == null) {
+        throw new Error(res.message || '账户余额查询失败')
       }
-      message.warning('支付结果还在同步中，请稍候再试')
+      state.balance = res.data.balance
     })
     .catch((error) => {
-      console.log('error:::', error)
-      message.error('支付结果查询失败，请稍后重试')
+      message.error(
+        error?.response?.data?.message || error.message || '账户余额查询失败'
+      )
+      throw error
     })
 }
 
-const getOrderStatus = () => {
-  state.isInitiatePayment &&
-    fetchOrderStatus({ orderSn: query?.sn })
-      .then((res) => {
-        const status = res?.data?.status
-        state.isPaying = status === 0
-        PAID_STATUS_LIST.includes(status) &&
-          router.push(`/paySuccess?orderSn=${res.data.orderSn}`)
-      })
-      .catch((error) => {
-        console.log('error:::', error)
-      })
+/**
+ * 刷新余额后打开支付确认框，避免使用页面缓存的旧余额。
+ */
+const openPaymentModal = () => {
+  getBalance()
+    .then(() => {
+      state.open = true
+    })
+    .catch(() => {})
+}
+
+/**
+ * 使用订单号发起站内余额扣款，成功后直接进入支付完成页。
+ */
+const handlePay = () => {
+  if (!hasEnoughBalance.value) {
+    message.error('账户余额不足')
+    return
+  }
+  state.paying = true
+  fetchPay({ orderSn: query.sn })
+    .then((res) => {
+      if (!res.success) {
+        throw new Error(res.message || '余额支付失败')
+      }
+      state.balance = res.data?.balance ?? state.balance
+      state.open = false
+      message.success('余额支付成功')
+      router.push(`/paySuccess?orderSn=${query.sn}`)
+    })
+    .catch((error) => {
+      message.error(
+        error?.response?.data?.message || error.message || '余额支付失败，请稍后重试'
+      )
+    })
+    .finally(() => {
+      state.paying = false
+    })
 }
 </script>
 
@@ -415,15 +390,25 @@ const getOrderStatus = () => {
   font-size: 16px;
   font-weight: bolder;
 }
-.bank3 {
-  float: left;
-  width: 170px;
-  padding: 8px 0;
-  margin-left: 16px;
-  .bank3_5 {
-    float: left;
-    width: 160px;
-    cursor: pointer;
+.balance-payment {
+  .payment-row {
+    display: flex;
+    justify-content: space-between;
+    margin: 12px 0;
+    font-size: 15px;
+  }
+  .payment-amount {
+    color: #dc2408;
+    font-size: 20px;
+  }
+  .balance-warning {
+    color: #dc2408;
+    margin-top: 12px;
+  }
+  .payment-tip {
+    color: #888;
+    font-size: 12px;
+    margin-top: 16px;
   }
 }
 .cyx-hd {

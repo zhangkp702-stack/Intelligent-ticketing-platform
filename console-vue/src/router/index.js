@@ -9,7 +9,6 @@ import Order from '../views/order'
 import AddPassanger from '../views/add-passenger'
 import CheckOrder from '../views/check-order'
 import BuyTicket from '../views/buy-ticket'
-import AliPay from '../views/ali-pay'
 import TikectList from '../views/order-list'
 import PersonalTicket from '../views/personalTicket'
 import PaySuccess from '../views/pay-success'
@@ -103,14 +102,6 @@ const routes = [
     name: 'buyTicket',
     component: BuyTicket,
     icon: 'icon-goumai',
-    meta: { requiresAuth: true }
-  },
-  {
-    label: '支付宝支付',
-    path: '/aliPay',
-    name: 'aliPay',
-    component: AliPay,
-    icon: 'icon-zhifubao0',
     meta: { requiresAuth: true }
   },
   {
