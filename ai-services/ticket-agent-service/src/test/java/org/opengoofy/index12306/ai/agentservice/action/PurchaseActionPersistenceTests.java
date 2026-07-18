@@ -181,13 +181,15 @@ class PurchaseActionPersistenceTests {
         purchaseActionService.prepare(
                 fixture.context(),
                 new PurchasePayload(
-                        "train-100", "北京南", "上海虹桥",
+                        "train-100", "北京南", "上海虹桥", "2099-01-01",
                         List.of(new PurchasePassenger("passenger-1", 1)), List.of()));
         ActionConfirmationView confirmation = purchaseActionService
                 .confirmationForTurn(fixture.userId(), fixture.turnId())
                 .orElseThrow();
 
-        assertThat(confirmation.summary()).contains("一等座（编码 1）");
+        assertThat(confirmation.summary())
+                .contains("乘车日期 2099-01-01")
+                .contains("一等座（编码 1）");
     }
 
     /**
@@ -289,7 +291,7 @@ class PurchaseActionPersistenceTests {
      */
     private PurchasePayload payload() {
         return new PurchasePayload(
-                "train-100", "北京南", "上海虹桥",
+                "train-100", "北京南", "上海虹桥", "2099-01-01",
                 List.of(new PurchasePassenger("passenger-1", 3)), List.of("01A"));
     }
 

@@ -27,6 +27,7 @@ public final class PurchaseActionModels {
      * @param trainId 车次内部标识
      * @param departure 出发站名称
      * @param arrival 到达站名称
+     * @param departureDate 乘车日期，格式 yyyy-MM-dd
      * @param passengers 乘车人与席别
      * @param chooseSeats 可选座位偏好
      */
@@ -34,6 +35,7 @@ public final class PurchaseActionModels {
             String trainId,
             String departure,
             String arrival,
+            String departureDate,
             List<PurchasePassenger> passengers,
             List<String> chooseSeats) {
     }

@@ -379,6 +379,12 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                 .build();
     }
 
+    /**
+     * 使用全局区间锁执行第一版购票流程，并将请求中的实际乘车日期写入订单。
+     *
+     * @param requestParam 购票请求参数
+     * @return 新建订单及车票明细
+     */
     @ILog
     @Idempotent(
             uniqueKeyPrefix = "index12306-ticket:lock_purchase-tickets:",
@@ -392,6 +398,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
 
     @Override
     public TicketPurchaseRespDTO purchaseTicketsV1(PurchaseTicketReqDTO requestParam) {
+        // 在锁定库存前确认乘车日期存在，避免生成无法正确展示行程日期的订单。
+        validatePurchaseDate(requestParam);
         // 责任链模式，验证 1：参数必填 2：参数正确性 3：乘客是否已买当前车次等...
         purchaseTicketAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_PURCHASE_TICKET_FILTER.name(), requestParam);
         // v1 版本购票存在 4 个较为严重的问题，v2 版本相比较 v1 版本更具有业务特点以及性能，整体提升较大
@@ -412,6 +420,12 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             .expireAfterWrite(10, TimeUnit.MINUTES)
             .build();
 
+    /**
+     * 使用库存令牌执行第二版购票流程，并在扣减令牌前校验实际乘车日期。
+     *
+     * @param requestParam 购票请求参数
+     * @return 新建订单及车票明细
+     */
     @ILog
     @Idempotent(
             uniqueKeyPrefix = "index12306-ticket:lock_purchase-tickets:",
@@ -424,6 +438,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     )
     @Override
     public TicketPurchaseRespDTO purchaseTicketsV2(PurchaseTicketReqDTO requestParam) {
+        // 在扣减令牌前确认乘车日期存在，避免无效请求占用库存令牌。
+        validatePurchaseDate(requestParam);
         // 责任链模式，验证 1：参数必填 2：参数正确性 3：乘客是否已买当前车次等...
         purchaseTicketAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_PURCHASE_TICKET_FILTER.name(), requestParam);
         // 校验当前是否存在那么多票供购买
@@ -450,7 +466,12 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         // 对用户买票的座位类型去重排序。
         return ticketService.executePurchaseTickets(requestParam);
     }
-    // 最终执行购票操作
+    /**
+     * 持久化车票和订单，并使用请求携带的乘车日期替代基础时刻表中的固定日期。
+     *
+     * @param requestParam 已通过购票校验的请求参数
+     * @return 新建订单及车票明细
+     */
     @Override
     @Transactional(rollbackFor = Throwable.class)
     public TicketPurchaseRespDTO executePurchaseTickets(PurchaseTicketReqDTO requestParam) {
@@ -530,7 +551,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                     .trainNumber(trainDO.getTrainNumber())
                     .departureTime(trainStationRelationDO.getDepartureTime())
                     .arrivalTime(trainStationRelationDO.getArrivalTime())
-                    .ridingDate(trainStationRelationDO.getDepartureTime())
+                    .ridingDate(requestParam.getDepartureDate())
                     .userId(UserContext.getUserId())
                     .username(UserContext.getUsername())
                     .trainId(Long.parseLong(requestParam.getTrainId()))
@@ -549,6 +570,18 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             throw ex;
         }
         return new TicketPurchaseRespDTO(ticketOrderResult.getData(), ticketOrderDetailResults);
+    }
+
+    /**
+     * 校验购票请求携带用于订单展示和退改判断的实际乘车日期。
+     *
+     * @param requestParam 购票请求参数
+     */
+    private void validatePurchaseDate(PurchaseTicketReqDTO requestParam) {
+        // 乘车日期不能再从固定时刻表日期推导，必须由查询和购票链路显式传入。
+        if (requestParam == null || requestParam.getDepartureDate() == null) {
+            throw new ServiceException("乘车日期不能为空");
+        }
     }
 
     @Override

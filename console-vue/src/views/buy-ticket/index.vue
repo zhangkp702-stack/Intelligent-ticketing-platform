@@ -652,7 +652,8 @@ const handleSubmitBuyTicket = () => {
     passengers,
     chooseSeats: toRaw(state.currentSeatCode),
     departure: state.currTrain?.departure,
-    arrival: state.currTrain?.arrival
+    arrival: state.currTrain?.arrival,
+    departureDate: query.departureDate
   }
   state.loading = true
   fetchBuyTicket(params)

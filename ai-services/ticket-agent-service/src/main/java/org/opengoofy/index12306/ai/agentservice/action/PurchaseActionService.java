@@ -28,6 +28,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -403,6 +405,7 @@ public class PurchaseActionService {
         if (departure.equals(arrival)) {
             throw new IllegalArgumentException("出发站和到达站不能相同");
         }
+        String departureDate = normalizeDepartureDate(requestedPayload.departureDate());
         List<PurchasePassenger> passengers = requestedPayload.passengers() == null
                 ? List.of() : requestedPayload.passengers();
         if (passengers.isEmpty() || passengers.size() > MAX_PASSENGERS) {
@@ -431,7 +434,28 @@ public class PurchaseActionService {
                 || chooseSeats.stream().anyMatch(seat -> !SEAT_PATTERN.matcher(seat).matches())) {
             throw new IllegalArgumentException("座位偏好格式或数量不正确");
         }
-        return new PurchasePayload(trainId, departure, arrival, normalizedPassengers, chooseSeats);
+        return new PurchasePayload(
+                trainId, departure, arrival, departureDate, normalizedPassengers, chooseSeats);
+    }
+
+    /**
+     * 规范化乘车日期，并拒绝格式错误或已经过去的日期。
+     *
+     * @param value 模型提供的乘车日期
+     * @return yyyy-MM-dd 格式的乘车日期
+     */
+    private String normalizeDepartureDate(String value) {
+        // 先做文本长度校验，再用严格 ISO 日期解析保证草案和下游指纹稳定一致。
+        String normalized = requiredText(value, "乘车日期", 10);
+        try {
+            LocalDate departureDate = LocalDate.parse(normalized);
+            if (departureDate.isBefore(LocalDate.now(clock))) {
+                throw new IllegalArgumentException("乘车日期不能早于当前日期");
+            }
+            return departureDate.toString();
+        } catch (DateTimeParseException ex) {
+            throw new IllegalArgumentException("乘车日期必须使用 yyyy-MM-dd 格式", ex);
+        }
     }
 
     /**
@@ -484,7 +508,8 @@ public class PurchaseActionService {
                 .distinct()
                 .reduce((left, right) -> left + "," + right)
                 .orElse("");
-        return "购买车次 " + payload.trainId() + "，" + payload.departure() + "→" + payload.arrival()
+        return "购买车次 " + payload.trainId() + "，乘车日期 " + payload.departureDate()
+                + "，" + payload.departure() + "→" + payload.arrival()
                 + "，乘车人 " + payload.passengers().size() + " 名，席别 " + seatTypes;
     }
 

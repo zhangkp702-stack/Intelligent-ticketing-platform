@@ -17,9 +17,11 @@
 
 package org.opengoofy.index12306.biz.ticketservice.dto.req;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -33,6 +35,12 @@ public class PurchaseTicketReqDTO {
      * 车次 ID
      */
     private String trainId;
+
+    /**
+     * 乘车日期
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd", timezone = "GMT+8")
+    private Date departureDate;
 
     /**
      * 乘车人

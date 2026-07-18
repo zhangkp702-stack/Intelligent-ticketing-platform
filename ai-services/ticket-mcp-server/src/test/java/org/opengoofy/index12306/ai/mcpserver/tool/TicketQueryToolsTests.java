@@ -128,6 +128,7 @@ class TicketQueryToolsTests {
         payload.put("trainId", "train-100");
         payload.put("departure", "北京南");
         payload.put("arrival", "上海虹桥");
+        payload.put("departureDate", "2099-01-01");
         payload.put("passengers", passengers);
         payload.put("chooseSeats", chooseSeats);
         String json = objectMapper.writeValueAsString(payload);
@@ -139,20 +140,24 @@ class TicketQueryToolsTests {
         ConfirmedPurchaseResult result = new ConfirmedPurchaseResult("order-1", List.of());
         when(authenticator.authenticate(meta)).thenReturn(identity);
         when(businessClient.purchase(
-                "train-100", "北京南", "上海虹桥", passengers, chooseSeats, identity))
+                "train-100", "北京南", "上海虹桥", "2099-01-01",
+                passengers, chooseSeats, identity))
                 .thenReturn(result);
         TicketQueryTools tools = new TicketQueryTools(authenticator, businessClient, objectMapper);
 
         // 完整匹配时执行下游购票，任一草案参数变化都会在业务调用前被拒绝。
         assertThat(tools.executeConfirmedPurchase(
-                "action-1", "train-100", "北京南", "上海虹桥", passengers, chooseSeats, meta))
+                "action-1", "train-100", "北京南", "上海虹桥", "2099-01-01",
+                passengers, chooseSeats, meta))
                 .isEqualTo(result);
         assertThatThrownBy(() -> tools.executeConfirmedPurchase(
-                "action-1", "train-100", "北京南", "杭州东", passengers, chooseSeats, meta))
+                "action-1", "train-100", "北京南", "杭州东", "2099-01-01",
+                passengers, chooseSeats, meta))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("confirmed draft");
         verify(businessClient).purchase(
-                "train-100", "北京南", "上海虹桥", passengers, chooseSeats, identity);
+                "train-100", "北京南", "上海虹桥", "2099-01-01",
+                passengers, chooseSeats, identity);
     }
 
     /**

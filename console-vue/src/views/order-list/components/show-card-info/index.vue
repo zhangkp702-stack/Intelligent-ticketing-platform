@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div class="order-date">订票日期：{{ props.orderTime }}</div>
+    <div class="order-date">购票时间：{{ props.orderTime }}</div>
     <div>
       <span class="border">{{ departure }}</span>
       <span class="border">{{ '-->' }}</span>

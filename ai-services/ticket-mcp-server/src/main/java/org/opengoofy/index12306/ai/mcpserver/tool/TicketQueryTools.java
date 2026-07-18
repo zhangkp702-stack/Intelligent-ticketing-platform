@@ -369,6 +369,7 @@ public class TicketQueryTools {
      * @param trainId 车次内部标识
      * @param departure 出发站名称
      * @param arrival 到达站名称
+     * @param departureDate 用户确认的乘车日期
      * @param passengers 当前用户乘车人与席别
      * @param chooseSeats 可选座位偏好
      * @param meta Agent 签名且包含草案和参数指纹的 MCP 元数据
@@ -389,6 +390,7 @@ public class TicketQueryTools {
             @McpToolParam(description = "query_tickets 返回的 trainId") String trainId,
             @McpToolParam(description = "出发站完整名称") String departure,
             @McpToolParam(description = "到达站完整名称") String arrival,
+            @McpToolParam(description = "用户确认的乘车日期，严格使用 yyyy-MM-dd 格式") String departureDate,
             @McpToolParam(description = "乘车人 ID 与席别编码列表") List<ConfirmedPurchasePassenger> passengers,
             @McpToolParam(description = "座位偏好列表，没有偏好时为空数组") List<String> chooseSeats,
             McpMeta meta) {
@@ -397,6 +399,7 @@ public class TicketQueryTools {
         requireText(departure, "departure", MAX_STATION_NAME_LENGTH);
         requireText(arrival, "arrival", MAX_STATION_NAME_LENGTH);
         Assert.isTrue(!departure.trim().equals(arrival.trim()), "departure and arrival must differ");
+        LocalDate parsedDepartureDate = parseDate(departureDate);
         Assert.notEmpty(passengers, "passengers must not be empty");
         Assert.isTrue(passengers.size() <= 5, "passengers must not contain more than 5 items");
         Assert.notNull(chooseSeats, "chooseSeats must not be null");
@@ -420,7 +423,7 @@ public class TicketQueryTools {
             // 草案标识和参数指纹都在 HMAC 元数据中，工具参数被替换时立即拒绝真实写调用。
             Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
             PurchasePayloadProof payload = new PurchasePayloadProof(
-                    trainId.trim(), departure.trim(), arrival.trim(),
+                    trainId.trim(), departure.trim(), arrival.trim(), parsedDepartureDate.toString(),
                     List.copyOf(passengers), List.copyOf(chooseSeats));
             Assert.isTrue(fingerprint(payload).equals(identity.payloadHash()),
                     "purchase payload does not match confirmed draft");
@@ -433,7 +436,7 @@ public class TicketQueryTools {
             // 身份和参数证明全部通过后才调用一次现有购票接口。
             businessCallStarted = true;
             ConfirmedPurchaseResult result = businessClient.purchase(
-                    payload.trainId(), payload.departure(), payload.arrival(),
+                    payload.trainId(), payload.departure(), payload.arrival(), payload.departureDate(),
                     payload.passengers(), payload.chooseSeats(), identity);
             LOGGER.info("MCP购票执行成功，requestId={}, actionId={}, orderSn={}, durationMs={}",
                     identity.requestId(), actionId, result.orderSn(),
@@ -654,6 +657,7 @@ public class TicketQueryTools {
      * @param trainId 车次内部标识
      * @param departure 出发站名称
      * @param arrival 到达站名称
+     * @param departureDate 乘车日期
      * @param passengers 乘车人与席别
      * @param chooseSeats 座位偏好
      */
@@ -661,6 +665,7 @@ public class TicketQueryTools {
             String trainId,
             String departure,
             String arrival,
+            String departureDate,
             List<ConfirmedPurchasePassenger> passengers,
             List<String> chooseSeats) {
     }

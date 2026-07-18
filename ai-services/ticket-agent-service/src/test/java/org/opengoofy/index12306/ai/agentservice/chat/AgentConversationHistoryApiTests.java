@@ -149,6 +149,7 @@ class AgentConversationHistoryApiTests {
                         "train-history-100",
                         "北京南",
                         "上海虹桥",
+                        "2099-01-01",
                         List.of(new PurchasePassenger("passenger-history-1", 3)),
                         List.of("01A")))
                 .actionId();

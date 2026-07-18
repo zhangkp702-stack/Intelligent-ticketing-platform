@@ -390,6 +390,7 @@ public class TicketBusinessClient {
      * @param trainId 车次内部标识
      * @param departure 出发站名称
      * @param arrival 到达站名称
+     * @param departureDate 用户确认的乘车日期
      * @param passengers 乘车人与席别
      * @param chooseSeats 可选座位偏好
      * @param identity 已验证且包含操作证明的调用者身份
@@ -399,6 +400,7 @@ public class TicketBusinessClient {
             String trainId,
             String departure,
             String arrival,
+            String departureDate,
             List<ConfirmedPurchasePassenger> passengers,
             List<String> chooseSeats,
             McpCallerIdentity identity) {
@@ -422,6 +424,7 @@ public class TicketBusinessClient {
                     "trainId", trainId,
                     "departure", departure,
                     "arrival", arrival,
+                    "departureDate", departureDate,
                     "passengers", passengers,
                     "chooseSeats", chooseSeats);
             long ticketRequestStarted = System.nanoTime();

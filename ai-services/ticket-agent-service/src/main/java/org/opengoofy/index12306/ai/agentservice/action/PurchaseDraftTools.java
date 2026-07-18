@@ -36,6 +36,7 @@ public class PurchaseDraftTools {
      * @param trainId query_tickets 返回的车次内部标识
      * @param departure 出发站名称
      * @param arrival 到达站名称
+     * @param departureDate 用户选择的乘车日期
      * @param passengers 乘车人和席别列表
      * @param chooseSeats 可选座位偏好
      * @param toolContext 服务端注入的用户和轮次上下文
@@ -48,6 +49,7 @@ public class PurchaseDraftTools {
             @ToolParam(description = "query_tickets 返回的 trainId") String trainId,
             @ToolParam(description = "出发站完整名称") String departure,
             @ToolParam(description = "到达站完整名称") String arrival,
+            @ToolParam(description = "query_tickets 使用的乘车日期，严格使用 yyyy-MM-dd 格式") String departureDate,
             @ToolParam(description = "乘车人 ID 与语义席别列表；seatClass 必须使用枚举名称，例如 FIRST_CLASS 表示一等座")
             List<PassengerDraftInput> passengers,
             @ToolParam(required = false, description = "可选座位偏好，如 3A、3B") List<String> chooseSeats,
@@ -65,7 +67,8 @@ public class PurchaseDraftTools {
         // 本地工具只持久化草案，真实购票必须由独立确认接口继续执行。
         return purchaseActionService.prepare(
                 context,
-                new PurchasePayload(trainId, departure, arrival, normalizedPassengers, chooseSeats));
+                new PurchasePayload(
+                        trainId, departure, arrival, departureDate, normalizedPassengers, chooseSeats));
     }
 
     /**
