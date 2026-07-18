@@ -35,6 +35,7 @@ import java.util.HexFormat;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
@@ -44,6 +45,7 @@ import java.util.regex.Pattern;
 public class TicketQueryTools {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TicketQueryTools.class);
+    private static final String PURCHASE_REJECTED_MARKER = "PURCHASE_REJECTED:";
     private static final Pattern STATION_CODE_PATTERN = Pattern.compile("[A-Za-z0-9]{2,16}");
     private static final Pattern TRAIN_ID_PATTERN = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final int MAX_STATION_NAME_LENGTH = 50;
@@ -412,18 +414,45 @@ public class TicketQueryTools {
         }
         McpCallerIdentity identity = authenticator.authenticate(meta);
         logInvocation("execute_confirmed_ticket_purchase", "executeConfirmedPurchase", identity);
+        long started = System.nanoTime();
+        boolean businessCallStarted = false;
+        try {
+            // 草案标识和参数指纹都在 HMAC 元数据中，工具参数被替换时立即拒绝真实写调用。
+            Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
+            PurchasePayloadProof payload = new PurchasePayloadProof(
+                    trainId.trim(), departure.trim(), arrival.trim(),
+                    List.copyOf(passengers), List.copyOf(chooseSeats));
+            Assert.isTrue(fingerprint(payload).equals(identity.payloadHash()),
+                    "purchase payload does not match confirmed draft");
+            LOGGER.info(
+                    "MCP购票参数校验完成，requestId={}, actionId={}, trainId={}, seatTypes={}, passengerCount={}",
+                    identity.requestId(), actionId, payload.trainId(),
+                    payload.passengers().stream().map(ConfirmedPurchasePassenger::seatType).distinct().toList(),
+                    payload.passengers().size());
 
-        // 草案标识和参数指纹都在 HMAC 元数据中，工具参数被替换时立即拒绝真实写调用。
-        Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
-        PurchasePayloadProof payload = new PurchasePayloadProof(
-                trainId.trim(), departure.trim(), arrival.trim(), List.copyOf(passengers), List.copyOf(chooseSeats));
-        Assert.isTrue(fingerprint(payload).equals(identity.payloadHash()),
-                "purchase payload does not match confirmed draft");
-
-        // 身份和参数证明全部通过后才调用一次现有购票接口。
-        return businessClient.purchase(
-                payload.trainId(), payload.departure(), payload.arrival(),
-                payload.passengers(), payload.chooseSeats(), identity);
+            // 身份和参数证明全部通过后才调用一次现有购票接口。
+            businessCallStarted = true;
+            ConfirmedPurchaseResult result = businessClient.purchase(
+                    payload.trainId(), payload.departure(), payload.arrival(),
+                    payload.passengers(), payload.chooseSeats(), identity);
+            LOGGER.info("MCP购票执行成功，requestId={}, actionId={}, orderSn={}, durationMs={}",
+                    identity.requestId(), actionId, result.orderSn(),
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+            return result;
+        } catch (RuntimeException ex) {
+            // 失败日志只输出关联标识和限长错误摘要，不记录乘客身份信息或完整请求体。
+            LOGGER.warn(
+                    "MCP购票执行失败，requestId={}, actionId={}, durationMs={}, exceptionType={}, error={}",
+                    identity.requestId(), actionId,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started),
+                    ex.getClass().getName(), safeErrorMessage(ex));
+            if (!businessCallStarted) {
+                // 签名和草案校验发生在下单前，此时可以明确保证没有创建订单。
+                throw new IllegalArgumentException(
+                        PURCHASE_REJECTED_MARKER + " " + safeErrorMessage(ex), ex);
+            }
+            throw ex;
+        }
     }
 
     /**
@@ -543,6 +572,22 @@ public class TicketQueryTools {
         LOGGER.info(
                 "MCP工具方法已进入，tool={}, method=TicketQueryTools.{}, requestId={}, conversationId={}, turnId={}",
                 toolName, methodName, identity.requestId(), identity.conversationId(), identity.turnId());
+    }
+
+    /**
+     * 生成不含换行且长度受限的异常摘要，便于在 MCP 日志中定位明确失败原因。
+     *
+     * @param exception 工具执行异常
+     * @return 最多 200 字符的单行异常摘要
+     */
+    private String safeErrorMessage(RuntimeException exception) {
+        // 未携带错误正文时退回异常类型，保证日志字段始终可检索。
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return exception.getClass().getSimpleName();
+        }
+        String singleLine = message.replace('\r', ' ').replace('\n', ' ');
+        return singleLine.length() <= 200 ? singleLine : singleLine.substring(0, 200);
     }
 
     /**

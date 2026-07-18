@@ -254,6 +254,25 @@ public class ActionStateStore {
     }
 
     /**
+     * 将下游明确拒绝且确认未成功的写调用记录为 FAILED，允许用户修正参数后创建新草案。
+     *
+     * @param actionId 草案标识
+     * @param category 稳定失败分类
+     * @param exceptionType 异常类型
+     */
+    @Transactional
+    public void fail(String actionId, String category, String exceptionType) {
+        ActionDraftEntity action = actionRepository.findLockedById(actionId)
+                .orElseThrow(() -> new IllegalStateException("操作草案不存在"));
+        ActionExecutionEntity execution = requireExecution(action);
+        Instant now = clock.instant();
+
+        // 明确业务拒绝同时结束草案和执行审计，避免前端误显示为结果待核对。
+        action.fail(category, now);
+        execution.fail(category, exceptionType, now);
+    }
+
+    /**
      * 将下游结果不确定的真实写调用标记为 UNKNOWN，禁止自动重试。
      *
      * @param actionId 草案标识

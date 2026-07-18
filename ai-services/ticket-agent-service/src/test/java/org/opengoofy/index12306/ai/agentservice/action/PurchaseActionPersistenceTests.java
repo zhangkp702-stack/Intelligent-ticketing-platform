@@ -19,6 +19,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
@@ -115,6 +116,78 @@ class PurchaseActionPersistenceTests {
         assertThat(purchaseActionService.getStatus(fixture.userId(), confirmation.actionId()).status())
                 .isEqualTo(AgentActionStatus.AWAITING_CONFIRMATION);
         verifyNoInteractions(executor);
+    }
+
+    /**
+     * 验证 MCP 明确返回工具拒绝时记录 FAILED，而不是误报为结果待核对。
+     */
+    @Test
+    void explicitPurchaseRejectionIsRecordedAsFailed() {
+        Fixture fixture = createRunningTurn();
+        ToolExecutionException rejection = mock(ToolExecutionException.class);
+        when(rejection.getMessage()).thenReturn("MCP error: PURCHASE_REJECTED: insufficient tickets");
+        when(executor.execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("alice")))
+                .thenThrow(rejection);
+
+        // 先创建并签发正常草案，再模拟 MCP 返回明确工具错误。
+        purchaseActionService.prepare(fixture.context(), payload());
+        ActionConfirmationView confirmation = purchaseActionService
+                .confirmationForTurn(fixture.userId(), fixture.turnId())
+                .orElseThrow();
+        ConfirmPurchaseCommand command = new ConfirmPurchaseCommand(
+                unique("confirm"), unique("idempotency"), fixture.userId(), "alice",
+                confirmation.actionId(), confirmation.confirmationToken());
+
+        assertThatThrownBy(() -> purchaseActionService.confirm(command))
+                .hasMessageContaining("购票未成功");
+        ActionStatusView status = purchaseActionService.getStatus(fixture.userId(), confirmation.actionId());
+        assertThat(status.status()).isEqualTo(AgentActionStatus.FAILED);
+        assertThat(status.failureCategory()).isEqualTo("PURCHASE_REJECTED");
+    }
+
+    /**
+     * 验证网络超时仍记录 UNKNOWN，避免下游已经创建订单时允许用户重复提交。
+     */
+    @Test
+    void purchaseTimeoutRemainsUnknown() {
+        Fixture fixture = createRunningTurn();
+        when(executor.execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("alice")))
+                .thenThrow(new IllegalStateException("Ticket service read timed out"));
+
+        // 超时发生时无法证明订单未创建，因此状态必须继续要求人工核对。
+        purchaseActionService.prepare(fixture.context(), payload());
+        ActionConfirmationView confirmation = purchaseActionService
+                .confirmationForTurn(fixture.userId(), fixture.turnId())
+                .orElseThrow();
+        ConfirmPurchaseCommand command = new ConfirmPurchaseCommand(
+                unique("confirm"), unique("idempotency"), fixture.userId(), "alice",
+                confirmation.actionId(), confirmation.confirmationToken());
+
+        assertThatThrownBy(() -> purchaseActionService.confirm(command))
+                .hasMessageContaining("无法确认");
+        ActionStatusView status = purchaseActionService.getStatus(fixture.userId(), confirmation.actionId());
+        assertThat(status.status()).isEqualTo(AgentActionStatus.UNKNOWN);
+        assertThat(status.failureCategory()).isEqualTo("PURCHASE_RESULT_UNKNOWN");
+    }
+
+    /**
+     * 验证确认摘要展示语义席别和内部编码，帮助用户在下单前发现映射错误。
+     */
+    @Test
+    void purchaseSummaryShowsSeatLabelAndCode() {
+        Fixture fixture = createRunningTurn();
+
+        // 一等座必须稳定映射为编码 1，并在确认卡片同时展示两种信息。
+        purchaseActionService.prepare(
+                fixture.context(),
+                new PurchasePayload(
+                        "train-100", "北京南", "上海虹桥",
+                        List.of(new PurchasePassenger("passenger-1", 1)), List.of()));
+        ActionConfirmationView confirmation = purchaseActionService
+                .confirmationForTurn(fixture.userId(), fixture.turnId())
+                .orElseThrow();
+
+        assertThat(confirmation.summary()).contains("一等座（编码 1）");
     }
 
     /**

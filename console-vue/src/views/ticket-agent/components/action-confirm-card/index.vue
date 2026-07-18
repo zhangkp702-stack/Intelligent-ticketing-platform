@@ -193,6 +193,9 @@ const actionDescription = computed(() => {
   if (currentStatus.value === 'UNKNOWN') {
     return '下游结果暂时无法确认，请勿重复提交，先查询本人订单和支付状态。'
   }
+  if (currentStatus.value === 'FAILED') {
+    return '操作已明确失败，没有生成可确认的订单。请核对席别、乘车人和余票后重新生成操作草案。'
+  }
   if (currentStatus.value === 'EXPIRED' || expired.value) {
     return '该确认信息已经失效，请重新向智能体描述操作要求。'
   }

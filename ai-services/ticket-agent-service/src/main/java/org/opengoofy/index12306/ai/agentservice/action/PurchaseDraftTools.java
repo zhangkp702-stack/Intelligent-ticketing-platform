@@ -48,7 +48,8 @@ public class PurchaseDraftTools {
             @ToolParam(description = "query_tickets 返回的 trainId") String trainId,
             @ToolParam(description = "出发站完整名称") String departure,
             @ToolParam(description = "到达站完整名称") String arrival,
-            @ToolParam(description = "乘车人 ID 与席别编码列表") List<PassengerDraftInput> passengers,
+            @ToolParam(description = "乘车人 ID 与语义席别列表；seatClass 必须使用枚举名称，例如 FIRST_CLASS 表示一等座")
+            List<PassengerDraftInput> passengers,
             @ToolParam(required = false, description = "可选座位偏好，如 3A、3B") List<String> chooseSeats,
             ToolContext toolContext) {
         AgentRequestContext context = requestContext(toolContext);
@@ -56,7 +57,9 @@ public class PurchaseDraftTools {
         List<PurchasePassenger> normalizedPassengers = passengers == null
                 ? List.of() : passengers.stream()
                 .map(passenger -> passenger == null
-                        ? null : new PurchasePassenger(passenger.passengerId(), passenger.seatType()))
+                        ? null : new PurchasePassenger(
+                                passenger.passengerId(),
+                                passenger.seatClass() == null ? null : passenger.seatClass().code()))
                 .toList();
 
         // 本地工具只持久化草案，真实购票必须由独立确认接口继续执行。
@@ -96,8 +99,8 @@ public class PurchaseDraftTools {
 
     /**
      * @param passengerId list_my_passengers 返回的乘车人 ID
-     * @param seatType 席别编码
+     * @param seatClass 语义化席别，由服务端转换为票务编码
      */
-    public record PassengerDraftInput(String passengerId, Integer seatType) {
+    public record PassengerDraftInput(String passengerId, PurchaseSeatClass seatClass) {
     }
 }

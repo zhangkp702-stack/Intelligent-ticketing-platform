@@ -22,6 +22,8 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefu
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PurchasedTicketView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundableTicketView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundPreview;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -34,6 +36,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -42,6 +45,8 @@ import java.util.stream.Collectors;
 @Component
 public class TicketBusinessClient {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(TicketBusinessClient.class);
+    private static final String PURCHASE_REJECTED_MARKER = "PURCHASE_REJECTED:";
     private static final String SUCCESS_CODE = "0";
     private static final int TRAIN_STOP_LIMIT = 100;
     private static final int SEAT_TYPE_LIMIT = 20;
@@ -397,41 +402,67 @@ public class TicketBusinessClient {
             List<ConfirmedPurchasePassenger> passengers,
             List<String> chooseSeats,
             McpCallerIdentity identity) {
-        // 购票前读取当前用户乘车人白名单，拒绝模型或客户端拼入其他用户的乘车人标识。
-        Set<String> ownedPassengerIds = listPassengers(identity).stream()
-                .map(PassengerView::passengerId)
-                .collect(Collectors.toSet());
-        if (passengers.stream().anyMatch(passenger -> !ownedPassengerIds.contains(passenger.passengerId()))) {
-            throw new SecurityException("Purchase contains a passenger not owned by current user");
-        }
+        long started = System.nanoTime();
+        boolean purchaseRequestDispatched = false;
+        try {
+            // 购票前读取当前用户乘车人白名单，拒绝模型或客户端拼入其他用户的乘车人标识。
+            long passengerCheckStarted = System.nanoTime();
+            Set<String> ownedPassengerIds = listPassengers(identity).stream()
+                    .map(PassengerView::passengerId)
+                    .collect(Collectors.toSet());
+            if (passengers.stream().anyMatch(passenger -> !ownedPassengerIds.contains(passenger.passengerId()))) {
+                throw new SecurityException("Purchase contains a passenger not owned by current user");
+            }
+            LOGGER.info("MCP购票乘车人校验完成，requestId={}, actionId={}, durationMs={}",
+                    identity.requestId(), identity.actionId(),
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - passengerCheckStarted));
 
-        // 调用既有购票流程以继续复用库存扣减、订单创建、限流和风控规则。
-        Map<String, Object> request = Map.of(
-                "trainId", trainId,
-                "departure", departure,
-                "arrival", arrival,
-                "passengers", passengers,
-                "chooseSeats", chooseSeats);
-        JsonNode root = ticketClient.post()
-                .uri("/api/ticket-service/ticket/purchase")
-                .headers(headers -> addIdentity(headers, identity))
-                .body(request)
-                .retrieve()
-                .body(JsonNode.class);
-        JsonNode data = requireData(root);
+            // 调用既有购票流程以继续复用库存扣减、订单创建、限流和风控规则。
+            Map<String, Object> request = Map.of(
+                    "trainId", trainId,
+                    "departure", departure,
+                    "arrival", arrival,
+                    "passengers", passengers,
+                    "chooseSeats", chooseSeats);
+            long ticketRequestStarted = System.nanoTime();
+            purchaseRequestDispatched = true;
+            JsonNode root = ticketClient.post()
+                    .uri("/api/ticket-service/ticket/purchase")
+                    .headers(headers -> addIdentity(headers, identity))
+                    .body(request)
+                    .retrieve()
+                    .body(JsonNode.class);
+            JsonNode data = requireData(root);
+            LOGGER.info("MCP购票票务服务响应成功，requestId={}, actionId={}, durationMs={}",
+                    identity.requestId(), identity.actionId(),
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - ticketRequestStarted));
 
-        // 只保留确认结果展示所需字段，证件类型和证件号不得返回 Agent 或写入操作表。
-        List<PurchasedTicketView> tickets = new ArrayList<>();
-        for (JsonNode detail : iterable(data.path("ticketOrderDetails"))) {
-            tickets.add(new PurchasedTicketView(
-                    integer(detail, "seatType"),
-                    text(detail, "carriageNumber"),
-                    text(detail, "seatNumber"),
-                    text(detail, "realName"),
-                    integer(detail, "ticketType"),
-                    integer(detail, "amount")));
+            // 只保留确认结果展示所需字段，证件类型和证件号不得返回 Agent 或写入操作表。
+            List<PurchasedTicketView> tickets = new ArrayList<>();
+            for (JsonNode detail : iterable(data.path("ticketOrderDetails"))) {
+                tickets.add(new PurchasedTicketView(
+                        integer(detail, "seatType"),
+                        text(detail, "carriageNumber"),
+                        text(detail, "seatNumber"),
+                        text(detail, "realName"),
+                        integer(detail, "ticketType"),
+                        integer(detail, "amount")));
+            }
+            return new ConfirmedPurchaseResult(text(data, "orderSn"), List.copyOf(tickets));
+        } catch (RuntimeException ex) {
+            // dispatched 字段用于区分下单请求发送前失败和可能需要核对订单的网络异常。
+            LOGGER.warn(
+                    "MCP购票下游调用失败，requestId={}, actionId={}, requestDispatched={}, durationMs={}, exceptionType={}, error={}",
+                    identity.requestId(), identity.actionId(), purchaseRequestDispatched,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started),
+                    ex.getClass().getName(), safeErrorMessage(ex));
+            if (!purchaseRequestDispatched || ex instanceof DownstreamBusinessException) {
+                // 请求发送前失败或票务服务明确返回业务拒绝时，可以确定本次没有成功订单。
+                throw new IllegalStateException(
+                        PURCHASE_REJECTED_MARKER + " " + safeErrorMessage(ex), ex);
+            }
+            throw ex;
         }
-        return new ConfirmedPurchaseResult(text(data, "orderSn"), List.copyOf(tickets));
     }
 
     /**
@@ -590,7 +621,8 @@ public class TicketBusinessClient {
             String message = root == null
                     ? "empty downstream response"
                     : root.path("message").asText("downstream error");
-            throw new IllegalStateException("Ticket service query failed: " + abbreviate(message, 200));
+            throw new DownstreamBusinessException(
+                    "Ticket service query failed: " + abbreviate(message, 200));
         }
     }
 
@@ -669,5 +701,35 @@ public class TicketBusinessClient {
     private String abbreviate(String value, int maxLength) {
         // 短文本原样返回，长文本只保留诊断所需前缀。
         return value.length() <= maxLength ? value : value.substring(0, maxLength);
+    }
+
+    /**
+     * 生成可安全写入下游调用日志的单行限长错误摘要。
+     *
+     * @param exception 下游调用异常
+     * @return 最多 200 字符的错误摘要
+     */
+    private String safeErrorMessage(RuntimeException exception) {
+        // 不输出响应体或请求体，仅保留框架异常提供的简短原因。
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return exception.getClass().getSimpleName();
+        }
+        return abbreviate(message.replace('\r', ' ').replace('\n', ' '), 200);
+    }
+
+    /**
+     * 表示下游统一响应信封已经明确返回业务失败，而不是网络结果未知。
+     */
+    private static final class DownstreamBusinessException extends IllegalStateException {
+
+        /**
+         * 创建携带安全限长原因的明确业务失败。
+         *
+         * @param message 下游业务失败摘要
+         */
+        private DownstreamBusinessException(String message) {
+            super(message);
+        }
     }
 }

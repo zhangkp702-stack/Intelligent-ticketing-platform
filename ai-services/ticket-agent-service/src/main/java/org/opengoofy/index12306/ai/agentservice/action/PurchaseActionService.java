@@ -17,6 +17,8 @@ import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatException;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -39,6 +41,8 @@ import java.util.regex.Pattern;
 @Service
 public class PurchaseActionService {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(PurchaseActionService.class);
+    private static final String PURCHASE_REJECTED_MARKER = "PURCHASE_REJECTED:";
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final Pattern SEAT_PATTERN = Pattern.compile("[0-9]{1,2}[A-Z]{1,2}");
     private static final int MAX_PASSENGERS = 5;
@@ -201,12 +205,29 @@ public class PurchaseActionService {
                     claimed.actionId(), claimed.actionType().name(),
                     AgentActionStatus.SUCCEEDED, orderSn, result, null);
         } catch (RuntimeException ex) {
-            // 真实写请求发出后无法证明未成功，因此统一标记 UNKNOWN，绝不自动重试。
+            if (claimed.actionType() == AgentActionType.TICKET_PURCHASE
+                    && isDefinitePurchaseFailure(ex)) {
+                // MCP 明确返回工具拒绝时订单没有成功，记录 FAILED 允许用户修正后创建新草案。
+                String failureCategory = purchaseFailureCategory(ex);
+                stateStore.fail(claimed.actionId(), failureCategory, ex.getClass().getName());
+                LOGGER.warn(
+                        "Agent购票确认明确失败，requestId={}, actionId={}, failureCategory={}, exceptionType={}",
+                        command.requestId(), claimed.actionId(), failureCategory, ex.getClass().getName());
+                throw new AgentChatException(
+                        HttpStatus.BAD_REQUEST,
+                        failureCategory,
+                        "购票未成功，当前没有生成可确认的订单，请核对席别、乘车人和余票后重新生成购票草案");
+            }
+
+            // 超时、连接中断或无法解析成功响应时仍可能已经创建订单，必须保持 UNKNOWN。
             String unknownCategory = claimed.actionType() == AgentActionType.TICKET_PURCHASE
                     ? "PURCHASE_RESULT_UNKNOWN"
                     : ticketOperationActionService.unknownCategory(claimed.actionType());
             stateStore.markUnknown(
                     claimed.actionId(), unknownCategory, ex.getClass().getName());
+            LOGGER.warn(
+                    "Agent写操作结果待核对，requestId={}, actionId={}, failureCategory={}, exceptionType={}",
+                    command.requestId(), claimed.actionId(), unknownCategory, ex.getClass().getName());
             throw new AgentChatException(
                     HttpStatus.BAD_GATEWAY,
                     unknownCategory,
@@ -295,6 +316,75 @@ public class PurchaseActionService {
     }
 
     /**
+     * 判断购票异常是否已经由 MCP 明确返回为工具拒绝，并排除网络结果不确定场景。
+     *
+     * @param exception 购票执行异常
+     * @return 明确未成功时返回 true
+     */
+    private boolean isDefinitePurchaseFailure(RuntimeException exception) {
+        // 超时或连接中断可能发生在票务服务已经创建订单之后，不能归入明确失败。
+        if (containsUncertainTransportFailure(exception)) {
+            return false;
+        }
+        Throwable current = exception;
+        while (current != null) {
+            if (current instanceof IllegalArgumentException || current instanceof SecurityException) {
+                return true;
+            }
+            if (current.getMessage() != null
+                    && current.getMessage().contains(PURCHASE_REJECTED_MARKER)) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * 检查异常链和安全摘要中是否包含超时、连接重置等无法确认下单结果的信号。
+     *
+     * @param exception 购票执行异常
+     * @return 结果可能不确定时返回 true
+     */
+    private boolean containsUncertainTransportFailure(RuntimeException exception) {
+        Throwable current = exception;
+        while (current != null) {
+            String type = current.getClass().getSimpleName().toLowerCase();
+            String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase();
+            if (type.contains("timeout")
+                    || message.contains("timeout")
+                    || message.contains("timed out")
+                    || message.contains("connection reset")
+                    || message.contains("broken pipe")
+                    || message.contains("premature close")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * 根据明确拒绝的异常类型生成稳定失败分类，前端据此提示用户修正输入。
+     *
+     * @param exception 购票执行异常
+     * @return 稳定失败分类
+     */
+    private String purchaseFailureCategory(RuntimeException exception) {
+        Throwable current = exception;
+        while (current != null) {
+            if (current instanceof SecurityException) {
+                return "PURCHASE_FORBIDDEN";
+            }
+            if (current instanceof IllegalArgumentException) {
+                return "INVALID_PURCHASE_REQUEST";
+            }
+            current = current.getCause();
+        }
+        return "PURCHASE_REJECTED";
+    }
+
+    /**
      * 规范化并校验模型提供的购票草案参数。
      *
      * @param requestedPayload 原始草案参数
@@ -329,10 +419,9 @@ public class PurchaseActionService {
             if (!IDENTIFIER_PATTERN.matcher(passengerId).matches() || !passengerIds.add(passengerId)) {
                 throw new IllegalArgumentException("乘车人标识格式不正确或重复");
             }
-            if (passenger.seatType() == null || passenger.seatType() < 0 || passenger.seatType() > 14) {
-                throw new IllegalArgumentException("席别编码不正确");
-            }
-            return new PurchasePassenger(passengerId, passenger.seatType());
+            // 通过集中映射验证编码确实对应公开席别，而不是只校验数值范围。
+            PurchaseSeatClass seatClass = PurchaseSeatClass.fromCode(passenger.seatType());
+            return new PurchasePassenger(passengerId, seatClass.code());
         }).toList();
         List<String> chooseSeats = requestedPayload.chooseSeats() == null
                 ? List.of() : requestedPayload.chooseSeats().stream()
@@ -388,12 +477,15 @@ public class PurchaseActionService {
     private String summary(PurchasePayload payload) {
         // 摘要明确列出会产生订单的关键字段，用户可在确认前发现车次或人数错误。
         String seatTypes = payload.passengers().stream()
-                .map(passenger -> passenger.seatType().toString())
+                .map(passenger -> {
+                    PurchaseSeatClass seatClass = PurchaseSeatClass.fromCode(passenger.seatType());
+                    return seatClass.label() + "（编码 " + seatClass.code() + "）";
+                })
                 .distinct()
                 .reduce((left, right) -> left + "," + right)
                 .orElse("");
         return "购买车次 " + payload.trainId() + "，" + payload.departure() + "→" + payload.arrival()
-                + "，乘车人 " + payload.passengers().size() + " 名，席别编码 " + seatTypes;
+                + "，乘车人 " + payload.passengers().size() + " 名，席别 " + seatTypes;
     }
 
     /**

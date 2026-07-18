@@ -3,11 +3,9 @@ package org.opengoofy.index12306.ai.agentservice.model.client;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallTraceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 import reactor.util.context.ContextView;
@@ -92,17 +90,18 @@ final class ModelHttpCallTimingFilter {
             AtomicBoolean terminalRecorded,
             AtomicReference<Throwable> failure,
             AtomicReference<HttpStatusCode> status) {
-        // 保存状态码并把原始 DataBuffer 原样传递给 Spring AI 的 SSE 解码流程。
+        // 直接转换 mutate 已持有的原始响应流，避免 bodyToFlux 与 mutate 分别订阅导致响应体被消费两次。
         status.set(response.statusCode());
-        Flux<DataBuffer> timedBody = response.bodyToFlux(DataBuffer.class)
-                .doOnNext(ignored -> recordFirstChunk(
-                        identity, providerId, candidateId, modelId, startedNanos,
-                        firstChunkMillis, response.statusCode()))
-                .doOnError(failure::set)
-                .doFinally(signalType -> recordTerminal(
-                        signalType, identity, providerId, candidateId, modelId,
-                        startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get()));
-        return response.mutate().body(timedBody).build();
+        return response.mutate()
+                .body(body -> body
+                        .doOnNext(ignored -> recordFirstChunk(
+                                identity, providerId, candidateId, modelId, startedNanos,
+                                firstChunkMillis, response.statusCode()))
+                        .doOnError(failure::set)
+                        .doFinally(signalType -> recordTerminal(
+                                signalType, identity, providerId, candidateId, modelId,
+                                startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get())))
+                .build();
     }
 
     /**
