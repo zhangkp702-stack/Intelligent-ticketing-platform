@@ -34,11 +34,17 @@ public class OpenAiCompatibleChatModelFactory {
     /**
      * 根据平台连接信息和候选模型参数创建一个独立的 Spring AI ChatModel。
      *
+     * @param providerId 平台配置标识
+     * @param candidateId 模型候选项标识
      * @param provider 平台连接配置
      * @param candidate 候选模型配置
      * @return 可直接调用的 Spring AI 模型客户端
      */
-    public ChatModel create(AgentModelProperties.Provider provider, AgentModelProperties.Candidate candidate) {
+    public ChatModel create(
+            String providerId,
+            String candidateId,
+            AgentModelProperties.Provider provider,
+            AgentModelProperties.Candidate candidate) {
         // 为同步调用设置明确的连接和读取超时，避免某个平台长期占用调用线程。
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(provider.connectTimeout());
@@ -51,7 +57,8 @@ public class OpenAiCompatibleChatModelFactory {
                 .apiKey(provider.apiKey())
                 .completionsPath(provider.completionsPath())
                 .restClientBuilder(restClientBuilder)
-                .webClientBuilder(WebClient.builder())
+                .webClientBuilder(WebClient.builder().filter(ModelHttpCallTimingFilter.create(
+                        providerId, candidateId, candidate.model())))
                 .build();
 
         // 关闭模型内部工具执行，由后续智能体编排层控制只读工具和显式确认流程。

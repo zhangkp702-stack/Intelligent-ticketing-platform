@@ -94,7 +94,7 @@ public class ModelAttemptRecorder {
                 .register(meterRegistry)
                 .record(Duration.ofMillis(event.durationMillis()));
         LOGGER.info(
-                "Agent模型调用完成，role={}, provider={}, candidate={}, outcome={}, category={}, durationMs={}",
+                "Agent模型路由尝试汇总，role={}, provider={}, candidate={}, outcome={}, category={}, aggregateDurationMs={}",
                 event.role(), event.providerId(), event.candidateId(), event.outcome(), category,
                 event.durationMillis());
 

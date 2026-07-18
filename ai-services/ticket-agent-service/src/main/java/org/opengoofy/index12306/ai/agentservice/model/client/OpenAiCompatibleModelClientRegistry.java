@@ -41,7 +41,7 @@ public class OpenAiCompatibleModelClientRegistry implements ModelClientRegistry 
                     candidate.provider(),
                     candidate.model(),
                     Set.copyOf(candidate.capabilities()),
-                    chatModelFactory.create(provider, candidate));
+                    chatModelFactory.create(candidate.provider(), candidateId, provider, candidate));
             registeredClients.put(candidateId, client);
         });
         this.clients = Collections.unmodifiableMap(registeredClients);

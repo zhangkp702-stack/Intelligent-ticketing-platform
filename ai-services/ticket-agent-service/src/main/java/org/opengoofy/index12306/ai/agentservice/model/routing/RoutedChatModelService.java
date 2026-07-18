@@ -3,6 +3,7 @@ package org.opengoofy.index12306.ai.agentservice.model.routing;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelCapability;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallTraceContext;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Service;
@@ -134,10 +135,15 @@ public class RoutedChatModelService {
         Set<ModelCapability> capabilities = toolsEnabled
                 ? Set.of(ModelCapability.STREAMING, ModelCapability.TOOL_CALLING)
                 : Set.of(ModelCapability.STREAMING);
-        return modelRouter.stream(
-                role,
-                capabilities,
-                attemptContext,
-                client -> client.chatModel().stream(prompt));
+        return Flux.defer(() -> {
+            // 每次订阅创建独立的分轮计数器，使自动工具执行产生的模型 HTTP 往返可以逐次计时。
+            ModelHttpCallTraceContext traceContext = ModelHttpCallTraceContext.create(role, attemptContext);
+            return modelRouter.stream(
+                            role,
+                            capabilities,
+                            attemptContext,
+                            client -> client.chatModel().stream(prompt))
+                    .contextWrite(traceContext::writeTo);
+        });
     }
 }
