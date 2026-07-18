@@ -48,6 +48,12 @@ spring:
               url: ${TICKET_MCP_SERVER_URL:http://127.0.0.1:9006}
               endpoint: /mcp
 
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:192.168.126.100:9876}
+  producer:
+    group: index12306_agent_memory_summary_pg${unique-name:}
+    send-message-timeout: 2000
+
 management:
   endpoints:
     web:
@@ -67,21 +73,19 @@ index12306:
     mcp:
       internal-secret: ${TICKET_MCP_INTERNAL_SECRET:}
     memory:
-      topic-candidate-limit: 6
-      topic-route-confidence-threshold: 0.55
-      recent-user-question-limit: 6
       recent-message-limit: 16
       context-token-budget: 12000
       summary-trigger-message-count: 12
       summary-max-attempts: 3
       summary-retry-delay: 30s
       summary-lease-duration: 2m
-      summary-auto-dispatch-enabled: true
-      summary-executor:
-        core-pool-size: 2
-        max-pool-size: 4
-        queue-capacity: 200
-        await-termination: 20s
+      mq:
+        enabled: ${AGENT_SUMMARY_MQ_ENABLED:true}
+        topic: index12306_agent_memory_summary_topic${unique-name:}
+        tag: GENERATE
+        consumer-group: index12306_agent_memory_summary_cg${unique-name:}
+        send-timeout-millis: 2000
+        publish-interval-millis: 1000
     model:
       attempt-timeout: 20s
       total-timeout: 50s
@@ -149,10 +153,6 @@ index12306:
           - siliconflow-answer-secondary
           - siliconflow-answer-tertiary
           - bailian-flash
-        TOPIC_ROUTE:
-          - siliconflow-summary-primary
-          - bailian-flash
-          - siliconflow-answer-tertiary
         MEMORY_SUMMARY:
           - siliconflow-summary-primary
           - bailian-flash

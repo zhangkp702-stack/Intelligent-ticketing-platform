@@ -26,7 +26,7 @@ public interface ConversationRepository extends JpaRepository<ConversationEntity
     Page<ConversationEntity> findByUserId(String userId, Pageable pageable);
 
     /**
-     * 使用数据库写锁读取会话，保护消息序号分配和活动主题更新。
+     * 使用数据库写锁读取会话，保护消息序号分配和并发轮次写入。
      *
      * @param conversationId 会话标识
      * @return 锁定的会话

@@ -35,10 +35,10 @@ class ModelAttemptAuditPersistenceTests {
     @Test
     void persistsAttemptWithExplicitContext() {
         ModelAttemptContext context = new ModelAttemptContext(
-                "request-audit", "conversation-audit", "topic-audit", "turn-audit");
+                "request-audit", "conversation-audit", "turn-audit");
         ModelAttemptEvent event = new ModelAttemptEvent(
                 Instant.now(),
-                ModelRole.TOPIC_ROUTE,
+                ModelRole.MEMORY_SUMMARY,
                 "route-secondary",
                 "bailian",
                 "qwen-flash",
@@ -56,7 +56,6 @@ class ModelAttemptAuditPersistenceTests {
 
         assertThat(persisted.getRequestId()).isEqualTo("request-audit");
         assertThat(persisted.getConversationId()).isEqualTo("conversation-audit");
-        assertThat(persisted.getTopicId()).isEqualTo("topic-audit");
         assertThat(persisted.getTurnId()).isEqualTo("turn-audit");
         assertThat(persisted.getFallbackIndex()).isEqualTo(1);
         assertThat(persisted.getAttemptNo()).isEqualTo(2);

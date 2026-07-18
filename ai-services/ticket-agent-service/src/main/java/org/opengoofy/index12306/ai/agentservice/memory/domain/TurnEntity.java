@@ -24,9 +24,6 @@ public class TurnEntity extends AgentBaseEntity {
     @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "topic_id", length = 32)
-    private String topicId;
-
     @Column(name = "request_id", nullable = false, length = 64)
     private String requestId;
 
@@ -59,7 +56,7 @@ public class TurnEntity extends AgentBaseEntity {
     }
 
     /**
-     * 创建等待主题路由和助手回答的新轮次。
+     * 创建等待助手回答的新轮次。
      *
      * @param conversationId 会话标识
      * @param requestId 请求标识
@@ -73,23 +70,6 @@ public class TurnEntity extends AgentBaseEntity {
     }
 
     /**
-     * 将当前轮次绑定到主题路由最终选中的主题。
-     *
-     * @param selectedTopicId 选中主题标识
-     * @param now 更新时间
-     */
-    public void assignTopic(String selectedTopicId, Instant now) {
-        if (status != TurnStatus.RUNNING) {
-            throw new IllegalStateException("只有运行中轮次可以绑定主题");
-        }
-        if (topicId != null && !topicId.equals(selectedTopicId)) {
-            throw new IllegalStateException("轮次已经绑定其他主题");
-        }
-        this.topicId = Objects.requireNonNull(selectedTopicId, "selectedTopicId");
-        touch(now);
-    }
-
-    /**
      * 使用最终助手消息完成本轮问答。
      *
      * @param messageId 助手消息标识
@@ -98,9 +78,6 @@ public class TurnEntity extends AgentBaseEntity {
     public void complete(String messageId, Instant now) {
         if (status != TurnStatus.RUNNING) {
             throw new IllegalStateException("轮次已经结束");
-        }
-        if (topicId == null) {
-            throw new IllegalStateException("完成轮次前必须确定主题");
         }
         // 完成状态与助手消息引用在同一事务中更新，避免出现无回答的完成轮次。
         this.assistantMessageId = Objects.requireNonNull(messageId, "messageId");

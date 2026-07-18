@@ -454,7 +454,7 @@ public class ModelRouter {
             long durationMillis,
             boolean firstChunkEmitted,
             ModelAttemptContext attemptContext) {
-        // 返回成功尝试的持久化标识，供主题路由日志建立可追踪关联。
+        // 返回成功尝试的持久化标识，供调用方建立可追踪关联。
         return attemptRecorder.record(new ModelAttemptEvent(
                 Instant.now(),
                 role,

@@ -44,7 +44,6 @@ class SignedMcpMetadataConverterTests {
         context.put(McpToolContextFactory.USERNAME, "alice");
         context.put(McpToolContextFactory.CONVERSATION_ID, "conversation-a");
         context.put(McpToolContextFactory.TURN_ID, "turn-a");
-        context.put(McpToolContextFactory.TOPIC_ID, "topic-a");
 
         // 转换器复制上下文字段并添加防重放数据，不会把签名写回原始映射。
         Map<String, Object> metadata = converter.convert(new ToolContext(context));
@@ -58,7 +57,6 @@ class SignedMcpMetadataConverterTests {
                 "alice",
                 "conversation-a",
                 "turn-a",
-                "topic-a",
                 "",
                 "",
                 metadata.get("timestamp").toString(),

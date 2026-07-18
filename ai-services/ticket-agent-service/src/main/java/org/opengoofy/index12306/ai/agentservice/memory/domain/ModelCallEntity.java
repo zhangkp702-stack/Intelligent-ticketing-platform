@@ -30,9 +30,6 @@ public class ModelCallEntity extends AgentBaseEntity {
     @Column(name = "conversation_id", length = 32)
     private String conversationId;
 
-    @Column(name = "topic_id", length = 32)
-    private String topicId;
-
     @Column(name = "turn_id", length = 32)
     private String turnId;
 
@@ -85,7 +82,6 @@ public class ModelCallEntity extends AgentBaseEntity {
         super(now);
         this.requestId = data.requestId();
         this.conversationId = data.conversationId();
-        this.topicId = data.topicId();
         this.turnId = data.turnId();
         this.role = Objects.requireNonNull(data.role(), "role");
         this.providerId = Objects.requireNonNull(data.providerId(), "providerId");
@@ -120,7 +116,6 @@ public class ModelCallEntity extends AgentBaseEntity {
      *
      * @param requestId 请求标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param turnId 轮次标识
      * @param role 模型角色
      * @param providerId 平台标识
@@ -140,7 +135,6 @@ public class ModelCallEntity extends AgentBaseEntity {
     public record ModelCallData(
             String requestId,
             String conversationId,
-            String topicId,
             String turnId,
             ModelRole role,
             String providerId,

@@ -14,7 +14,7 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * 可重试、可租约恢复的异步主题摘要任务。
+ * 合并同一会话摘要请求并记录 MQ 发布、领取和重试状态。
  */
 @Getter
 @Entity
@@ -22,20 +22,20 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class SummaryTaskEntity extends AgentBaseEntity {
 
-    @Column(name = "conversation_id", nullable = false, length = 32)
+    @Column(name = "conversation_id", nullable = false, unique = true, length = 32)
     private String conversationId;
 
-    @Column(name = "topic_id", nullable = false, length = 32)
-    private String topicId;
+    @Column(name = "desired_through_sequence", nullable = false)
+    private long desiredThroughSequence;
 
-    @Column(name = "from_sequence", nullable = false)
-    private long fromSequence;
-
-    @Column(name = "through_sequence", nullable = false)
-    private long throughSequence;
+    @Column(name = "processing_through_sequence")
+    private Long processingThroughSequence;
 
     @Column(name = "expected_summary_version", nullable = false)
     private int expectedSummaryVersion;
+
+    @Column(name = "event_version", nullable = false)
+    private long eventVersion;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
@@ -56,6 +56,12 @@ public class SummaryTaskEntity extends AgentBaseEntity {
     @Column(name = "lease_until")
     private Instant leaseUntil;
 
+    @Column(name = "mq_message_id", length = 128)
+    private String mqMessageId;
+
+    @Column(name = "published_at")
+    private Instant publishedAt;
+
     @Column(name = "failure_category", length = 64)
     private String failureCategory;
 
@@ -70,84 +76,107 @@ public class SummaryTaskEntity extends AgentBaseEntity {
 
     private SummaryTaskEntity(
             String conversationId,
-            String topicId,
-            long fromSequence,
-            long throughSequence,
+            long desiredThroughSequence,
             int expectedSummaryVersion,
             int maxAttempts,
             Instant now) {
         super(now);
-        if (fromSequence > throughSequence) {
-            throw new IllegalArgumentException("摘要起始消息序号不能大于结束序号");
-        }
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId");
-        this.topicId = Objects.requireNonNull(topicId, "topicId");
-        this.fromSequence = fromSequence;
-        this.throughSequence = throughSequence;
+        this.desiredThroughSequence = desiredThroughSequence;
         this.expectedSummaryVersion = expectedSummaryVersion;
         this.maxAttempts = maxAttempts;
+        this.eventVersion = 1;
         this.status = SummaryTaskStatus.PENDING;
     }
 
     /**
-     * 创建一个覆盖确定消息范围的待执行摘要任务。
+     * 创建会话首个待发布摘要任务。
      *
      * @param conversationId 会话标识
-     * @param topicId 主题标识
-     * @param fromSequence 起始消息序号
-     * @param throughSequence 结束消息序号
-     * @param expectedSummaryVersion 任务成功时应写入的摘要版本
+     * @param desiredThroughSequence 期望摘要覆盖边界
+     * @param expectedSummaryVersion 当前摘要版本
      * @param maxAttempts 最大尝试次数
      * @param now 创建时间
-     * @return 新摘要任务
+     * @return 待发布任务
      */
     public static SummaryTaskEntity pending(
             String conversationId,
-            String topicId,
-            long fromSequence,
-            long throughSequence,
+            long desiredThroughSequence,
             int expectedSummaryVersion,
             int maxAttempts,
             Instant now) {
-        // 消息范围和期望版本在入队时冻结，后续完成阶段据此阻止并发覆盖。
         return new SummaryTaskEntity(
-                conversationId, topicId, fromSequence, throughSequence,
-                expectedSummaryVersion, maxAttempts, now);
+                conversationId, desiredThroughSequence, expectedSummaryVersion, maxAttempts, now);
     }
 
     /**
-     * 判断任务在指定时间是否可以由执行器领取。
+     * 合并同一会话的新摘要边界，避免连续对话创建大量任务和 MQ 消息。
      *
-     * @param now 当前时间
-     * @return 待执行、到期重试或租约过期时返回 {@code true}
+     * @param throughSequence 新的摘要目标边界
+     * @param summaryVersion 当前摘要版本
+     * @param now 更新时间
      */
-    public boolean isDispatchable(Instant now) {
-        if (status == SummaryTaskStatus.PENDING) {
-            return true;
+    public void request(long throughSequence, int summaryVersion, Instant now) {
+        if (throughSequence <= desiredThroughSequence && status != SummaryTaskStatus.FAILED) {
+            return;
         }
-        if (status == SummaryTaskStatus.RETRY_WAIT) {
-            return nextRetryAt == null || !now.isBefore(nextRetryAt);
+        this.desiredThroughSequence = Math.max(desiredThroughSequence, throughSequence);
+        if (status == SummaryTaskStatus.SUCCEEDED || status == SummaryTaskStatus.FAILED) {
+            // 已结束任务在产生足够新消息后复用同一行，并生成新的事件版本。
+            this.expectedSummaryVersion = summaryVersion;
+            this.eventVersion++;
+            this.attemptCount = 0;
+            this.status = SummaryTaskStatus.PENDING;
+            this.finishedAt = null;
+            this.failureCategory = null;
+            this.failureMessage = null;
+            this.mqMessageId = null;
+            this.publishedAt = null;
         }
-        return status == SummaryTaskStatus.RUNNING
-                && leaseUntil != null
-                && !now.isBefore(leaseUntil);
+        touch(now);
     }
 
     /**
-     * 由指定工作节点领取任务并建立有限租约。
+     * 记录 RocketMQ 已持久化接收当前事件。
      *
-     * @param workerId 工作节点标识
+     * @param messageId RocketMQ 消息标识
+     * @param now 发布时间
+     */
+    public void published(String messageId, Instant now) {
+        if (status != SummaryTaskStatus.PENDING) {
+            return;
+        }
+        this.status = SummaryTaskStatus.PUBLISHED;
+        this.mqMessageId = messageId;
+        this.publishedAt = now;
+        touch(now);
+    }
+
+    /**
+     * 领取与当前事件版本一致的任务，并冻结本次处理边界。
+     *
+     * @param messageEventVersion MQ 消息携带的事件版本
+     * @param workerId 消费节点标识
      * @param now 领取时间
      * @param leaseDuration 租约时长
+     * @return 是否成功领取；过期或重复消息返回 false
      */
-    public void claim(String workerId, Instant now, Duration leaseDuration) {
-        if (!isDispatchable(now)) {
-            throw new IllegalStateException("摘要任务当前不可领取");
+    public boolean claim(long messageEventVersion, String workerId, Instant now, Duration leaseDuration) {
+        if (messageEventVersion != eventVersion || status == SummaryTaskStatus.SUCCEEDED
+                || status == SummaryTaskStatus.FAILED) {
+            return false;
+        }
+        if (status == SummaryTaskStatus.RUNNING && leaseUntil != null && now.isBefore(leaseUntil)) {
+            return false;
         }
         if (attemptCount >= maxAttempts) {
-            throw new IllegalStateException("摘要任务已达到最大尝试次数");
+            this.status = SummaryTaskStatus.FAILED;
+            this.finishedAt = now;
+            touch(now);
+            return false;
         }
-        // 每次重新领取都增加尝试次数，租约过期后其他实例可以安全接管。
+        // 冻结当前目标边界，模型调用期间产生的新消息只更新 desiredThroughSequence。
+        this.processingThroughSequence = desiredThroughSequence;
         this.status = SummaryTaskStatus.RUNNING;
         this.attemptCount++;
         this.leaseOwner = Objects.requireNonNull(workerId, "workerId");
@@ -155,54 +184,101 @@ public class SummaryTaskEntity extends AgentBaseEntity {
         this.nextRetryAt = null;
         this.startedAt = now;
         touch(now);
+        return true;
     }
 
     /**
-     * 在摘要和主题版本提交成功后完成任务。
+     * 完成本次边界；处理期间有新消息时生成下一版本待发布事件。
      *
+     * @param newSummaryVersion 成功提交后的摘要版本
      * @param now 完成时间
      */
-    public void succeed(Instant now) {
+    public void succeed(int newSummaryVersion, Instant now) {
         requireRunning();
-        // 任务完成后清理租约，保留尝试次数用于运维审计。
-        this.status = SummaryTaskStatus.SUCCEEDED;
-        this.finishedAt = now;
+        this.expectedSummaryVersion = newSummaryVersion;
         this.leaseOwner = null;
         this.leaseUntil = null;
         this.failureCategory = null;
         this.failureMessage = null;
-        touch(now);
-    }
-
-    /**
-     * 记录一次失败，并根据剩余尝试次数进入延迟重试或最终失败。
-     *
-     * @param category 稳定失败分类
-     * @param message 已脱敏的失败摘要
-     * @param now 失败时间
-     * @param retryDelay 基础重试等待时间
-     */
-    public void fail(String category, String message, Instant now, Duration retryDelay) {
-        requireRunning();
-        this.failureCategory = category;
-        this.failureMessage = sanitizeFailureMessage(message);
-        this.leaseOwner = null;
-        this.leaseUntil = null;
-
-        // 达到最大次数后进入最终失败，否则按尝试次数线性延长下一次重试时间。
-        if (attemptCount >= maxAttempts) {
-            this.status = SummaryTaskStatus.FAILED;
-            this.finishedAt = now;
-            this.nextRetryAt = null;
+        if (processingThroughSequence != null && desiredThroughSequence > processingThroughSequence) {
+            // 后续消息继续复用任务行，通过新的事件版本重新发布。
+            this.status = SummaryTaskStatus.PENDING;
+            this.eventVersion++;
+            this.attemptCount = 0;
+            this.mqMessageId = null;
+            this.publishedAt = null;
         } else {
-            this.status = SummaryTaskStatus.RETRY_WAIT;
-            this.nextRetryAt = now.plus(retryDelay.multipliedBy(attemptCount));
+            this.status = SummaryTaskStatus.SUCCEEDED;
+            this.finishedAt = now;
         }
         touch(now);
     }
 
     /**
-     * 校验任务当前由某个执行器持有。
+     * 记录一次消费失败，保留同一事件版本供 RocketMQ 重投。
+     *
+     * @param category 失败分类
+     * @param message 脱敏失败说明
+     * @param now 失败时间
+     * @param retryDelay 重试等待时间
+     * @return 是否仍允许 RocketMQ 重试
+     */
+    public boolean fail(String category, String message, Instant now, Duration retryDelay) {
+        requireRunning();
+        this.failureCategory = category;
+        this.failureMessage = sanitizeFailureMessage(message);
+        this.leaseOwner = null;
+        this.leaseUntil = null;
+        if (attemptCount >= maxAttempts) {
+            this.status = SummaryTaskStatus.FAILED;
+            this.finishedAt = now;
+            this.nextRetryAt = null;
+            touch(now);
+            return false;
+        }
+        this.status = SummaryTaskStatus.RETRY_WAIT;
+        this.nextRetryAt = now.plus(retryDelay.multipliedBy(attemptCount));
+        touch(now);
+        return true;
+    }
+
+    /**
+     * 将到期重试或租约过期的任务恢复为待发布，避免消费者宕机后任务永久卡住。
+     *
+     * @param now 当前时间
+     * @return 是否恢复了任务状态
+     */
+    public boolean recoverForRepublish(Instant now) {
+        boolean retryDue = status == SummaryTaskStatus.RETRY_WAIT
+                && nextRetryAt != null && !now.isBefore(nextRetryAt);
+        boolean leaseExpired = status == SummaryTaskStatus.RUNNING
+                && leaseUntil != null && !now.isBefore(leaseUntil);
+        if (!retryDue && !leaseExpired) {
+            return false;
+        }
+        if (attemptCount >= maxAttempts) {
+            // 最后一次执行丢失或失败时直接终止，防止恢复扫描形成无限重试。
+            this.status = SummaryTaskStatus.FAILED;
+            this.finishedAt = now;
+            this.nextRetryAt = null;
+            this.leaseOwner = null;
+            this.leaseUntil = null;
+            touch(now);
+            return true;
+        }
+        // 保留事件版本和尝试次数，重新发布后仍由同一幂等键继续处理。
+        this.status = SummaryTaskStatus.PENDING;
+        this.nextRetryAt = null;
+        this.leaseOwner = null;
+        this.leaseUntil = null;
+        this.mqMessageId = null;
+        this.publishedAt = null;
+        touch(now);
+        return true;
+    }
+
+    /**
+     * 校验只有运行中的任务能够完成或失败。
      */
     private void requireRunning() {
         if (status != SummaryTaskStatus.RUNNING) {
@@ -211,16 +287,15 @@ public class SummaryTaskEntity extends AgentBaseEntity {
     }
 
     /**
-     * 清理换行并限制失败说明长度，避免异常正文或敏感输入进入审计表。
+     * 清理并截断失败说明，避免日志正文进入任务表。
      *
      * @param message 原始失败说明
-     * @return 最长 512 字符的单行失败摘要
+     * @return 最长 512 字符的单行文本
      */
     private String sanitizeFailureMessage(String message) {
         if (message == null) {
             return null;
         }
-        // 数据库只保存简短诊断说明，完整堆栈继续交给受控日志系统。
         String sanitized = message.replace('\r', ' ').replace('\n', ' ');
         return sanitized.length() <= 512 ? sanitized : sanitized.substring(0, 512);
     }

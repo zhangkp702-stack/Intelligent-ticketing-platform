@@ -17,7 +17,6 @@ public class McpToolContextFactory {
     public static final String USERNAME = "username";
     public static final String CONVERSATION_ID = "conversationId";
     public static final String TURN_ID = "turnId";
-    public static final String TOPIC_ID = "topicId";
     public static final String ACTION_ID = "actionId";
     public static final String PAYLOAD_HASH = "payloadHash";
 
@@ -35,7 +34,6 @@ public class McpToolContextFactory {
         result.put(USERNAME, valueOrEmpty(context.username()));
         result.put(CONVERSATION_ID, context.conversationId());
         result.put(TURN_ID, context.turnId());
-        result.put(TOPIC_ID, valueOrEmpty(context.topicId()));
         return Map.copyOf(result);
     }
 

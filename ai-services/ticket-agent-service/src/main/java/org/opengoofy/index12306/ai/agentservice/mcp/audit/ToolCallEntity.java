@@ -28,9 +28,6 @@ public class ToolCallEntity extends AgentBaseEntity {
     @Column(name = "conversation_id", length = 32)
     private String conversationId;
 
-    @Column(name = "topic_id", length = 32)
-    private String topicId;
-
     @Column(name = "turn_id", length = 32)
     private String turnId;
 
@@ -72,7 +69,6 @@ public class ToolCallEntity extends AgentBaseEntity {
         super(now);
         this.requestId = data.requestId();
         this.conversationId = data.conversationId();
-        this.topicId = data.topicId();
         this.turnId = data.turnId();
         this.toolName = Objects.requireNonNull(data.toolName(), "toolName");
         this.mcpServer = Objects.requireNonNull(data.mcpServer(), "mcpServer");
@@ -102,7 +98,6 @@ public class ToolCallEntity extends AgentBaseEntity {
      *
      * @param requestId 请求标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param turnId 轮次标识
      * @param toolName 工具名称
      * @param mcpServer MCP 服务名称
@@ -117,7 +112,6 @@ public class ToolCallEntity extends AgentBaseEntity {
     public record ToolCallData(
             String requestId,
             String conversationId,
-            String topicId,
             String turnId,
             String toolName,
             String mcpServer,

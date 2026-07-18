@@ -25,11 +25,14 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
     @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "topic_id", nullable = false, length = 32)
-    private String topicId;
-
     @Column(name = "summary_id", length = 32)
     private String summaryId;
+
+    @Column(name = "summary_version")
+    private Integer summaryVersion;
+
+    @Column(name = "summarized_through_sequence", nullable = false)
+    private long summarizedThroughSequence;
 
     @Column(name = "message_from_sequence")
     private Long messageFromSequence;
@@ -49,8 +52,9 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
     private ContextSnapshotEntity(
             String requestId,
             String conversationId,
-            String topicId,
             String summaryId,
+            Integer summaryVersion,
+            long summarizedThroughSequence,
             Long messageFromSequence,
             Long messageThroughSequence,
             String selectedMessageIds,
@@ -60,8 +64,9 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
         super(now);
         this.requestId = Objects.requireNonNull(requestId, "requestId");
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId");
-        this.topicId = Objects.requireNonNull(topicId, "topicId");
         this.summaryId = summaryId;
+        this.summaryVersion = summaryVersion;
+        this.summarizedThroughSequence = summarizedThroughSequence;
         this.messageFromSequence = messageFromSequence;
         this.messageThroughSequence = messageThroughSequence;
         this.selectedMessageIds = selectedMessageIds;
@@ -74,8 +79,9 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
      *
      * @param requestId 请求标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param summaryId 使用的摘要标识
+     * @param summaryVersion 使用的摘要版本
+     * @param summarizedThroughSequence 摘要覆盖到的消息序号
      * @param messageFromSequence 首条消息序号
      * @param messageThroughSequence 末条消息序号
      * @param selectedMessageIds 选中消息标识 JSON
@@ -87,8 +93,9 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
     public static ContextSnapshotEntity create(
             String requestId,
             String conversationId,
-            String topicId,
             String summaryId,
+            Integer summaryVersion,
+            long summarizedThroughSequence,
             Long messageFromSequence,
             Long messageThroughSequence,
             String selectedMessageIds,
@@ -97,7 +104,7 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
             Instant now) {
         // 快照只保存引用、范围和哈希，避免重复保存用户对话正文。
         return new ContextSnapshotEntity(
-                requestId, conversationId, topicId, summaryId,
+                requestId, conversationId, summaryId, summaryVersion, summarizedThroughSequence,
                 messageFromSequence, messageThroughSequence, selectedMessageIds,
                 estimatedTokenCount, contextHash, now);
     }

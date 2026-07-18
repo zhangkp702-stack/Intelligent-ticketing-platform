@@ -54,7 +54,6 @@ public class ToolCallAuditService {
         ToolCallData data = new ToolCallData(
                 event.requestId(),
                 event.conversationId(),
-                event.topicId(),
                 event.turnId(),
                 event.toolName(),
                 event.mcpServer(),
@@ -94,7 +93,6 @@ public class ToolCallAuditService {
      *
      * @param requestId 请求标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param turnId 轮次标识
      * @param toolName 工具名称
      * @param mcpServer MCP 服务名称
@@ -108,7 +106,6 @@ public class ToolCallAuditService {
     public record ToolCallAuditEvent(
             String requestId,
             String conversationId,
-            String topicId,
             String turnId,
             String toolName,
             String mcpServer,

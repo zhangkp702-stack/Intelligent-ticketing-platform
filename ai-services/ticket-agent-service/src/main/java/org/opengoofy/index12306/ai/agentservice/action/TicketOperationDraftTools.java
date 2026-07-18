@@ -82,8 +82,7 @@ public class TicketOperationDraftTools {
                 text(values, McpToolContextFactory.USER_ID),
                 text(values, McpToolContextFactory.USERNAME),
                 text(values, McpToolContextFactory.CONVERSATION_ID),
-                text(values, McpToolContextFactory.TURN_ID),
-                text(values, McpToolContextFactory.TOPIC_ID));
+                text(values, McpToolContextFactory.TURN_ID));
     }
 
     /**

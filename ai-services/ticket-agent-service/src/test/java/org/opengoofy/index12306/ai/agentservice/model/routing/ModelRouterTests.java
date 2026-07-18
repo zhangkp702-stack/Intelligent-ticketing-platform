@@ -144,7 +144,7 @@ class ModelRouterTests {
     void streamPreservesAttemptContextAcrossFallback() {
         TestContext context = context();
         ModelAttemptContext attemptContext = new ModelAttemptContext(
-                "request-1", "conversation-1", "topic-1", "turn-1");
+                "request-1", "conversation-1", "turn-1");
 
         // 主模型首包前失败并降级，两个尝试都必须关联到当前对话轮次。
         Flux<String> response = context.router().stream(

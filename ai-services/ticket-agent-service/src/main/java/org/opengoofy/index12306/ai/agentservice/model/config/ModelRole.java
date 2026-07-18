@@ -10,7 +10,6 @@ import java.util.Set;
 public enum ModelRole {
 
     ANSWER_TOOL(EnumSet.of(ModelCapability.CHAT)),
-    TOPIC_ROUTE(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT)),
     MEMORY_SUMMARY(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT)),
     PARAMETER_REPAIR(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT));
 

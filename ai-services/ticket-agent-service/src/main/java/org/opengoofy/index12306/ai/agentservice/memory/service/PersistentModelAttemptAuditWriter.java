@@ -38,7 +38,6 @@ public class PersistentModelAttemptAuditWriter implements ModelAttemptAuditWrite
         ModelCallEntity.ModelCallData data = new ModelCallEntity.ModelCallData(
                 context.requestId(),
                 context.conversationId(),
-                context.topicId(),
                 context.turnId(),
                 event.role(),
                 event.providerId(),

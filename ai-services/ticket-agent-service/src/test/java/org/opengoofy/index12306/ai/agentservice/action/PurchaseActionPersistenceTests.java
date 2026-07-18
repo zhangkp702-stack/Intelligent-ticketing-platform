@@ -13,7 +13,6 @@ import org.opengoofy.index12306.ai.agentservice.action.TicketOperationActionMode
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationEntity;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.TopicEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -201,16 +200,12 @@ class PurchaseActionPersistenceTests {
         String userId = unique("user");
         String requestId = unique("request");
         ConversationEntity conversation = conversationMemoryService.createConversation(userId, "购票确认测试");
-        TopicEntity topic = conversationMemoryService.createTopic(
-                userId, conversation.getId(), unique("topic"), "购票确认");
-
-        // 草案只能在当前运行轮次内创建，因此先启动轮次并绑定可信主题。
+        // 草案只能在当前运行轮次内创建，因此先启动可信轮次。
         ConversationMemoryService.StartedTurn turn = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
                         userId, conversation.getId(), requestId, requestId, "购买测试车票", 5));
-        conversationMemoryService.assignTurnToTopic(userId, turn.turnId(), topic.getId());
         AgentRequestContext context = new AgentRequestContext(
-                requestId, userId, "alice", conversation.getId(), turn.turnId(), topic.getId());
+                requestId, userId, "alice", conversation.getId(), turn.turnId());
         return new Fixture(userId, turn.turnId(), context);
     }
 

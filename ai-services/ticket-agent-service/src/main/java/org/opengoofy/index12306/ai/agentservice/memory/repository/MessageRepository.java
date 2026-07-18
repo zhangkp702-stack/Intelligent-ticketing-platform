@@ -50,41 +50,41 @@ public interface MessageRepository extends JpaRepository<MessageEntity, String> 
             Pageable pageable);
 
     /**
-     * 查询主题指定消息边界之后的全部未压缩消息。
+     * 查询会话指定消息边界之后的全部未压缩消息。
      *
-     * @param topicId 主题标识
+     * @param conversationId 会话标识
      * @param sequenceNo 已压缩消息边界
      * @return 按会话序号升序排列的消息
      */
-    List<MessageEntity> findByTopicIdAndSequenceNoGreaterThanOrderBySequenceNoAsc(
-            String topicId,
+    List<MessageEntity> findByConversationIdAndSequenceNoGreaterThanOrderBySequenceNoAsc(
+            String conversationId,
             long sequenceNo);
 
     /**
-     * 统计主题指定边界之后可参与新摘要的消息数。
+     * 统计会话指定边界之后可参与新摘要的消息数。
      *
-     * @param topicId 主题标识
+     * @param conversationId 会话标识
      * @param sequenceNo 已压缩消息边界
      * @return 未压缩消息数
      */
-    long countByTopicIdAndSequenceNoGreaterThan(String topicId, long sequenceNo);
+    long countByConversationIdAndSequenceNoGreaterThan(String conversationId, long sequenceNo);
 
     /**
-     * 查询主题消息边界之后最近的消息，避免摘要失败时无界加载历史正文。
+     * 查询会话消息边界之后最近的消息，避免摘要失败时无界加载历史正文。
      *
-     * @param topicId 主题标识
+     * @param conversationId 会话标识
      * @param sequenceNo 已压缩消息边界
      * @param pageable 数量限制
      * @return 按消息序号倒序排列的最近消息
      */
     @Query("""
             select m from MessageEntity m
-            where m.topicId = :topicId
+            where m.conversationId = :conversationId
               and m.sequenceNo > :sequenceNo
             order by m.sequenceNo desc
             """)
-    List<MessageEntity> findRecentTopicMessages(
-            @Param("topicId") String topicId,
+    List<MessageEntity> findRecentConversationMessages(
+            @Param("conversationId") String conversationId,
             @Param("sequenceNo") long sequenceNo,
             Pageable pageable);
 
@@ -111,15 +111,28 @@ public interface MessageRepository extends JpaRepository<MessageEntity, String> 
             Pageable pageable);
 
     /**
-     * 查询主题指定闭区间内用于摘要的原始消息。
+     * 查询会话指定闭区间内用于摘要的原始消息。
      *
-     * @param topicId 主题标识
+     * @param conversationId 会话标识
      * @param fromSequence 起始消息序号
      * @param throughSequence 结束消息序号
      * @return 按序号升序排列的来源消息
      */
-    List<MessageEntity> findByTopicIdAndSequenceNoBetweenOrderBySequenceNoAsc(
-            String topicId,
+    List<MessageEntity> findByConversationIdAndSequenceNoBetweenOrderBySequenceNoAsc(
+            String conversationId,
+            long fromSequence,
+            long throughSequence);
+
+    /**
+     * 统计会话指定闭区间内实际参与本次摘要的消息数。
+     *
+     * @param conversationId 会话标识
+     * @param fromSequence 起始消息序号
+     * @param throughSequence 结束消息序号
+     * @return 本次摘要来源消息数
+     */
+    long countByConversationIdAndSequenceNoBetween(
+            String conversationId,
             long fromSequence,
             long throughSequence);
 }

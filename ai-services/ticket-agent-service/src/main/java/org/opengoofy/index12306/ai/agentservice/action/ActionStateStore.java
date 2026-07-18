@@ -103,7 +103,6 @@ public class ActionStateStore {
         TurnEntity turn = turnRepository.findById(context.turnId())
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
         if (!turn.getConversationId().equals(context.conversationId())
-                || !context.topicId().equals(turn.getTopicId())
                 || turn.getStatus() != TurnStatus.RUNNING) {
             throw new IllegalStateException("只有当前运行中轮次可以创建操作草案");
         }
@@ -118,7 +117,7 @@ public class ActionStateStore {
             return existing;
         }
         ActionDraftEntity created = ActionDraftEntity.create(
-                context.userId(), context.conversationId(), context.topicId(), context.turnId(),
+                context.userId(), context.conversationId(), context.turnId(),
                 actionType, payloadJson, payloadHash, expiresAt, clock.instant());
         return actionRepository.save(created);
     }
@@ -227,7 +226,7 @@ public class ActionStateStore {
         return new ClaimedAction(
                 action.getId(), execution.getId(), requestId, action.getActionType(),
                 action.getUserId(), action.getConversationId(),
-                action.getTopicId(), action.getTurnId(), action.getPayloadJson(), action.getPayloadHash());
+                action.getTurnId(), action.getPayloadJson(), action.getPayloadHash());
     }
 
     /**
@@ -327,7 +326,6 @@ public class ActionStateStore {
      * @param actionType 操作类型
      * @param userId 用户标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param turnId 轮次标识
      * @param payloadJson 规范化参数 JSON
      * @param payloadHash 参数指纹
@@ -339,7 +337,6 @@ public class ActionStateStore {
             AgentActionType actionType,
             String userId,
             String conversationId,
-            String topicId,
             String turnId,
             String payloadJson,
             String payloadHash) {

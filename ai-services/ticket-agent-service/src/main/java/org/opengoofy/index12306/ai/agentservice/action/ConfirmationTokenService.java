@@ -74,7 +74,6 @@ public class ConfirmationTokenService {
                 action.getId(),
                 action.getUserId(),
                 action.getConversationId(),
-                action.getTopicId(),
                 action.getTurnId(),
                 action.getActionType().name(),
                 action.getPayloadHash(),

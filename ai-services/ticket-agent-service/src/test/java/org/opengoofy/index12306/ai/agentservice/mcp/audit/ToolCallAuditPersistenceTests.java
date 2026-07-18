@@ -33,7 +33,6 @@ class ToolCallAuditPersistenceTests {
         ToolCallAuditEvent event = new ToolCallAuditEvent(
                 "request-tool-a",
                 "conversation-a",
-                "topic-a",
                 "turn-a",
                 "query_tickets",
                 "index12306-ticket-mcp-server",

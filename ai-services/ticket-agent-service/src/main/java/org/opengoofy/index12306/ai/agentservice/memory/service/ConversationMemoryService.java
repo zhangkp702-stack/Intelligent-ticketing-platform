@@ -4,14 +4,11 @@ import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationEntity
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageType;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.TopicEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.TurnEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.ConversationRepository;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.MessageRepository;
-import org.opengoofy.index12306.ai.agentservice.memory.repository.TopicRepository;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.TurnRepository;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -21,41 +18,37 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * 负责会话、主题、消息和问答轮次的一致性写入。
+ * 负责会话、消息和问答轮次的一致性写入，并合并异步摘要目标。
  */
 @Service
 public class ConversationMemoryService {
 
     private final ConversationRepository conversationRepository;
-    private final TopicRepository topicRepository;
     private final MessageRepository messageRepository;
     private final TurnRepository turnRepository;
     private final Clock clock;
-    private final ApplicationEventPublisher eventPublisher;
+    private final SummaryTaskService summaryTaskService;
 
     /**
      * 创建会话记忆写入服务。
      *
      * @param conversationRepository 会话仓储
-     * @param topicRepository 主题仓储
      * @param messageRepository 消息仓储
      * @param turnRepository 轮次仓储
      * @param clock 统一时钟
-     * @param eventPublisher 事务提交后业务事件发布器
+     * @param summaryTaskService 会话摘要任务服务
      */
     public ConversationMemoryService(
             ConversationRepository conversationRepository,
-            TopicRepository topicRepository,
             MessageRepository messageRepository,
             TurnRepository turnRepository,
             Clock clock,
-            ApplicationEventPublisher eventPublisher) {
+            SummaryTaskService summaryTaskService) {
         this.conversationRepository = conversationRepository;
-        this.topicRepository = topicRepository;
         this.messageRepository = messageRepository;
         this.turnRepository = turnRepository;
         this.clock = clock;
-        this.eventPublisher = eventPublisher;
+        this.summaryTaskService = summaryTaskService;
     }
 
     /**
@@ -70,44 +63,13 @@ public class ConversationMemoryService {
         requireText(userId, "用户标识不能为空");
         Instant now = clock.instant();
 
-        // 会话不携带模型或票务业务状态，主题会在首轮路由后创建。
+        // 会话本身不携带模型或票务业务状态，摘要由后续异步任务维护。
         ConversationEntity conversation = ConversationEntity.create(userId, title, now);
         return conversationRepository.save(conversation);
     }
 
     /**
-     * 在指定用户会话中创建并激活一个新主题。
-     *
-     * @param userId 用户标识
-     * @param conversationId 会话标识
-     * @param topicKey 会话内稳定主题键
-     * @param title 主题标题
-     * @return 已持久化主题
-     */
-    @Transactional
-    public TopicEntity createTopic(String userId, String conversationId, String topicKey, String title) {
-        requireText(topicKey, "主题键不能为空");
-        requireText(title, "主题标题不能为空");
-        Instant now = clock.instant();
-
-        // 锁定并校验会话所有权，避免其他用户向该会话写入主题。
-        ConversationEntity conversation = requireLockedConversation(userId, conversationId);
-        // 会话锁内按稳定主题键复查，确保相同路由请求重试时不会重复创建主题。
-        TopicEntity existingTopic = topicRepository
-                .findByConversationIdAndTopicKey(conversationId, topicKey)
-                .orElse(null);
-        if (existingTopic != null) {
-            conversation.activateTopic(existingTopic.getId(), now);
-            return existingTopic;
-        }
-        TopicEntity topic = TopicEntity.create(conversationId, topicKey, title, now);
-        topicRepository.save(topic);
-        conversation.activateTopic(topic.getId(), now);
-        return topic;
-    }
-
-    /**
-     * 幂等写入当前用户问题并创建等待主题路由的运行中轮次。
+     * 幂等写入当前用户问题并创建等待回答的运行中轮次。
      *
      * @param command 用户问题写入命令
      * @return 新建或已存在的轮次和用户消息
@@ -151,7 +113,6 @@ public class ConversationMemoryService {
         long sequence = conversation.nextMessageSequence(now);
         MessageEntity userMessage = MessageEntity.create(
                 command.conversationId(),
-                null,
                 sequence,
                 MessageRole.USER,
                 MessageType.TEXT,
@@ -167,31 +128,6 @@ public class ConversationMemoryService {
         messageRepository.save(userMessage);
         turnRepository.save(turn);
         return toStartedTurn(conversation, turn, userMessage, true);
-    }
-
-    /**
-     * 把路由前写入的用户问题和轮次绑定到最终选中的主题。
-     *
-     * @param userId 用户标识
-     * @param turnId 轮次标识
-     * @param topicId 选中主题标识
-     */
-    @Transactional
-    public void assignTurnToTopic(String userId, String turnId, String topicId) {
-        Instant now = clock.instant();
-        TurnEntity turn = turnRepository.findLockedById(turnId)
-                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
-
-        // 会话所有权和主题归属均由后端校验，模型只提供候选主题标识。
-        ConversationEntity conversation = requireLockedConversation(userId, turn.getConversationId());
-        TopicEntity topic = topicRepository.findByIdAndConversationId(topicId, turn.getConversationId())
-                .orElseThrow(() -> new IllegalArgumentException("主题不存在或不属于当前会话"));
-        MessageEntity userMessage = requireMessage(turn.getUserMessageId());
-
-        turn.assignTopic(topicId, now);
-        userMessage.assignTopic(topicId, now);
-        topic.markActive(now);
-        conversation.activateTopic(topicId, now);
     }
 
     /**
@@ -213,18 +149,12 @@ public class ConversationMemoryService {
         }
 
         ConversationEntity conversation = requireLockedConversation(command.userId(), turn.getConversationId());
-        if (turn.getTopicId() == null) {
-            throw new IllegalStateException("完成回答前必须先确定主题");
-        }
-        TopicEntity topic = topicRepository.findByIdAndConversationId(turn.getTopicId(), turn.getConversationId())
-                .orElseThrow(() -> new IllegalStateException("轮次主题不存在"));
 
         // 助手消息与轮次完成状态在同一事务提交，失败时一起回滚。
         Instant now = clock.instant();
         long sequence = conversation.nextMessageSequence(now);
         MessageEntity assistantMessage = MessageEntity.create(
                 turn.getConversationId(),
-                turn.getTopicId(),
                 sequence,
                 MessageRole.ASSISTANT,
                 MessageType.TEXT,
@@ -237,10 +167,8 @@ public class ConversationMemoryService {
         assistantMessage.attachTurn(turn.getId(), now);
         messageRepository.save(assistantMessage);
         turn.complete(assistantMessage.getId(), now);
-        topic.markActive(now);
-        // 发布最小事件，监听器仅在本事务提交成功后检查并异步执行摘要任务。
-        eventPublisher.publishEvent(new TurnCompletedEvent(
-                command.userId(), turn.getConversationId(), turn.getTopicId(), sequence));
+        // 与回答在同一事务内仅合并任务目标，MQ 发布和模型摘要在事务提交后异步执行。
+        summaryTaskService.requestIfNeeded(turn.getConversationId(), sequence);
         return assistantMessage;
     }
 
@@ -266,7 +194,7 @@ public class ConversationMemoryService {
      *
      * @param userId 用户标识
      * @param turnId 轮次标识
-     * @return 轮次状态、主题和已完成回答
+     * @return 轮次状态和已完成回答
      */
     @Transactional(readOnly = true)
     public TurnState getTurnState(String userId, String turnId) {
@@ -277,7 +205,7 @@ public class ConversationMemoryService {
         requireConversation(userId, turn.getConversationId());
         String assistantContent = turn.getAssistantMessageId() == null
                 ? null : requireMessage(turn.getAssistantMessageId()).getContent();
-        return new TurnState(turn.getStatus(), turn.getTopicId(), assistantContent);
+        return new TurnState(turn.getStatus(), assistantContent);
     }
 
     /**
@@ -473,9 +401,8 @@ public class ConversationMemoryService {
      * 幂等轮次读取结果。
      *
      * @param status 当前轮次状态
-     * @param topicId 已绑定主题标识
      * @param assistantContent 已完成回答，未完成时为空
      */
-    public record TurnState(TurnStatus status, String topicId, String assistantContent) {
+    public record TurnState(TurnStatus status, String assistantContent) {
     }
 }

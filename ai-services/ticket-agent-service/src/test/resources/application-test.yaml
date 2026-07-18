@@ -26,4 +26,5 @@ index12306:
     action:
       confirmation-secret: test-confirmation-secret-at-least-32-characters
     memory:
-      summary-auto-dispatch-enabled: false
+      mq:
+        enabled: false

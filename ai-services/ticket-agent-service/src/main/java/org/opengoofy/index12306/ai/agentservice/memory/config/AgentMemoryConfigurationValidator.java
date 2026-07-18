@@ -5,7 +5,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.Assert;
 
 /**
- * 在应用启动阶段阻止无效的上下文和摘要线程池参数进入运行状态。
+ * 在应用启动时校验会话上下文和异步摘要配置边界。
  */
 @Component
 public class AgentMemoryConfigurationValidator implements SmartInitializingSingleton {
@@ -22,19 +22,15 @@ public class AgentMemoryConfigurationValidator implements SmartInitializingSingl
     }
 
     /**
-     * 校验上下文容量、摘要重试和线程池边界。
+     * 校验上下文容量、摘要阈值、重试次数和任务租约。
      */
     @Override
     public void afterSingletonsInstantiated() {
-        // 置信度是模型路由与确定性兜底之间的边界，只允许标准概率范围。
-        Assert.isTrue(properties.topicRouteConfidenceThreshold() >= 0
-                        && properties.topicRouteConfidenceThreshold() <= 1,
-                "主题路由置信度阈值必须在零到一之间");
-        // 上下文候选和 Token 预算必须为正，避免路由输入或最终上下文为空。
-        Assert.isTrue(properties.topicCandidateLimit() > 0, "主题候选数量必须大于零");
-        Assert.isTrue(properties.recentUserQuestionLimit() > 0, "最近用户问题数量必须大于零");
+        // 上下文数量和 Token 预算必须为正，避免生成缺少当前问题的模型输入。
         Assert.isTrue(properties.recentMessageLimit() > 0, "最近消息数量必须大于零");
         Assert.isTrue(properties.contextTokenBudget() > 0, "上下文 Token 预算必须大于零");
+
+        // 摘要阈值和有限重试共同约束后台任务量，防止失败任务无限循环。
         Assert.isTrue(properties.summaryTriggerMessageCount() > 0, "摘要触发消息数必须大于零");
         Assert.isTrue(properties.summaryMaxAttempts() > 0, "摘要最大尝试次数必须大于零");
         Assert.isTrue(properties.summaryRetryDelay() != null
@@ -45,16 +41,5 @@ public class AgentMemoryConfigurationValidator implements SmartInitializingSingl
                         && !properties.summaryLeaseDuration().isNegative()
                         && !properties.summaryLeaseDuration().isZero(),
                 "摘要任务租约时间必须大于零");
-
-        // 专用线程池最大线程数不得小于核心线程数，队列必须能够承接异步任务。
-        AgentMemoryProperties.SummaryExecutor executor = properties.summaryExecutor();
-        Assert.notNull(executor, "摘要线程池配置不能为空");
-        Assert.isTrue(executor.corePoolSize() > 0, "摘要核心线程数必须大于零");
-        Assert.isTrue(executor.maxPoolSize() >= executor.corePoolSize(),
-                "摘要最大线程数不能小于核心线程数");
-        Assert.isTrue(executor.queueCapacity() > 0, "摘要队列容量必须大于零");
-        Assert.isTrue(executor.awaitTermination() != null
-                        && !executor.awaitTermination().isNegative(),
-                "摘要关闭等待时间不能为负数");
     }
 }

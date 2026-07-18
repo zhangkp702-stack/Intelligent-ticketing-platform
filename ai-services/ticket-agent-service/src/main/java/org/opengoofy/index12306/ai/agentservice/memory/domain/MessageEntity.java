@@ -24,9 +24,6 @@ public class MessageEntity extends AgentBaseEntity {
     @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "topic_id", length = 32)
-    private String topicId;
-
     @Column(name = "turn_id", length = 32)
     private String turnId;
 
@@ -58,7 +55,6 @@ public class MessageEntity extends AgentBaseEntity {
 
     private MessageEntity(
             String conversationId,
-            String topicId,
             long sequenceNo,
             MessageRole role,
             MessageType messageType,
@@ -70,7 +66,6 @@ public class MessageEntity extends AgentBaseEntity {
             Instant now) {
         super(now);
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId");
-        this.topicId = topicId;
         this.sequenceNo = sequenceNo;
         this.role = Objects.requireNonNull(role, "role");
         this.messageType = Objects.requireNonNull(messageType, "messageType");
@@ -85,7 +80,6 @@ public class MessageEntity extends AgentBaseEntity {
      * 创建按会话序号排列的原始消息。
      *
      * @param conversationId 会话标识
-     * @param topicId 主题标识，路由前允许为空
      * @param sequenceNo 会话内消息序号
      * @param role 消息角色
      * @param messageType 消息业务类型
@@ -99,7 +93,6 @@ public class MessageEntity extends AgentBaseEntity {
      */
     public static MessageEntity create(
             String conversationId,
-            String topicId,
             long sequenceNo,
             MessageRole role,
             MessageType messageType,
@@ -111,23 +104,8 @@ public class MessageEntity extends AgentBaseEntity {
             Instant now) {
         // 原始正文只在会话数据库保存，模型调用审计不会复制该内容。
         return new MessageEntity(
-                conversationId, topicId, sequenceNo, role, messageType, content, contentFormat,
+                conversationId, sequenceNo, role, messageType, content, contentFormat,
                 tokenCount, requestId, idempotencyKey, now);
-    }
-
-    /**
-     * 将路由前写入的消息绑定到后端已确认的主题。
-     *
-     * @param selectedTopicId 选中主题标识
-     * @param now 更新时间
-     */
-    public void assignTopic(String selectedTopicId, Instant now) {
-        if (topicId != null && !topicId.equals(selectedTopicId)) {
-            throw new IllegalStateException("消息已经绑定其他主题");
-        }
-        // 允许幂等重复绑定相同主题，拒绝在不同主题之间移动历史消息。
-        this.topicId = Objects.requireNonNull(selectedTopicId, "selectedTopicId");
-        touch(now);
     }
 
     /**

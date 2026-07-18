@@ -39,7 +39,6 @@ public final class AgentChatModels {
      * @param conversationId 会话标识
      * @param title 会话标题
      * @param status 会话状态
-     * @param activeTopicId 最近活动主题标识
      * @param lastMessageSequence 最近消息序号
      * @param createdAt 创建时间
      * @param updatedAt 最近更新时间
@@ -48,7 +47,6 @@ public final class AgentChatModels {
             String conversationId,
             String title,
             ConversationStatus status,
-            String activeTopicId,
             long lastMessageSequence,
             Instant createdAt,
             Instant updatedAt) {
@@ -70,7 +68,6 @@ public final class AgentChatModels {
     /**
      * @param messageId 消息标识
      * @param turnId 所属问答轮次
-     * @param topicId 所属主题
      * @param sequenceNo 会话内消息序号
      * @param role 消息角色
      * @param messageType 消息类型
@@ -80,7 +77,6 @@ public final class AgentChatModels {
     public record HistoryMessageView(
             String messageId,
             String turnId,
-            String topicId,
             long sequenceNo,
             MessageRole role,
             MessageType messageType,
@@ -142,7 +138,6 @@ public final class AgentChatModels {
      * @param requestId 请求标识
      * @param conversationId 会话标识
      * @param turnId 轮次标识
-     * @param topicId 主题标识
      * @param content 最终助手回答
      * @param reused 是否复用幂等请求的既有回答
      * @param action 可选的待确认操作视图
@@ -151,7 +146,6 @@ public final class AgentChatModels {
             String requestId,
             String conversationId,
             String turnId,
-            String topicId,
             String content,
             boolean reused,
             ActionConfirmationView action) {
@@ -175,7 +169,6 @@ public final class AgentChatModels {
      * @param requestId 请求标识
      * @param conversationId 会话标识
      * @param turnId 轮次标识
-     * @param topicId 主题标识
      * @param delta 当前增量文本
      * @param content 最终完整文本
      * @param reused 是否复用既有回答
@@ -188,7 +181,6 @@ public final class AgentChatModels {
             String requestId,
             String conversationId,
             String turnId,
-            String topicId,
             String delta,
             String content,
             boolean reused,
@@ -199,7 +191,7 @@ public final class AgentChatModels {
         /**
          * 创建开始输出前的元数据事件。
          *
-         * @param context 已确定主题的请求上下文
+         * @param context 当前请求上下文
          * @param reused 是否复用既有回答
          * @return 元数据事件
          */
@@ -208,13 +200,13 @@ public final class AgentChatModels {
                 boolean reused) {
             return new ChatEvent(
                     EventType.META, context.requestId(), context.conversationId(), context.turnId(),
-                    context.topicId(), null, null, reused, null, null, null);
+                    null, null, reused, null, null, null);
         }
 
         /**
          * 创建单个回答增量事件。
          *
-         * @param context 已确定主题的请求上下文
+         * @param context 当前请求上下文
          * @param delta 增量正文
          * @return 增量事件
          */
@@ -223,7 +215,7 @@ public final class AgentChatModels {
                 String delta) {
             return new ChatEvent(
                     EventType.DELTA, context.requestId(), context.conversationId(), context.turnId(),
-                    context.topicId(), delta, null, false, null, null, null);
+                    delta, null, false, null, null, null);
         }
 
         /**
@@ -239,13 +231,13 @@ public final class AgentChatModels {
             // 确认令牌只通过服务端结构化事件返回，不写入模型回答正文。
             return new ChatEvent(
                     EventType.ACTION_REQUIRED, context.requestId(), context.conversationId(), context.turnId(),
-                    context.topicId(), null, null, false, null, null, action);
+                    null, null, false, null, null, action);
         }
 
         /**
          * 创建回答完成事件。
          *
-         * @param context 已确定主题的请求上下文
+         * @param context 当前请求上下文
          * @param content 完整回答
          * @param reused 是否复用既有回答
          * @return 完成事件
@@ -256,7 +248,7 @@ public final class AgentChatModels {
                 boolean reused) {
             return new ChatEvent(
                     EventType.DONE, context.requestId(), context.conversationId(), context.turnId(),
-                    context.topicId(), null, content, reused, null, null, null);
+                    null, content, reused, null, null, null);
         }
 
         /**
@@ -269,7 +261,7 @@ public final class AgentChatModels {
          */
         public static ChatEvent error(ChatCommand command, String category, String safeMessage) {
             return new ChatEvent(
-                    EventType.ERROR, command.requestId(), command.conversationId(), null, null,
+                    EventType.ERROR, command.requestId(), command.conversationId(), null,
                     null, null, false, category, safeMessage, null);
         }
     }

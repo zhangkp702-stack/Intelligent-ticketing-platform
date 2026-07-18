@@ -73,7 +73,7 @@ class TicketQueryToolsTests {
         TicketBusinessClient businessClient = mock(TicketBusinessClient.class);
         McpMeta meta = new McpMeta(java.util.Map.of());
         McpCallerIdentity identity = new McpCallerIdentity(
-                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a", "", "");
+                "request-a", "user-a", "alice", "conversation-a", "turn-a", "", "");
         PassengerView passenger = new PassengerView("passenger-a", "张三", 0, "1***********1", 0, "138****0000", 1);
         when(authenticator.authenticate(meta)).thenReturn(identity);
         when(businessClient.listPassengers(identity)).thenReturn(List.of(passenger));
@@ -95,7 +95,7 @@ class TicketQueryToolsTests {
         TicketBusinessClient businessClient = mock(TicketBusinessClient.class);
         McpMeta meta = new McpMeta(java.util.Map.of());
         McpCallerIdentity identity = new McpCallerIdentity(
-                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a", "", "");
+                "request-a", "user-a", "alice", "conversation-a", "turn-a", "", "");
         OrderDetailView order = new OrderDetailView(
                 "order-1", "train-1", "G1", "北京南", "上海虹桥",
                 "2026-07-20", "09:00", "13:30", 10,
@@ -134,7 +134,7 @@ class TicketQueryToolsTests {
         String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(json.getBytes(StandardCharsets.UTF_8)));
         McpCallerIdentity identity = new McpCallerIdentity(
-                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a",
+                "request-a", "user-a", "alice", "conversation-a", "turn-a",
                 "action-1", hash);
         ConfirmedPurchaseResult result = new ConfirmedPurchaseResult("order-1", List.of());
         when(authenticator.authenticate(meta)).thenReturn(identity);
@@ -175,7 +175,7 @@ class TicketQueryToolsTests {
         String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(json.getBytes(StandardCharsets.UTF_8)));
         McpCallerIdentity identity = new McpCallerIdentity(
-                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a",
+                "request-a", "user-a", "alice", "conversation-a", "turn-a",
                 "action-2", hash);
         ConfirmedCancellationResult result = new ConfirmedCancellationResult("order-2001", true);
         when(authenticator.authenticate(meta)).thenReturn(identity);
@@ -215,7 +215,7 @@ class TicketQueryToolsTests {
         String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(json.getBytes(StandardCharsets.UTF_8)));
         McpCallerIdentity identity = new McpCallerIdentity(
-                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a",
+                "request-a", "user-a", "alice", "conversation-a", "turn-a",
                 "action-3", hash);
         ConfirmedRefundResult result = new ConfirmedRefundResult(
                 "refund-1", "order-3001", 0, 5000, 1);

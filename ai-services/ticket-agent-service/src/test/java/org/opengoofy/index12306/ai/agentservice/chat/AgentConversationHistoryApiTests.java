@@ -6,7 +6,6 @@ import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.Purc
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationEntity;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.TopicEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -56,7 +55,6 @@ class AgentConversationHistoryApiTests {
                 .andExpect(jsonPath("$.records[0].conversationId")
                         .value(fixture.conversationId()))
                 .andExpect(jsonPath("$.records[0].title").value("历史恢复测试"))
-                .andExpect(jsonPath("$.records[0].activeTopicId").value(fixture.topicId()))
                 .andExpect(jsonPath("$.records[0].lastMessageSequence").value(2));
 
         // 首次只取最新一条消息，服务端返回下一页游标而不是数据库页码。
@@ -128,10 +126,7 @@ class AgentConversationHistoryApiTests {
         String requestId = unique("request");
         ConversationEntity conversation = conversationMemoryService.createConversation(
                 userId, "历史恢复测试");
-        TopicEntity topic = conversationMemoryService.createTopic(
-                userId, conversation.getId(), unique("ticket-topic"), "购票");
-
-        // 草案只能绑定运行中的可信轮次，因此先写入用户问题并完成主题分配。
+        // 草案只能绑定运行中的可信轮次，因此先写入用户问题。
         ConversationMemoryService.StartedTurn turn = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
                         userId,
@@ -140,14 +135,12 @@ class AgentConversationHistoryApiTests {
                         requestId,
                         "帮我购买测试车票",
                         8));
-        conversationMemoryService.assignTurnToTopic(userId, turn.turnId(), topic.getId());
         AgentRequestContext context = new AgentRequestContext(
                 requestId,
                 userId,
                 "history-test-user",
                 conversation.getId(),
-                turn.turnId(),
-                topic.getId());
+                turn.turnId());
 
         // 创建待确认草案但不调用真实 MCP，保证测试只验证本地恢复和安全边界。
         String actionId = purchaseActionService.prepare(
@@ -166,7 +159,7 @@ class AgentConversationHistoryApiTests {
                         "已为你生成购票确认卡片",
                         10));
         return new Fixture(
-                conversation.getId(), topic.getId(), turn.turnId(), actionId);
+                conversation.getId(), turn.turnId(), actionId);
     }
 
     /**
@@ -182,13 +175,11 @@ class AgentConversationHistoryApiTests {
 
     /**
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param turnId 轮次标识
      * @param actionId 操作草案标识
      */
     private record Fixture(
             String conversationId,
-            String topicId,
             String turnId,
             String actionId) {
     }

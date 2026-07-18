@@ -31,9 +31,6 @@ public class ConversationEntity extends AgentBaseEntity {
     @Column(name = "status", nullable = false, length = 32)
     private ConversationStatus status;
 
-    @Column(name = "active_topic_id", length = 32)
-    private String activeTopicId;
-
     @Column(name = "last_message_sequence", nullable = false)
     private long lastMessageSequence;
 
@@ -53,7 +50,7 @@ public class ConversationEntity extends AgentBaseEntity {
      * @return 新会话实体
      */
     public static ConversationEntity create(String userId, String title, Instant now) {
-        // 会话创建时不预设主题，首轮主题由后续路由结果确定。
+        // 会话创建时仅初始化消息序号，摘要由独立异步任务维护。
         return new ConversationEntity(userId, title, now);
     }
 
@@ -71,18 +68,6 @@ public class ConversationEntity extends AgentBaseEntity {
         lastMessageSequence++;
         touch(now);
         return lastMessageSequence;
-    }
-
-    /**
-     * 将最近选中的主题设置为会话活动主题。
-     *
-     * @param topicId 主题标识
-     * @param now 修改时间
-     */
-    public void activateTopic(String topicId, Instant now) {
-        // 活动主题只保存后端已校验的主题标识，不能直接接受模型自由文本。
-        this.activeTopicId = Objects.requireNonNull(topicId, "topicId");
-        touch(now);
     }
 
     /**

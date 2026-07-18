@@ -1,21 +1,16 @@
 package org.opengoofy.index12306.ai.agentservice.memory.service;
 
 import org.opengoofy.index12306.ai.agentservice.memory.config.AgentMemoryProperties;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationEntity;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.MemorySummaryEntity;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.MemorySummaryStatus;
+import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationSummaryEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageType;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.SummaryTaskEntity;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.TopicEntity;
-import org.opengoofy.index12306.ai.agentservice.memory.repository.ConversationRepository;
-import org.opengoofy.index12306.ai.agentservice.memory.repository.MemorySummaryRepository;
+import org.opengoofy.index12306.ai.agentservice.memory.domain.SummaryTaskStatus;
+import org.opengoofy.index12306.ai.agentservice.memory.repository.ConversationSummaryRepository;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.MessageRepository;
 import org.opengoofy.index12306.ai.agentservice.memory.repository.SummaryTaskRepository;
-import org.opengoofy.index12306.ai.agentservice.memory.repository.TopicRepository;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -24,41 +19,33 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 管理主题摘要任务的入队、领取、重试和版本化提交。
+ * 管理会话级摘要任务的合并、MQ 状态、领取和唯一摘要提交。
  */
 @Service
 public class SummaryTaskService {
 
     private final AgentMemoryProperties properties;
-    private final ConversationRepository conversationRepository;
-    private final TopicRepository topicRepository;
     private final MessageRepository messageRepository;
-    private final MemorySummaryRepository summaryRepository;
+    private final ConversationSummaryRepository summaryRepository;
     private final SummaryTaskRepository taskRepository;
     private final Clock clock;
 
     /**
-     * 创建摘要任务状态服务。
+     * 创建会话摘要任务服务。
      *
      * @param properties 摘要阈值和重试配置
-     * @param conversationRepository 会话仓储
-     * @param topicRepository 主题仓储
-     * @param messageRepository 消息仓储
-     * @param summaryRepository 摘要仓储
+     * @param messageRepository 原始消息仓储
+     * @param summaryRepository 唯一摘要仓储
      * @param taskRepository 摘要任务仓储
      * @param clock 统一时钟
      */
     public SummaryTaskService(
             AgentMemoryProperties properties,
-            ConversationRepository conversationRepository,
-            TopicRepository topicRepository,
             MessageRepository messageRepository,
-            MemorySummaryRepository summaryRepository,
+            ConversationSummaryRepository summaryRepository,
             SummaryTaskRepository taskRepository,
             Clock clock) {
         this.properties = properties;
-        this.conversationRepository = conversationRepository;
-        this.topicRepository = topicRepository;
         this.messageRepository = messageRepository;
         this.summaryRepository = summaryRepository;
         this.taskRepository = taskRepository;
@@ -66,198 +53,240 @@ public class SummaryTaskService {
     }
 
     /**
-     * 在未压缩消息达到阈值时使用独立事务幂等创建摘要任务。
+     * 在回答事务内检查未摘要消息数量，并合并该会话的摘要目标边界。
      *
-     * @param userId 用户标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
-     * @param throughSequence 本次允许摘要覆盖到的最大消息序号
-     * @return 创建或已存在的任务，未达到阈值时为空
+     * @param throughSequence 当前助手消息序号
+     * @return 达到阈值时返回会话唯一任务，否则为空
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Optional<SummaryTaskEntity> enqueueIfNeeded(
-            String userId,
-            String conversationId,
-            String topicId,
-            long throughSequence) {
-        requireOwnedConversation(userId, conversationId);
-        TopicEntity topic = topicRepository.findLockedById(topicId)
-                .filter(candidate -> candidate.getConversationId().equals(conversationId))
-                .orElseThrow(() -> new IllegalArgumentException("主题不存在或不属于当前会话"));
-
-        // 只统计当前主题且位于上次摘要边界后的消息，其他主题消息不会触发本任务。
-        List<MessageEntity> sourceMessages = messageRepository
-                .findByTopicIdAndSequenceNoGreaterThanOrderBySequenceNoAsc(
-                        topicId, topic.getSummarizedThroughSequence())
-                .stream()
-                .filter(message -> message.getSequenceNo() <= throughSequence)
-                .toList();
-        if (sourceMessages.size() < properties.summaryTriggerMessageCount()) {
+    @Transactional
+    public Optional<SummaryTaskEntity> requestIfNeeded(String conversationId, long throughSequence) {
+        ConversationSummaryEntity summary = summaryRepository.findByConversationId(conversationId).orElse(null);
+        long summarizedThrough = summary == null ? 0 : summary.getSummarizedThroughSequence();
+        long unsummarizedCount = messageRepository.countByConversationIdAndSequenceNoGreaterThan(
+                conversationId, summarizedThrough);
+        if (unsummarizedCount < properties.summaryTriggerMessageCount()) {
             return Optional.empty();
         }
 
-        long actualFrom = sourceMessages.get(0).getSequenceNo();
-        long actualThrough = sourceMessages.get(sourceMessages.size() - 1).getSequenceNo();
-        Optional<SummaryTaskEntity> existingTask = taskRepository
-                .findByTopicIdAndThroughSequence(topicId, actualThrough);
-        if (existingTask.isPresent()) {
-            return existingTask;
+        // 每个会话只维护一个任务行；连续回答只推进目标边界，不重复堆积消息。
+        SummaryTaskEntity task = taskRepository.findLockedByConversationId(conversationId).orElse(null);
+        int summaryVersion = summary == null ? 0 : summary.getSummaryVersion();
+        if (task == null) {
+            task = SummaryTaskEntity.pending(
+                    conversationId,
+                    throughSequence,
+                    summaryVersion,
+                    properties.summaryMaxAttempts(),
+                    clock.instant());
+            return Optional.of(taskRepository.save(task));
         }
-
-        // 任务冻结来源范围和期望版本，完成时再次校验主题版本防止旧任务覆盖新摘要。
-        SummaryTaskEntity task = SummaryTaskEntity.pending(
-                conversationId,
-                topicId,
-                actualFrom,
-                actualThrough,
-                topic.getSummaryVersion() + 1,
-                properties.summaryMaxAttempts(),
-                clock.instant());
-        return Optional.of(taskRepository.save(task));
+        task.request(throughSequence, summaryVersion, clock.instant());
+        return Optional.of(task);
     }
 
     /**
-     * 使用行锁领取摘要任务并加载不可变工作输入。
+     * 查询当前有限批次的待发布任务。
      *
-     * @param taskId 任务标识
-     * @param workerId 工作节点标识
-     * @return 旧摘要和新增原始消息组成的工作项
+     * @return 待发布任务快照
+     */
+    @Transactional(readOnly = true)
+    public List<PendingTask> pendingTasks() {
+        // 发布器只读取标识和事件版本，聊天正文始终留在数据库内。
+        return taskRepository.findTop100ByStatusOrderByUpdatedAtAsc(SummaryTaskStatus.PENDING)
+                .stream()
+                .map(task -> new PendingTask(
+                        task.getId(), task.getConversationId(), task.getEventVersion(),
+                        task.getDesiredThroughSequence(), task.getExpectedSummaryVersion()))
+                .toList();
+    }
+
+    /**
+     * 恢复租约过期或已到重试时间的任务，使消费者异常退出后仍可由 Outbox 重新发布。
+     *
+     * @return 本次发生状态变化的任务数量
      */
     @Transactional
-    public SummaryWorkItem claim(String taskId, String workerId) {
+    public int recoverExpiredTasks() {
         Instant now = clock.instant();
-        SummaryTaskEntity task = taskRepository.findLockedById(taskId)
-                .orElseThrow(() -> new IllegalArgumentException("摘要任务不存在"));
-
-        // 建立有限租约后加载冻结消息范围，事务提交后模型调用不再占用数据库锁。
-        task.claim(workerId, now, properties.summaryLeaseDuration());
-        List<SummarySourceMessage> messages = messageRepository
-                .findByTopicIdAndSequenceNoBetweenOrderBySequenceNoAsc(
-                        task.getTopicId(), task.getFromSequence(), task.getThroughSequence())
-                .stream()
-                .map(message -> new SummarySourceMessage(
-                        message.getId(),
-                        message.getSequenceNo(),
-                        message.getRole(),
-                        message.getMessageType(),
-                        message.getContent(),
-                        message.getTokenCount()))
-                .toList();
-        MemorySummaryEntity previousSummary = summaryRepository
-                .findFirstByTopicIdAndStatusOrderByVersionNoDesc(
-                        task.getTopicId(), MemorySummaryStatus.ACTIVE)
-                .orElse(null);
-
-        return new SummaryWorkItem(
-                task.getId(),
-                task.getConversationId(),
-                task.getTopicId(),
-                task.getExpectedSummaryVersion(),
-                previousSummary == null ? null : previousSummary.getSummaryContent(),
-                previousSummary == null ? null : previousSummary.getStructuredState(),
-                messages);
+        // 分别锁定运行超时和重试到期任务，避免多实例发布器重复恢复同一行。
+        List<SummaryTaskEntity> candidates = new java.util.ArrayList<>();
+        candidates.addAll(taskRepository
+                .findTop100ByStatusAndLeaseUntilLessThanEqualOrderByLeaseUntilAsc(
+                        SummaryTaskStatus.RUNNING, now));
+        candidates.addAll(taskRepository
+                .findTop100ByStatusAndNextRetryAtLessThanEqualOrderByNextRetryAtAsc(
+                        SummaryTaskStatus.RETRY_WAIT, now));
+        int recovered = 0;
+        for (SummaryTaskEntity task : candidates) {
+            // 状态机保留事件版本与尝试次数，并在达到上限时直接终止。
+            if (task.recoverForRepublish(now)) {
+                recovered++;
+            }
+        }
+        return recovered;
     }
 
     /**
-     * 原子写入新摘要、替代旧版本、推进主题边界并完成任务。
+     * 在 RocketMQ 确认接收后记录消息标识。
+     *
+     * @param taskId 任务标识
+     * @param eventVersion 已发布事件版本
+     * @param messageId RocketMQ 消息标识
+     */
+    @Transactional
+    public void markPublished(String taskId, long eventVersion, String messageId) {
+        SummaryTaskEntity task = taskRepository.findLockedById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("摘要任务不存在"));
+        if (task.getEventVersion() == eventVersion) {
+            // 只有仍对应当前事件版本的任务才能进入已发布状态。
+            task.published(messageId, clock.instant());
+        }
+    }
+
+    /**
+     * 幂等领取 MQ 事件并恢复模型生成所需的不可变工作输入。
+     *
+     * @param taskId 任务标识
+     * @param eventVersion MQ 事件版本
+     * @param workerId 消费节点标识
+     * @return 成功领取时返回摘要工作项，重复或过期事件返回空
+     */
+    @Transactional
+    public Optional<SummaryWorkItem> claim(String taskId, long eventVersion, String workerId) {
+        SummaryTaskEntity task = taskRepository.findLockedById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("摘要任务不存在"));
+        Instant now = clock.instant();
+        if (!task.claim(eventVersion, workerId, now, properties.summaryLeaseDuration())) {
+            return Optional.empty();
+        }
+
+        // 领取事务只冻结边界并读取输入，耗时模型调用不会持有数据库锁。
+        ConversationSummaryEntity summary = summaryRepository.findByConversationId(task.getConversationId())
+                .orElse(null);
+        long summarizedThrough = summary == null ? 0 : summary.getSummarizedThroughSequence();
+        long processingThrough = task.getProcessingThroughSequence();
+        List<SummarySourceMessage> messages = messageRepository
+                .findByConversationIdAndSequenceNoBetweenOrderBySequenceNoAsc(
+                        task.getConversationId(), summarizedThrough + 1, processingThrough)
+                .stream()
+                .map(this::toSourceMessage)
+                .toList();
+        if (messages.isEmpty()) {
+            throw new IllegalStateException("摘要任务没有可处理的消息");
+        }
+
+        return Optional.of(new SummaryWorkItem(
+                task.getId(),
+                task.getConversationId(),
+                eventVersion,
+                task.getExpectedSummaryVersion(),
+                processingThrough,
+                summary == null ? null : summary.getSummaryContent(),
+                summary == null ? null : summary.getStructuredState(),
+                messages));
+    }
+
+    /**
+     * 原子更新会话唯一摘要并完成当前处理边界。
      *
      * @param taskId 任务标识
      * @param result 模型生成结果
-     * @return 新活动摘要
+     * @return 更新后的会话摘要
      */
     @Transactional
-    public MemorySummaryEntity complete(String taskId, SummaryGenerationResult result) {
-        Instant now = clock.instant();
+    public ConversationSummaryEntity complete(String taskId, SummaryGenerationResult result) {
         SummaryTaskEntity task = taskRepository.findLockedById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("摘要任务不存在"));
-        TopicEntity topic = topicRepository.findLockedById(task.getTopicId())
-                .orElseThrow(() -> new IllegalStateException("摘要任务主题不存在"));
-        if (task.getExpectedSummaryVersion() != topic.getSummaryVersion() + 1) {
+        ConversationSummaryEntity summary = summaryRepository
+                .findLockedByConversationId(task.getConversationId())
+                .orElseGet(() -> summaryRepository.save(
+                        ConversationSummaryEntity.empty(task.getConversationId(), clock.instant())));
+        if (summary.getSummaryVersion() != task.getExpectedSummaryVersion()) {
             throw new IllegalStateException("摘要任务版本已经过期");
         }
 
-        // 旧摘要只标记为已替代，原始消息和历史摘要始终保留用于回放。
-        MemorySummaryEntity previousSummary = summaryRepository
-                .findFirstByTopicIdAndStatusOrderByVersionNoDesc(
-                        task.getTopicId(), MemorySummaryStatus.ACTIVE)
-                .orElse(null);
-        if (previousSummary != null) {
-            previousSummary.supersede(now);
-        }
-        int sourceMessageCount = messageRepository
-                .findByTopicIdAndSequenceNoBetweenOrderBySequenceNoAsc(
-                        task.getTopicId(), task.getFromSequence(), task.getThroughSequence())
-                .size();
-        MemorySummaryEntity newSummary = MemorySummaryEntity.active(
-                task.getConversationId(),
-                task.getTopicId(),
+        long processingThrough = task.getProcessingThroughSequence();
+        long sourceCount = messageRepository.countByConversationIdAndSequenceNoBetween(
+                task.getConversationId(), summary.getSummarizedThroughSequence() + 1, processingThrough);
+        int boundedSourceCount = (int) Math.min(Integer.MAX_VALUE, sourceCount);
+        // 摘要行、摘要边界和任务状态在同一事务中提交，失败时保持旧摘要可用。
+        summary.replace(
                 task.getExpectedSummaryVersion(),
-                task.getFromSequence(),
-                task.getThroughSequence(),
+                processingThrough,
                 result.summaryContent(),
                 result.structuredState(),
-                sourceMessageCount,
+                boundedSourceCount,
                 result.providerId(),
                 result.candidateId(),
                 result.modelId(),
-                now);
-        summaryRepository.save(newSummary);
-        topic.applySummary(
-                task.getExpectedSummaryVersion(),
-                task.getThroughSequence(),
-                result.shortSummary(),
-                result.structuredState(),
-                now);
-        task.succeed(now);
-        return newSummary;
+                clock.instant());
+        task.succeed(summary.getSummaryVersion(), clock.instant());
+        return summary;
     }
 
     /**
-     * 记录摘要处理失败并进入延迟重试或最终失败。
+     * 记录摘要消费失败并决定是否继续由 RocketMQ 重投。
      *
      * @param taskId 任务标识
-     * @param category 稳定失败分类
-     * @param safeMessage 已脱敏失败摘要
+     * @param category 失败分类
+     * @param safeMessage 脱敏失败说明
+     * @return 仍可重试时返回 true
      */
     @Transactional
-    public void fail(String taskId, String category, String safeMessage) {
+    public boolean fail(String taskId, String category, String safeMessage) {
         SummaryTaskEntity task = taskRepository.findLockedById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("摘要任务不存在"));
-
-        // 状态机根据当前尝试次数决定重试等待或最终失败。
-        task.fail(category, safeMessage, clock.instant(), properties.summaryRetryDelay());
+        return task.fail(category, safeMessage, clock.instant(), properties.summaryRetryDelay());
     }
 
     /**
-     * 校验会话属于当前用户。
+     * 将原始消息转换为不会继续访问持久化上下文的工作项值对象。
      *
-     * @param userId 用户标识
-     * @param conversationId 会话标识
+     * @param message 原始消息实体
+     * @return 摘要来源消息
      */
-    private void requireOwnedConversation(String userId, String conversationId) {
-        ConversationEntity conversation = conversationRepository.findById(conversationId)
-                .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
-        if (!conversation.belongsTo(userId)) {
-            throw new IllegalArgumentException("无权访问该会话");
-        }
+    private SummarySourceMessage toSourceMessage(MessageEntity message) {
+        return new SummarySourceMessage(
+                message.getId(), message.getSequenceNo(), message.getRole(),
+                message.getMessageType(), message.getContent(), message.getTokenCount());
     }
 
     /**
-     * 摘要模型工作输入。
+     * 待发布摘要任务的最小消息数据。
      *
      * @param taskId 任务标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
-     * @param expectedSummaryVersion 期望摘要版本
-     * @param previousSummary 上一完整摘要
-     * @param previousStructuredState 上一结构化状态
+     * @param eventVersion 事件版本
+     * @param throughSequence 目标消息边界
+     * @param expectedSummaryVersion 预期摘要版本
+     */
+    public record PendingTask(
+            String taskId,
+            String conversationId,
+            long eventVersion,
+            long throughSequence,
+            int expectedSummaryVersion) {
+    }
+
+    /**
+     * 摘要模型使用的不可变工作输入。
+     *
+     * @param taskId 任务标识
+     * @param conversationId 会话标识
+     * @param eventVersion 事件版本
+     * @param expectedSummaryVersion 预期摘要版本
+     * @param throughSequence 本次冻结的消息边界
+     * @param previousSummary 上一份完整摘要
+     * @param previousStructuredState 上一份结构化状态
      * @param messages 本次新增原始消息
      */
     public record SummaryWorkItem(
             String taskId,
             String conversationId,
-            String topicId,
+            long eventVersion,
             int expectedSummaryVersion,
+            long throughSequence,
             String previousSummary,
             String previousStructuredState,
             List<SummarySourceMessage> messages) {
@@ -267,7 +296,7 @@ public class SummaryTaskService {
      * 摘要来源消息。
      *
      * @param messageId 消息标识
-     * @param sequenceNo 会话消息序号
+     * @param sequenceNo 消息序号
      * @param role 消息角色
      * @param messageType 消息类型
      * @param content 原始正文
@@ -285,16 +314,14 @@ public class SummaryTaskService {
     /**
      * 摘要模型生成结果。
      *
-     * @param summaryContent 可替代旧摘要的完整摘要
-     * @param shortSummary 主题路由短摘要
-     * @param structuredState 结构化业务状态 JSON
-     * @param providerId 实际模型平台标识
-     * @param candidateId 实际候选模型标识
-     * @param modelId 实际平台模型标识
+     * @param summaryContent 新的完整累计摘要
+     * @param structuredState 新的结构化状态
+     * @param providerId 实际模型平台
+     * @param candidateId 实际候选模型
+     * @param modelId 实际模型标识
      */
     public record SummaryGenerationResult(
             String summaryContent,
-            String shortSummary,
             String structuredState,
             String providerId,
             String candidateId,

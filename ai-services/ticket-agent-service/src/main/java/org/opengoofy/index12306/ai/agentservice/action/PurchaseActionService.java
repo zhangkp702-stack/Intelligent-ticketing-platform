@@ -157,7 +157,7 @@ public class PurchaseActionService {
             // 取消和退票在消费令牌前重新预览，避免执行用户未确认的新状态或新金额。
             AgentRequestContext context = new AgentRequestContext(
                     command.requestId(), command.userId(), command.username(),
-                    current.getConversationId(), current.getTurnId(), current.getTopicId());
+                    current.getConversationId(), current.getTurnId());
             ticketOperationActionService.revalidate(current, context);
             ticketOperationExecutor = ticketOperationExecutorProvider.getIfAvailable();
             if (ticketOperationExecutor == null) {

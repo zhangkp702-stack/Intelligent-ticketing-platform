@@ -149,7 +149,6 @@ public class ConversationHistoryService {
                 conversation.getId(),
                 conversation.getTitle(),
                 conversation.getStatus(),
-                conversation.getActiveTopicId(),
                 conversation.getLastMessageSequence(),
                 conversation.getCreatedAt(),
                 conversation.getUpdatedAt());
@@ -165,7 +164,6 @@ public class ConversationHistoryService {
         return new HistoryMessageView(
                 message.getId(),
                 message.getTurnId(),
-                message.getTopicId(),
                 message.getSequenceNo(),
                 message.getRole(),
                 message.getMessageType(),

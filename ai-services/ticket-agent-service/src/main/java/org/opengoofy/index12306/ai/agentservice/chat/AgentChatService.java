@@ -14,8 +14,7 @@ import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageType;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
-import org.opengoofy.index12306.ai.agentservice.memory.service.TopicContextService;
-import org.opengoofy.index12306.ai.agentservice.memory.service.TopicRoutingService;
+import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationContextService;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
 import org.opengoofy.index12306.ai.agentservice.model.routing.ModelRoutingException;
@@ -54,7 +53,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 串联会话记忆、主题路由、多模型回答、票务查询和安全操作草案的对话编排服务。
+ * 串联会话记忆、多模型回答、票务查询和安全操作草案的对话编排服务。
  */
 @Service
 public class AgentChatService {
@@ -82,7 +81,7 @@ public class AgentChatService {
             """;
 
     private final ConversationMemoryService conversationMemoryService;
-    private final TopicRoutingService topicRoutingService;
+    private final ConversationContextService conversationContextService;
     private final RoutedChatModelService routedChatModelService;
     private final PurchaseActionService purchaseActionService;
     private final McpToolContextFactory mcpToolContextFactory;
@@ -96,7 +95,7 @@ public class AgentChatService {
      * 创建完整对话编排服务。
      *
      * @param conversationMemoryService 会话和轮次持久化服务
-     * @param topicRoutingService 主题选择与上下文加载服务
+     * @param conversationContextService 会话摘要与最近消息加载服务
      * @param routedChatModelService 多模型回答路由服务
      * @param purchaseActionService 购票草案确认服务
      * @param mcpToolContextFactory MCP 显式上下文工厂
@@ -107,7 +106,7 @@ public class AgentChatService {
      */
     public AgentChatService(
             ConversationMemoryService conversationMemoryService,
-            TopicRoutingService topicRoutingService,
+            ConversationContextService conversationContextService,
             RoutedChatModelService routedChatModelService,
             PurchaseActionService purchaseActionService,
             McpToolContextFactory mcpToolContextFactory,
@@ -116,7 +115,7 @@ public class AgentChatService {
             AgentChatProperties chatProperties,
             AgentChatMetrics chatMetrics) {
         this.conversationMemoryService = conversationMemoryService;
-        this.topicRoutingService = topicRoutingService;
+        this.conversationContextService = conversationContextService;
         this.routedChatModelService = routedChatModelService;
         this.purchaseActionService = purchaseActionService;
         this.mcpToolContextFactory = mcpToolContextFactory;
@@ -127,7 +126,7 @@ public class AgentChatService {
     }
 
     /**
-     * 为当前用户创建独立会话，首个主题会在收到问题后创建。
+     * 为当前用户创建独立会话。
      *
      * @param userId 用户标识
      * @param title 可选会话标题
@@ -139,7 +138,7 @@ public class AgentChatService {
             throw invalidRequest("会话标题不能超过 200 个字符");
         }
 
-        // 会话只建立用户边界，主题和消息由后续对话轮次写入。
+        // 会话只建立用户边界，消息由后续对话轮次写入。
         ConversationEntity conversation = conversationMemoryService.createConversation(
                 userId, StringUtils.hasText(title) ? title.trim() : null);
         return conversation.getId();
@@ -162,8 +161,8 @@ public class AgentChatService {
             return streamWithCancellation(command)
                     .doOnNext(event -> {
                         if (event.type() == AgentChatModels.EventType.META) {
-                            LOGGER.info("Agent主题路由完成，requestId={}, turnId={}, topicId={}, reused={}",
-                                    event.requestId(), event.turnId(), event.topicId(), event.reused());
+                            LOGGER.info("Agent会话上下文加载完成，requestId={}, turnId={}, reused={}",
+                                    event.requestId(), event.turnId(), event.reused());
                         } else if (event.type() == AgentChatModels.EventType.DONE) {
                             LOGGER.info("Agent对话完成，requestId={}, turnId={}, contentLength={}, durationMs={}",
                                     event.requestId(), event.turnId(),
@@ -260,7 +259,7 @@ public class AgentChatService {
                     .findFirst()
                     .orElse(null);
             return new ChatResult(
-                    done.requestId(), done.conversationId(), done.turnId(), done.topicId(),
+                    done.requestId(), done.conversationId(), done.turnId(),
                     done.content(), done.reused(), action);
         });
     }
@@ -284,20 +283,20 @@ public class AgentChatService {
     }
 
     /**
-     * 启动或复用幂等轮次，并在新轮次中执行主题路由和回答生成。
+     * 启动或复用幂等轮次，并在新轮次中直接加载会话上下文生成回答。
      *
      * @param command 已校验的对话命令
      * @return 本轮事件流
      */
     private Flux<ChatEvent> start(ChatCommand command) {
-        // 先持久化用户问题，保证路由、模型或工具失败时仍有可审计轮次。
+        // 先持久化用户问题，保证上下文加载、模型或工具失败时仍有可审计轮次。
         ConversationMemoryService.StartedTurn started = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
                         command.userId(), command.conversationId(), command.requestId(),
                         command.idempotencyKey(), command.message().trim(), estimateTokens(command.message())));
         AgentRequestContext context = new AgentRequestContext(
                 command.requestId(), command.userId(), command.username(), command.conversationId(),
-                started.turnId(), null);
+                started.turnId());
 
         // 幂等重试只允许复用已完成结果，运行中或失败请求不能再次触发模型和工具调用。
         if (!started.created()) {
@@ -317,13 +316,12 @@ public class AgentChatService {
                 context.userId(), context.turnId());
         if (state.status() == TurnStatus.COMPLETED && StringUtils.hasText(state.assistantContent())) {
             // 已完成轮次重放正文，并重新签发仍处于有效期内的同一草案确认视图。
-            AgentRequestContext routed = context.withTopicId(state.topicId());
             List<ChatEvent> events = new ArrayList<>();
-            events.add(ChatEvent.meta(routed, true));
-            events.add(ChatEvent.delta(routed, state.assistantContent()));
+            events.add(ChatEvent.meta(context, true));
+            events.add(ChatEvent.delta(context, state.assistantContent()));
             purchaseActionService.confirmationForTurn(context.userId(), context.turnId())
-                    .ifPresent(action -> events.add(ChatEvent.actionRequired(routed, action)));
-            events.add(ChatEvent.done(routed, state.assistantContent(), true));
+                    .ifPresent(action -> events.add(ChatEvent.actionRequired(context, action)));
+            events.add(ChatEvent.done(context, state.assistantContent(), true));
             return Flux.fromIterable(events);
         }
         if (state.status() == TurnStatus.RUNNING) {
@@ -335,9 +333,9 @@ public class AgentChatService {
     }
 
     /**
-     * 为新轮次选择主题、组装上下文和工具后生成最终回答。
+     * 为新轮次组装会话上下文和工具后生成最终回答。
      *
-     * @param context 路由前请求上下文
+     * @param context 当前请求上下文
      * @param userMessageId 当前用户消息标识
      * @return 新回答事件流
      */
@@ -345,15 +343,14 @@ public class AgentChatService {
         AtomicBoolean terminal = new AtomicBoolean();
 
         try {
-            // 主题路由会先比较摘要卡片，再只加载命中主题的完整摘要和最近对话。
-            TopicRoutingService.TopicRoutingResult routing = topicRoutingService.route(context, userMessageId);
-            AgentRequestContext routedContext = routing.requestContext();
+            // 每个会话只有一份当前摘要，直接加载摘要和其边界后的最近对话。
+            ConversationContextService.ConversationContext conversationContext = conversationContextService.load(
+                    context.userId(), context.requestId(), context.conversationId());
             List<ToolCallback> callbacks = resolveToolCallbacks();
-            Prompt prompt = buildPrompt(routedContext, routing.topicContext(), callbacks);
+            Prompt prompt = buildPrompt(context, conversationContext, callbacks);
             StringBuilder answer = new StringBuilder();
             ModelAttemptContext attemptContext = new ModelAttemptContext(
-                    routedContext.requestId(), routedContext.conversationId(),
-                    routedContext.topicId(), routedContext.turnId());
+                    context.requestId(), context.conversationId(), context.turnId());
 
             // 回答模型只自动执行只读查询和本地草案工具；每次调用都携带显式用户和轮次上下文。
             Flux<ChatEvent> answerEvents = routedChatModelService.stream(
@@ -362,7 +359,7 @@ public class AgentChatService {
                     .filter(StringUtils::hasText)
                     .map(delta -> {
                         answer.append(delta);
-                        return ChatEvent.delta(routedContext, delta);
+                        return ChatEvent.delta(context, delta);
                     });
 
             // 回答持久化成功后再签发结构化确认事件，令牌不会进入模型上下文或回答正文。
@@ -373,19 +370,19 @@ public class AgentChatService {
                             HttpStatus.SERVICE_UNAVAILABLE, "EMPTY_MODEL_RESPONSE", "模型未返回有效回答，请稍后重试");
                 }
                 conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
-                        routedContext.userId(), routedContext.turnId(), content, estimateTokens(content)));
+                        context.userId(), context.turnId(), content, estimateTokens(content)));
                 terminal.set(true);
                 return content;
             }).flatMapMany(content -> purchaseActionService
-                    .confirmationForTurn(routedContext.userId(), routedContext.turnId())
+                    .confirmationForTurn(context.userId(), context.turnId())
                     .<Flux<ChatEvent>>map(action -> Flux.just(
-                            ChatEvent.actionRequired(routedContext, action),
-                            ChatEvent.done(routedContext, content, false)))
-                    .orElseGet(() -> Flux.just(ChatEvent.done(routedContext, content, false))));
+                            ChatEvent.actionRequired(context, action),
+                            ChatEvent.done(context, content, false)))
+                    .orElseGet(() -> Flux.just(ChatEvent.done(context, content, false))));
 
-            return Flux.concat(Flux.just(ChatEvent.meta(routedContext, false)), answerEvents, completion)
-                    .doOnError(exception -> failTurn(routedContext, terminal, exception))
-                    .doOnCancel(() -> cancelTurn(routedContext, terminal));
+            return Flux.concat(Flux.just(ChatEvent.meta(context, false)), answerEvents, completion)
+                    .doOnError(exception -> failTurn(context, terminal, exception))
+                    .doOnCancel(() -> cancelTurn(context, terminal));
         } catch (RuntimeException exception) {
             failTurn(context, terminal, exception);
             return Flux.error(exception);
@@ -393,29 +390,29 @@ public class AgentChatService {
     }
 
     /**
-     * 组装系统规则、主题摘要、结构化状态和最近原始消息，并注册本次安全工具。
+     * 组装系统规则、会话摘要、结构化状态和最近原始消息，并注册本次安全工具。
      *
-     * @param context 已确定主题的请求上下文
-     * @param topicContext 选中主题的完整上下文
+     * @param context 当前请求上下文
+     * @param conversationContext 当前会话的摘要和最近消息
      * @param callbacks 本次可用工具回调
      * @return 可直接交给回答模型的 Spring AI 提示
      */
     private Prompt buildPrompt(
             AgentRequestContext context,
-            TopicContextService.TopicContext topicContext,
+            ConversationContextService.ConversationContext conversationContext,
             List<ToolCallback> callbacks) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(SYSTEM_PROMPT + "\n" + PURCHASE_ACTION_PROMPT + "\n当前日期："
                 + LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")))));
 
         // 摘要和结构化状态是服务端记忆，不与用户原始问题混为同一消息。
-        if (StringUtils.hasText(topicContext.summaryContent())) {
-            messages.add(new SystemMessage("当前主题历史摘要：\n" + topicContext.summaryContent()));
+        if (StringUtils.hasText(conversationContext.summaryContent())) {
+            messages.add(new SystemMessage("当前会话历史摘要：\n" + conversationContext.summaryContent()));
         }
-        if (StringUtils.hasText(topicContext.structuredState())) {
-            messages.add(new SystemMessage("当前主题结构化业务状态：\n" + topicContext.structuredState()));
+        if (StringUtils.hasText(conversationContext.structuredState())) {
+            messages.add(new SystemMessage("当前会话结构化业务状态：\n" + conversationContext.structuredState()));
         }
-        for (TopicContextService.ContextMessage memoryMessage : topicContext.messages()) {
+        for (ConversationContextService.ContextMessage memoryMessage : conversationContext.messages()) {
             // 回答上下文只还原文本问答，工具详情由独立审计表保存且不作为下一轮指令。
             if (memoryMessage.messageType() != MessageType.TEXT || !StringUtils.hasText(memoryMessage.content())) {
                 continue;

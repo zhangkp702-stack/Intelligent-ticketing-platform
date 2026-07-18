@@ -139,7 +139,6 @@ public class AuditedToolCallback implements ToolCallback {
         ToolCallAuditEvent event = new ToolCallAuditEvent(
                 text(context, McpToolContextFactory.REQUEST_ID),
                 text(context, McpToolContextFactory.CONVERSATION_ID),
-                text(context, McpToolContextFactory.TOPIC_ID),
                 text(context, McpToolContextFactory.TURN_ID),
                 getToolDefinition().name(),
                 MCP_SERVER,

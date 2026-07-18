@@ -19,7 +19,7 @@ class McpToolContextFactoryTests {
     @Test
     void createsImmutableExplicitToolContext() {
         AgentRequestContext requestContext = new AgentRequestContext(
-                "request-a", "user-a", "alice", "conversation-a", "turn-a", "topic-a");
+                "request-a", "user-a", "alice", "conversation-a", "turn-a");
 
         // 工厂直接消费显式业务上下文，不读取执行线程状态。
         Map<String, Object> result = new McpToolContextFactory().create(requestContext);
@@ -28,8 +28,7 @@ class McpToolContextFactoryTests {
                 .containsEntry("requestId", "request-a")
                 .containsEntry("userId", "user-a")
                 .containsEntry("conversationId", "conversation-a")
-                .containsEntry("turnId", "turn-a")
-                .containsEntry("topicId", "topic-a");
+                .containsEntry("turnId", "turn-a");
         assertThatThrownBy(() -> result.put("userId", "user-b"))
                 .isInstanceOf(UnsupportedOperationException.class);
     }

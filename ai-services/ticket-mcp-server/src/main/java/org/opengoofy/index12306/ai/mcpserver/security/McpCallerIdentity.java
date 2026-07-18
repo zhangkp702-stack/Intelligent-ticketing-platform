@@ -8,7 +8,6 @@ package org.opengoofy.index12306.ai.mcpserver.security;
  * @param username 用户名
  * @param conversationId 会话标识
  * @param turnId 对话轮次标识
- * @param topicId 主题标识
  * @param actionId 已确认操作草案标识，只读工具调用时为空
  * @param payloadHash 已确认操作参数指纹，只读工具调用时为空
  */
@@ -18,7 +17,6 @@ public record McpCallerIdentity(
         String username,
         String conversationId,
         String turnId,
-        String topicId,
         String actionId,
         String payloadHash) {
 }

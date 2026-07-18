@@ -28,9 +28,6 @@ public class ActionDraftEntity extends AgentBaseEntity {
     @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "topic_id", nullable = false, length = 32)
-    private String topicId;
-
     @Column(name = "turn_id", nullable = false, length = 32)
     private String turnId;
 
@@ -72,7 +69,6 @@ public class ActionDraftEntity extends AgentBaseEntity {
     private ActionDraftEntity(
             String userId,
             String conversationId,
-            String topicId,
             String turnId,
             AgentActionType actionType,
             String payloadJson,
@@ -82,7 +78,6 @@ public class ActionDraftEntity extends AgentBaseEntity {
         super(now);
         this.userId = Objects.requireNonNull(userId, "userId");
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId");
-        this.topicId = Objects.requireNonNull(topicId, "topicId");
         this.turnId = Objects.requireNonNull(turnId, "turnId");
         this.actionType = Objects.requireNonNull(actionType, "actionType");
         this.status = AgentActionStatus.AWAITING_CONFIRMATION;
@@ -96,7 +91,6 @@ public class ActionDraftEntity extends AgentBaseEntity {
      *
      * @param userId 用户标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param turnId 创建草案的轮次标识
      * @param payloadJson 规范化购票参数 JSON
      * @param payloadHash 参数指纹
@@ -107,7 +101,6 @@ public class ActionDraftEntity extends AgentBaseEntity {
     public static ActionDraftEntity createPurchase(
             String userId,
             String conversationId,
-            String topicId,
             String turnId,
             String payloadJson,
             String payloadHash,
@@ -115,7 +108,7 @@ public class ActionDraftEntity extends AgentBaseEntity {
             Instant now) {
         // 创建时仅保存不可执行草案，任何业务订单都尚未产生。
         return new ActionDraftEntity(
-                userId, conversationId, topicId, turnId, AgentActionType.TICKET_PURCHASE,
+                userId, conversationId, turnId, AgentActionType.TICKET_PURCHASE,
                 payloadJson, payloadHash, confirmationExpiresAt, now);
     }
 
@@ -124,7 +117,6 @@ public class ActionDraftEntity extends AgentBaseEntity {
      *
      * @param userId 用户标识
      * @param conversationId 会话标识
-     * @param topicId 主题标识
      * @param turnId 创建草案的轮次标识
      * @param actionType 操作类型
      * @param payloadJson 规范化参数 JSON
@@ -136,7 +128,6 @@ public class ActionDraftEntity extends AgentBaseEntity {
     public static ActionDraftEntity create(
             String userId,
             String conversationId,
-            String topicId,
             String turnId,
             AgentActionType actionType,
             String payloadJson,
@@ -145,7 +136,7 @@ public class ActionDraftEntity extends AgentBaseEntity {
             Instant now) {
         // 所有高风险操作统一从待确认状态开始，草案创建本身不调用任何业务写接口。
         return new ActionDraftEntity(
-                userId, conversationId, topicId, turnId, actionType,
+                userId, conversationId, turnId, actionType,
                 payloadJson, payloadHash, confirmationExpiresAt, now);
     }
 

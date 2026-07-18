@@ -79,7 +79,7 @@ public class ConfirmedPurchaseMcpExecutor implements ConfirmedPurchaseExecutor {
         String toolInput = buildToolInput(action);
         AgentRequestContext requestContext = new AgentRequestContext(
                 action.requestId(), action.userId(), username, action.conversationId(),
-                action.turnId(), action.topicId());
+                action.turnId());
 
         // 操作标识和参数指纹进入 HMAC 元数据，MCP 服务端会再次验证参数未被替换。
         ToolContext toolContext = new ToolContext(contextFactory.createConfirmedAction(

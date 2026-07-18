@@ -24,7 +24,7 @@ public interface TurnRepository extends JpaRepository<TurnEntity, String> {
     Optional<TurnEntity> findByConversationIdAndRequestId(String conversationId, String requestId);
 
     /**
-     * 使用数据库写锁读取轮次，保护主题绑定和最终状态更新。
+     * 使用数据库写锁读取轮次，保护最终状态更新。
      *
      * @param turnId 轮次标识
      * @return 锁定的轮次

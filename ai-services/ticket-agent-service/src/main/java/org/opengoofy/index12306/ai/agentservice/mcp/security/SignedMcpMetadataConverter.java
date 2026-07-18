@@ -70,7 +70,6 @@ public class SignedMcpMetadataConverter implements ToolContextToMcpMetaConverter
         String username = optional(context, McpToolContextFactory.USERNAME);
         String conversationId = required(context, McpToolContextFactory.CONVERSATION_ID);
         String turnId = required(context, McpToolContextFactory.TURN_ID);
-        String topicId = optional(context, McpToolContextFactory.TOPIC_ID);
         String actionId = optional(context, McpToolContextFactory.ACTION_ID);
         String payloadHash = optional(context, McpToolContextFactory.PAYLOAD_HASH);
         String timestamp = Long.toString(clock.millis());
@@ -78,7 +77,7 @@ public class SignedMcpMetadataConverter implements ToolContextToMcpMetaConverter
 
         // 签名覆盖全部身份、会话和防重放字段，任一字段被修改都会校验失败。
         String canonical = String.join("\n",
-                requestId, userId, username, conversationId, turnId, topicId,
+                requestId, userId, username, conversationId, turnId,
                 actionId, payloadHash, timestamp, nonce);
         String signature = Base64.getUrlEncoder().withoutPadding().encodeToString(sign(canonical));
 
@@ -89,7 +88,6 @@ public class SignedMcpMetadataConverter implements ToolContextToMcpMetaConverter
         metadata.put(McpToolContextFactory.USERNAME, username);
         metadata.put(McpToolContextFactory.CONVERSATION_ID, conversationId);
         metadata.put(McpToolContextFactory.TURN_ID, turnId);
-        metadata.put(McpToolContextFactory.TOPIC_ID, topicId);
         metadata.put(McpToolContextFactory.ACTION_ID, actionId);
         metadata.put(McpToolContextFactory.PAYLOAD_HASH, payloadHash);
         metadata.put("timestamp", timestamp);

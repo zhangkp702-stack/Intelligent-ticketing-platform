@@ -32,7 +32,6 @@ class ModelSummaryTaskProcessorTests {
         ModelSummaryTaskProcessor.SummaryModelOutput output =
                 new ModelSummaryTaskProcessor.SummaryModelOutput(
                         "用户查询北京到上海的余票。",
-                        "北京到上海余票查询",
                         state);
         when(invoker.call(any(), any(), any(), any(), any())).thenReturn(new ModelCallResult<>(
                 output,
@@ -46,8 +45,9 @@ class ModelSummaryTaskProcessorTests {
         SummaryTaskService.SummaryWorkItem workItem = new SummaryTaskService.SummaryWorkItem(
                 "task-1",
                 "conversation-1",
-                "topic-1",
-                1,
+                1L,
+                0,
+                1L,
                 null,
                 null,
                 List.of(new SummaryTaskService.SummarySourceMessage(
@@ -58,7 +58,6 @@ class ModelSummaryTaskProcessorTests {
         SummaryTaskService.SummaryGenerationResult result = processor.process(workItem);
 
         assertThat(result.summaryContent()).isEqualTo("用户查询北京到上海的余票。");
-        assertThat(result.shortSummary()).isEqualTo("北京到上海余票查询");
         assertThat(result.structuredState()).isEqualTo("{\"intent\":\"ticket_query\"}");
         assertThat(result.providerId()).isEqualTo("siliconflow");
         assertThat(result.candidateId()).isEqualTo("summary-primary");

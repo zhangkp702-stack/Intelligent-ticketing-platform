@@ -94,7 +94,7 @@ public class ConfirmedTicketOperationMcpExecutor implements ConfirmedTicketOpera
         String toolInput = buildToolInput(action);
         AgentRequestContext requestContext = new AgentRequestContext(
                 action.requestId(), action.userId(), username, action.conversationId(),
-                action.turnId(), action.topicId());
+                action.turnId());
         ToolContext toolContext = new ToolContext(contextFactory.createConfirmedAction(
                 requestContext, action.actionId(), action.payloadHash()));
         return callbacks.get(toolName).call(toolInput, toolContext);
