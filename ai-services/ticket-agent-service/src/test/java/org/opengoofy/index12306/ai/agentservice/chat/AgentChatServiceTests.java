@@ -2,6 +2,7 @@ package org.opengoofy.index12306.ai.agentservice.chat;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.EventType;
@@ -16,6 +17,8 @@ import org.opengoofy.index12306.ai.agentservice.model.routing.RoutedChatModelSer
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Flux;
@@ -31,6 +34,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -75,6 +79,12 @@ class AgentChatServiceTests {
                 .verifyComplete();
         verify(test.memory()).completeTurn(any());
         verify(test.contextService()).load(command.userId(), command.requestId(), command.conversationId());
+
+        // 捕获实际发送给模型的提示，确认独立只读工具可以在同一模型轮次中批量请求。
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(test.model(), atLeastOnce()).stream(any(), promptCaptor.capture(), any(), eq(false));
+        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
+        assertThat(options.getParallelToolCalls()).isTrue();
 
         // 首事件与首个正文指标都应记录一次，避免性能优化破坏现有观测口径。
         assertThat(test.meterRegistry()

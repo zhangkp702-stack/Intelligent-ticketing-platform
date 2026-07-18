@@ -54,6 +54,12 @@ class TicketAgentServiceApplicationTests {
                 .startsWith("siliconflow-summary-primary", "bailian-flash");
         assertThat(modelProperties.candidates().get("bailian-answer-primary").model())
                 .isEqualTo("qwen3.5-plus-2026-02-15");
+
+        // 百炼混合思考模型必须显式关闭思考，避免默认推理过程重复放大工具循环耗时。
+        assertThat(modelProperties.candidates().get("bailian-answer-primary").extraBody())
+                .containsEntry("enable_thinking", false);
+        assertThat(modelProperties.candidates().get("bailian-flash").extraBody())
+                .containsEntry("enable_thinking", false);
     }
 
     /**
