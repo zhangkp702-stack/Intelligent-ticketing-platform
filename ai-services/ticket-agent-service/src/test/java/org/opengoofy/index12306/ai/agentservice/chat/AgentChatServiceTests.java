@@ -3,6 +3,7 @@ package org.opengoofy.index12306.ai.agentservice.chat;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.opengoofy.index12306.ai.agentservice.action.ActionDraftCreationTracker;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionConfirmationView;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
@@ -84,6 +85,7 @@ class AgentChatServiceTests {
                 .verifyComplete();
         verify(test.memory()).completeTurn(any());
         verify(test.contextService()).load(command.userId(), command.requestId(), command.conversationId());
+        verify(test.purchaseActionService(), never()).confirmationForTurn(any(), any());
 
         // 捕获实际发送给模型的提示，确认独立只读工具可以在同一模型轮次中批量请求。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
@@ -121,6 +123,7 @@ class AgentChatServiceTests {
                 .thenReturn(Flux.just(incorrectModelResponse));
         when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
                 .thenReturn(Optional.of(action));
+        test.actionDraftCreationTracker().markCreated("turn-1");
 
         // 最终事件和持久化正文必须以数据库状态为准，同时保留结构化待确认动作。
         StepVerifier.create(test.service().stream(command))
@@ -142,6 +145,8 @@ class AgentChatServiceTests {
                 ArgumentCaptor.forClass(ConversationMemoryService.CompleteTurnCommand.class);
         verify(test.memory()).completeTurn(completionCaptor.capture());
         assertThat(completionCaptor.getValue().content()).contains("尚未创建订单");
+        verify(test.purchaseActionService()).confirmationForTurn(command.userId(), "turn-1");
+        assertThat(test.actionDraftCreationTracker().consumeCreated("turn-1")).isFalse();
     }
 
     /**
@@ -219,6 +224,7 @@ class AgentChatServiceTests {
         when(test.contextService().load(command.userId(), command.requestId(), command.conversationId()))
                 .thenReturn(conversationContext);
         when(test.model().stream(any(), any(), any(), eq(false))).thenReturn(Flux.never());
+        test.actionDraftCreationTracker().markCreated("turn-1");
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
@@ -226,6 +232,7 @@ class AgentChatServiceTests {
                         .isInstanceOf(AgentChatException.class))
                 .verify(Duration.ofSeconds(1));
         verify(test.memory()).cancelTurn(command.userId(), "turn-1");
+        assertThat(test.actionDraftCreationTracker().consumeCreated("turn-1")).isFalse();
     }
 
     /**
@@ -264,6 +271,7 @@ class AgentChatServiceTests {
         ConversationContextService contextService = mock(ConversationContextService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
+        ActionDraftCreationTracker actionDraftCreationTracker = new ActionDraftCreationTracker();
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
         // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
         when(providers.orderedStream()).thenReturn(Arrays.stream(configuredProviders));
@@ -273,12 +281,15 @@ class AgentChatServiceTests {
                 contextService,
                 model,
                 purchaseActionService,
+                actionDraftCreationTracker,
                 new McpToolContextFactory(),
                 providers,
                 Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC),
                 new AgentChatProperties(responseTimeout),
                 new AgentChatMetrics(meterRegistry));
-        return new TestContext(service, memory, contextService, model, purchaseActionService, meterRegistry);
+        return new TestContext(
+                service, memory, contextService, model,
+                purchaseActionService, actionDraftCreationTracker, meterRegistry);
     }
 
     /**
@@ -329,6 +340,7 @@ class AgentChatServiceTests {
      * @param contextService 会话上下文替身
      * @param model 回答模型替身
      * @param purchaseActionService 购票动作服务替身
+     * @param actionDraftCreationTracker 本轮草案创建信号
      * @param meterRegistry 指标注册表
      */
     private record TestContext(
@@ -337,6 +349,7 @@ class AgentChatServiceTests {
             ConversationContextService contextService,
             RoutedChatModelService model,
             PurchaseActionService purchaseActionService,
+            ActionDraftCreationTracker actionDraftCreationTracker,
             SimpleMeterRegistry meterRegistry) {
     }
 }

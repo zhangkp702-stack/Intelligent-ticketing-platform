@@ -20,14 +20,19 @@ import java.util.Map;
 public class PurchaseDraftTools {
 
     private final PurchaseActionService purchaseActionService;
+    private final ActionDraftCreationTracker actionDraftCreationTracker;
 
     /**
      * 创建购票草案工具。
      *
      * @param purchaseActionService 购票确认状态机服务
+     * @param actionDraftCreationTracker 本轮草案创建信号
      */
-    public PurchaseDraftTools(PurchaseActionService purchaseActionService) {
+    public PurchaseDraftTools(
+            PurchaseActionService purchaseActionService,
+            ActionDraftCreationTracker actionDraftCreationTracker) {
         this.purchaseActionService = purchaseActionService;
+        this.actionDraftCreationTracker = actionDraftCreationTracker;
     }
 
     /**
@@ -65,10 +70,13 @@ public class PurchaseDraftTools {
                 .toList();
 
         // 本地工具只持久化草案，真实购票必须由独立确认接口继续执行。
-        return purchaseActionService.prepare(
+        PurchaseDraftResult result = purchaseActionService.prepare(
                 context,
                 new PurchasePayload(
                         trainId, departure, arrival, departureDate, normalizedPassengers, chooseSeats));
+        // 仅在数据库草案创建或复用成功后标记本轮，供对话完成阶段按需读取确认视图。
+        actionDraftCreationTracker.markCreated(context.turnId());
+        return result;
     }
 
     /**

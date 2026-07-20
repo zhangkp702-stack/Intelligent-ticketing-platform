@@ -18,14 +18,19 @@ import java.util.Map;
 public class TicketOperationDraftTools {
 
     private final TicketOperationActionService actionService;
+    private final ActionDraftCreationTracker actionDraftCreationTracker;
 
     /**
      * 创建订单操作草案工具。
      *
      * @param actionService 取消和退票草案服务
+     * @param actionDraftCreationTracker 本轮草案创建信号
      */
-    public TicketOperationDraftTools(TicketOperationActionService actionService) {
+    public TicketOperationDraftTools(
+            TicketOperationActionService actionService,
+            ActionDraftCreationTracker actionDraftCreationTracker) {
         this.actionService = actionService;
+        this.actionDraftCreationTracker = actionDraftCreationTracker;
     }
 
     /**
@@ -42,7 +47,11 @@ public class TicketOperationDraftTools {
             @ToolParam(description = "list_my_orders 或 get_my_order_detail 返回的 orderSn") String orderSn,
             ToolContext toolContext) {
         // 本地工具只创建可信状态快照，真实取消必须由独立确认接口继续执行。
-        return actionService.prepareCancellation(requestContext(toolContext), orderSn);
+        AgentRequestContext context = requestContext(toolContext);
+        TicketOperationDraftResult result = actionService.prepareCancellation(context, orderSn);
+        // 预览和草案持久化都成功后再标记本轮，失败请求不会产生确认事件。
+        actionDraftCreationTracker.markCreated(context.turnId());
+        return result;
     }
 
     /**
@@ -64,8 +73,12 @@ public class TicketOperationDraftTools {
             List<String> orderItemIds,
             ToolContext toolContext) {
         // 退款范围和金额由服务端预览重新计算，模型不能直接写入草案金额。
-        return actionService.prepareRefund(
-                requestContext(toolContext), orderSn, type, orderItemIds);
+        AgentRequestContext context = requestContext(toolContext);
+        TicketOperationDraftResult result = actionService.prepareRefund(
+                context, orderSn, type, orderItemIds);
+        // 只有真实保存的退票草案才允许对话层继续读取数据库确认视图。
+        actionDraftCreationTracker.markCreated(context.turnId());
+        return result;
     }
 
     /**

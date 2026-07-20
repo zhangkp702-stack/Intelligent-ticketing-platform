@@ -5,6 +5,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCancelR
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatResult;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
+import org.opengoofy.index12306.ai.agentservice.action.ActionDraftCreationTracker;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionConfirmationView;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionType;
@@ -101,6 +102,7 @@ public class AgentChatService {
     private final ConversationContextService conversationContextService;
     private final RoutedChatModelService routedChatModelService;
     private final PurchaseActionService purchaseActionService;
+    private final ActionDraftCreationTracker actionDraftCreationTracker;
     private final McpToolContextFactory mcpToolContextFactory;
     private final ObjectProvider<ToolCallbackProvider> toolCallbackProviders;
     private final Clock clock;
@@ -122,6 +124,7 @@ public class AgentChatService {
      * @param conversationContextService 会话摘要与最近消息加载服务
      * @param routedChatModelService 多模型回答路由服务
      * @param purchaseActionService 购票草案确认服务
+     * @param actionDraftCreationTracker 本轮草案创建信号
      * @param mcpToolContextFactory MCP 显式上下文工厂
      * @param toolCallbackProviders 已启用的安全工具提供器
      * @param clock 统一时钟
@@ -133,6 +136,7 @@ public class AgentChatService {
             ConversationContextService conversationContextService,
             RoutedChatModelService routedChatModelService,
             PurchaseActionService purchaseActionService,
+            ActionDraftCreationTracker actionDraftCreationTracker,
             McpToolContextFactory mcpToolContextFactory,
             ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
             Clock clock,
@@ -142,6 +146,7 @@ public class AgentChatService {
         this.conversationContextService = conversationContextService;
         this.routedChatModelService = routedChatModelService;
         this.purchaseActionService = purchaseActionService;
+        this.actionDraftCreationTracker = actionDraftCreationTracker;
         this.mcpToolContextFactory = mcpToolContextFactory;
         this.toolCallbackProviders = toolCallbackProviders;
         this.clock = clock;
@@ -388,9 +393,9 @@ public class AgentChatService {
 
             // 先以数据库草案状态收口模型正文，再持久化回答并签发结构化确认事件。
             Flux<ChatEvent> completion = Mono.fromCallable(() -> {
-                ActionConfirmationView action = purchaseActionService
-                        .confirmationForTurn(context.userId(), context.turnId())
-                        .orElse(null);
+                ActionConfirmationView action = actionDraftCreationTracker.consumeCreated(context.turnId())
+                        ? purchaseActionService.confirmationForTurn(context.userId(), context.turnId()).orElse(null)
+                        : null;
                 String content = authoritativeContent(answer.toString(), action);
                 conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
                         context.userId(), context.turnId(), content, estimateTokens(content)));
@@ -523,6 +528,8 @@ public class AgentChatService {
      * @param exception 原始异常
      */
     private void failTurn(AgentRequestContext context, AtomicBoolean terminal, Throwable exception) {
+        // 异常结束不再生成确认事件，及时消费可能已经创建的本轮信号。
+        actionDraftCreationTracker.consumeCreated(context.turnId());
         if (!terminal.compareAndSet(false, true)) {
             return;
         }
@@ -540,6 +547,8 @@ public class AgentChatService {
      * @param terminal 是否已经持久化终态
      */
     private void cancelTurn(AgentRequestContext context, AtomicBoolean terminal) {
+        // 用户取消后清理本轮信号，避免后续请求误判为需要读取动作表。
+        actionDraftCreationTracker.consumeCreated(context.turnId());
         if (terminal.compareAndSet(false, true)) {
             // 显式取消避免轮次永久停留在 RUNNING，客户端可使用新请求标识重新发起。
             conversationMemoryService.cancelTurn(context.userId(), context.turnId());
