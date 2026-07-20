@@ -7,6 +7,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatResult;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionConfirmationView;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
+import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationEntity;
@@ -63,7 +64,8 @@ public class AgentChatService {
     private static final int MAX_TITLE_LENGTH = 200;
     private static final String PURCHASE_ACTION_PROMPT = """
             当用户明确要求购票且车次、出发站、到达站、乘车人和席别均已确定时，必须调用 prepare_ticket_purchase 生成购票草案。
-            prepare_ticket_purchase 只保存草案，不会创建订单；调用后应提示用户核对结构化确认信息并显式确认。
+            prepare_ticket_purchase 只保存草案，不会创建订单；调用后应提示用户核对结构化确认信息并点击前端“确认下单”按钮。
+            用户输入“确认”“可以”“没有问题”等文字只表示继续交流，绝不代表授权下单，也不能据此声称订单已提交。
             当用户明确要求取消未支付订单且已经确定本人订单号时，必须调用 prepare_order_cancellation 生成取消草案。
             当用户明确要求退票且已经确定本人订单号、全部或部分退票范围时，必须调用 prepare_ticket_refund 生成退票草案。
             取消或退票前应先查询本人订单详情；部分退票必须使用详情返回的子订单 ID，不得根据姓名猜测。
@@ -91,6 +93,13 @@ public class AgentChatService {
     private final AgentChatProperties chatProperties;
     private final AgentChatMetrics chatMetrics;
     private final ConcurrentMap<String, Sinks.One<Void>> activeTurnCancels = new ConcurrentHashMap<>();
+
+    /**
+     * @param content 经服务端业务状态校正后的最终正文
+     * @param action 本轮数据库中的待确认操作
+     */
+    private record CompletedAnswer(String content, ActionConfirmationView action) {
+    }
 
     /**
      * 创建完整对话编排服务。
@@ -363,23 +372,21 @@ public class AgentChatService {
                         return ChatEvent.delta(context, delta);
                     });
 
-            // 回答持久化成功后再签发结构化确认事件，令牌不会进入模型上下文或回答正文。
+            // 先以数据库草案状态收口模型正文，再持久化回答并签发结构化确认事件。
             Flux<ChatEvent> completion = Mono.fromCallable(() -> {
-                String content = answer.toString();
-                if (!StringUtils.hasText(content)) {
-                    throw new AgentChatException(
-                            HttpStatus.SERVICE_UNAVAILABLE, "EMPTY_MODEL_RESPONSE", "模型未返回有效回答，请稍后重试");
-                }
+                ActionConfirmationView action = purchaseActionService
+                        .confirmationForTurn(context.userId(), context.turnId())
+                        .orElse(null);
+                String content = authoritativeContent(answer.toString(), action);
                 conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
                         context.userId(), context.turnId(), content, estimateTokens(content)));
                 terminal.set(true);
-                return content;
-            }).flatMapMany(content -> purchaseActionService
-                    .confirmationForTurn(context.userId(), context.turnId())
-                    .<Flux<ChatEvent>>map(action -> Flux.just(
-                            ChatEvent.actionRequired(context, action),
-                            ChatEvent.done(context, content, false)))
-                    .orElseGet(() -> Flux.just(ChatEvent.done(context, content, false))));
+                return new CompletedAnswer(content, action);
+            }).flatMapMany(completed -> completed.action() == null
+                    ? Flux.just(ChatEvent.done(context, completed.content(), false))
+                    : Flux.just(
+                            ChatEvent.actionRequired(context, completed.action()),
+                            ChatEvent.done(context, completed.content(), false)));
 
             return Flux.concat(Flux.just(ChatEvent.meta(context, false)), answerEvents, completion)
                     .doOnError(exception -> failTurn(context, terminal, exception))
@@ -388,6 +395,27 @@ public class AgentChatService {
             failTurn(context, terminal, exception);
             return Flux.error(exception);
         }
+    }
+
+    /**
+     * 根据服务端已持久化的操作状态生成权威回答，禁止模型把购票草案描述为真实订单。
+     *
+     * @param modelContent 模型生成的原始正文
+     * @param action 本轮从数据库读取的待确认操作，未创建草案时为空
+     * @return 可持久化并返回前端的最终正文
+     */
+    private String authoritativeContent(String modelContent, ActionConfirmationView action) {
+        if (action != null && AgentActionType.TICKET_PURCHASE.name().equals(action.actionType())) {
+            // 购票草案存在时由服务端固定说明业务状态，确认按钮之外的文字不能授权下单。
+            return "购票草案已生成，请核对下方车次、日期、乘车人和席别，并点击“确认下单”按钮。"
+                    + "当前尚未创建订单。";
+        }
+        if (!StringUtils.hasText(modelContent)) {
+            // 没有数据库草案兜底时，空模型正文仍按原有协议作为失败处理。
+            throw new AgentChatException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "EMPTY_MODEL_RESPONSE", "模型未返回有效回答，请稍后重试");
+        }
+        return modelContent;
     }
 
     /**

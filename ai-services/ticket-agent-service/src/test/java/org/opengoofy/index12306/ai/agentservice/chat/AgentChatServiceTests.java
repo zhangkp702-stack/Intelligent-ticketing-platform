@@ -3,7 +3,9 @@ package org.opengoofy.index12306.ai.agentservice.chat;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionConfirmationView;
 import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
+import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
@@ -29,6 +31,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,6 +94,52 @@ class AgentChatServiceTests {
                 .get("agent.chat.time.to.first.event").timer().count()).isEqualTo(1);
         assertThat(test.meterRegistry()
                 .get("agent.chat.time.to.first.token").timer().count()).isEqualTo(1);
+    }
+
+    /**
+     * 验证购票草案真实落库后由服务端收口最终正文，模型不能把待确认草案描述为已下单。
+     */
+    @Test
+    void persistedPurchaseDraftOverridesModelSuccessClaim() {
+        TestContext test = context();
+        ChatCommand command = command();
+        ConversationContextService.ConversationContext conversationContext = new ConversationContextService.ConversationContext(
+                command.conversationId(), null, null, null, null, 0, List.of(), 0);
+        ActionConfirmationView action = new ActionConfirmationView(
+                "action-1", "TICKET_PURCHASE", AgentActionStatus.AWAITING_CONFIRMATION,
+                "购买 G9004 次列车", Instant.parse("2026-07-16T00:10:00Z"), "confirmation-token");
+        ChatResponse incorrectModelResponse = response("订单已提交成功，请前往支付");
+
+        // 模拟模型错误声称已提交订单，但本轮数据库中实际只有待确认购票草案。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.contextService().load(command.userId(), command.requestId(), command.conversationId()))
+                .thenReturn(conversationContext);
+        when(test.model().stream(any(), any(), any(), eq(false)))
+                .thenReturn(Flux.just(incorrectModelResponse));
+        when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
+                .thenReturn(Optional.of(action));
+
+        // 最终事件和持久化正文必须以数据库状态为准，同时保留结构化待确认动作。
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .assertNext(event -> {
+                    assertThat(event.type()).isEqualTo(EventType.ACTION_REQUIRED);
+                    assertThat(event.action()).isEqualTo(action);
+                })
+                .assertNext(event -> {
+                    assertThat(event.type()).isEqualTo(EventType.DONE);
+                    assertThat(event.content()).contains("点击“确认下单”按钮");
+                    assertThat(event.content()).contains("尚未创建订单");
+                    assertThat(event.content()).doesNotContain("订单已提交成功");
+                })
+                .verifyComplete();
+
+        ArgumentCaptor<ConversationMemoryService.CompleteTurnCommand> completionCaptor =
+                ArgumentCaptor.forClass(ConversationMemoryService.CompleteTurnCommand.class);
+        verify(test.memory()).completeTurn(completionCaptor.capture());
+        assertThat(completionCaptor.getValue().content()).contains("尚未创建订单");
     }
 
     /**
@@ -174,7 +223,7 @@ class AgentChatServiceTests {
                 Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC),
                 new AgentChatProperties(responseTimeout),
                 new AgentChatMetrics(meterRegistry));
-        return new TestContext(service, memory, contextService, model, meterRegistry);
+        return new TestContext(service, memory, contextService, model, purchaseActionService, meterRegistry);
     }
 
     /**
@@ -209,6 +258,7 @@ class AgentChatServiceTests {
      * @param memory 会话记忆替身
      * @param contextService 会话上下文替身
      * @param model 回答模型替身
+     * @param purchaseActionService 购票动作服务替身
      * @param meterRegistry 指标注册表
      */
     private record TestContext(
@@ -216,6 +266,7 @@ class AgentChatServiceTests {
             ConversationMemoryService memory,
             ConversationContextService contextService,
             RoutedChatModelService model,
+            PurchaseActionService purchaseActionService,
             SimpleMeterRegistry meterRegistry) {
     }
 }
