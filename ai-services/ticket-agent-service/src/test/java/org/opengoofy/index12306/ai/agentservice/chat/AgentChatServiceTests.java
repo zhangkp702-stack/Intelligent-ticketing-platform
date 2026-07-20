@@ -276,7 +276,7 @@ class AgentChatServiceTests {
         // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
         when(providers.orderedStream()).thenReturn(Arrays.stream(configuredProviders));
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
-        AgentChatService service = new AgentChatService(
+        AgentChatPipeline pipeline = new AgentChatPipeline(
                 memory,
                 contextService,
                 model,
@@ -284,7 +284,10 @@ class AgentChatServiceTests {
                 actionDraftCreationTracker,
                 new McpToolContextFactory(),
                 providers,
-                Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC),
+                Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC));
+        AgentChatService service = new AgentChatService(
+                memory,
+                pipeline,
                 new AgentChatProperties(responseTimeout),
                 new AgentChatMetrics(meterRegistry));
         return new TestContext(
