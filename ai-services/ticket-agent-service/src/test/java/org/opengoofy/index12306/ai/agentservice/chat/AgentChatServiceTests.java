@@ -11,13 +11,15 @@ import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageType;
+import org.opengoofy.index12306.ai.agentservice.memory.context.AgentChatMessage;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationContextService;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.model.routing.RoutedChatModelService;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -58,17 +60,18 @@ class AgentChatServiceTests {
     void newTurnLoadsConversationContextStreamsAndCompletes() {
         TestContext test = context();
         ChatCommand command = command();
-        ConversationContextService.ConversationContext conversationContext = new ConversationContextService.ConversationContext(
-                command.conversationId(), null, null, null, null, 0,
-                List.of(new ConversationContextService.ContextMessage(
-                        "message-1", 1L, MessageRole.USER, MessageType.TEXT, command.message(), 3)),
-                3);
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(),
+                command.message(),
+                List.of(new ConversationTurnContext(
+                        "history-turn",
+                        AgentChatMessage.user("上一轮问题"),
+                        AgentChatMessage.assistant("上一轮回答"))));
 
         // 模拟新轮次和会话级上下文，回答模型返回两个流式增量。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
-        when(test.contextService().load(command.userId(), command.requestId(), command.conversationId()))
-                .thenReturn(conversationContext);
+        stubHistory(test, command, conversationHistory);
         ChatResponse firstResponse = response("北京到");
         ChatResponse secondResponse = response("上海有票");
         when(test.model().stream(any(), any(), any(), eq(false))).thenReturn(
@@ -84,7 +87,9 @@ class AgentChatServiceTests {
                 })
                 .verifyComplete();
         verify(test.memory()).completeTurn(any());
-        verify(test.contextService()).load(command.userId(), command.requestId(), command.conversationId());
+        verify(test.contextService()).load(
+                command.userId(), command.requestId(), command.conversationId(),
+                "turn-1", "message-1", 1L, command.message());
         verify(test.purchaseActionService(), never()).confirmationForTurn(any(), any());
 
         // 捕获实际发送给模型的提示，确认独立只读工具可以在同一模型轮次中批量请求。
@@ -92,6 +97,10 @@ class AgentChatServiceTests {
         verify(test.model(), atLeastOnce()).stream(any(), promptCaptor.capture(), any(), eq(false));
         OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
         assertThat(options.getParallelToolCalls()).isTrue();
+        assertThat(promptCaptor.getValue().getInstructions())
+                .filteredOn(message -> message instanceof UserMessage)
+                .extracting(message -> message.getText())
+                .containsExactly("上一轮问题", command.message());
 
         // 首事件与首个正文指标都应记录一次，避免性能优化破坏现有观测口径。
         assertThat(test.meterRegistry()
@@ -107,8 +116,8 @@ class AgentChatServiceTests {
     void persistedPurchaseDraftOverridesModelSuccessClaim() {
         TestContext test = context();
         ChatCommand command = command();
-        ConversationContextService.ConversationContext conversationContext = new ConversationContextService.ConversationContext(
-                command.conversationId(), null, null, null, null, 0, List.of(), 0);
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
         ActionConfirmationView action = new ActionConfirmationView(
                 "action-1", "TICKET_PURCHASE", AgentActionStatus.AWAITING_CONFIRMATION,
                 "购买 G9004 次列车", Instant.parse("2026-07-16T00:10:00Z"), "confirmation-token");
@@ -117,8 +126,7 @@ class AgentChatServiceTests {
         // 模拟模型错误声称已提交订单，但本轮数据库中实际只有待确认购票草案。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
-        when(test.contextService().load(command.userId(), command.requestId(), command.conversationId()))
-                .thenReturn(conversationContext);
+        stubHistory(test, command, conversationHistory);
         when(test.model().stream(any(), any(), any(), eq(false)))
                 .thenReturn(Flux.just(incorrectModelResponse));
         when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
@@ -160,15 +168,14 @@ class AgentChatServiceTests {
         ToolCallbackProvider provider = ToolCallbackProvider.from(queryTool, draftTool, writeTool);
         TestContext test = context(Duration.ofSeconds(60), provider);
         ChatCommand command = command();
-        ConversationContextService.ConversationContext conversationContext = new ConversationContextService.ConversationContext(
-                command.conversationId(), null, null, null, null, 0, List.of(), 0);
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
         ChatResponse modelResponse = response("可以直接回答，也可以按需查询实时数据");
 
         // 模拟一次启用安全工具的普通问答，模型本身不产生任何工具调用。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
-        when(test.contextService().load(command.userId(), command.requestId(), command.conversationId()))
-                .thenReturn(conversationContext);
+        stubHistory(test, command, conversationHistory);
         when(test.model().stream(any(), any(), any(), eq(true))).thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -206,7 +213,8 @@ class AgentChatServiceTests {
                     org.assertj.core.api.Assertions.assertThat(event.content()).isEqualTo("已完成的回答");
                 })
                 .verifyComplete();
-        verify(test.contextService(), never()).load(any(), any(), any());
+        verify(test.contextService(), never()).load(
+                any(), any(), any(), any(), any(), any(Long.class), any());
         verify(test.model(), never()).stream(any(), any(), any(), any(Boolean.class));
     }
 
@@ -217,12 +225,11 @@ class AgentChatServiceTests {
     void responseTimeoutCancelsRunningTurn() {
         TestContext test = context(Duration.ofMillis(30));
         ChatCommand command = command();
-        ConversationContextService.ConversationContext conversationContext = new ConversationContextService.ConversationContext(
-                command.conversationId(), null, null, null, null, 0, List.of(), 0);
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
-        when(test.contextService().load(command.userId(), command.requestId(), command.conversationId()))
-                .thenReturn(conversationContext);
+        stubHistory(test, command, conversationHistory);
         when(test.model().stream(any(), any(), any(), eq(false))).thenReturn(Flux.never());
         test.actionDraftCreationTracker().markCreated("turn-1");
 
@@ -233,6 +240,42 @@ class AgentChatServiceTests {
                 .verify(Duration.ofSeconds(1));
         verify(test.memory()).cancelTurn(command.userId(), "turn-1");
         assertThat(test.actionDraftCreationTracker().consumeCreated("turn-1")).isFalse();
+    }
+
+    /**
+     * 创建不包含当前问题的历史上下文。
+     *
+     * @param conversationId 会话标识
+     * @param currentQuestion 当前用户问题
+     * @param turns 已完成的历史轮次
+     * @return 会话历史上下文
+     */
+    private ConversationHistoryContext history(
+            String conversationId,
+            String currentQuestion,
+            List<ConversationTurnContext> turns) {
+        // 测试历史只关注完整轮次结构，摘要和快照边界保持为空。
+        return new ConversationHistoryContext(
+                conversationId, null, null, null, null, 0,
+                turns, AgentChatMessage.user(currentQuestion), List.of(), null, null, 0);
+    }
+
+    /**
+     * 为新轮次模拟历史上下文加载结果。
+     *
+     * @param test 编排测试上下文
+     * @param command 当前对话命令
+     * @param history 不包含当前问题的历史上下文
+     */
+    private void stubHistory(
+            TestContext test,
+            ChatCommand command,
+            ConversationHistoryContext history) {
+        // 当前问题和持久化消息信息独立传入加载器，不预先塞入历史轮次。
+        when(test.contextService().load(
+                command.userId(), command.requestId(), command.conversationId(),
+                "turn-1", "message-1", 1L, command.message()))
+                .thenReturn(history);
     }
 
     /**

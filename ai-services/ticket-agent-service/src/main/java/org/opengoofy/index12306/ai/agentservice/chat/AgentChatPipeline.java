@@ -8,8 +8,8 @@ import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageRole;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageType;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationContextService;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
@@ -146,6 +146,7 @@ public class AgentChatPipeline {
         // 第一阶段先持久化或复用幂等轮次，确保后续模型和工具调用都有稳定审计边界。
         ConversationMemoryService.StartedTurn started = startTurn(command);
         AgentRequestContext context = createRequestContext(command, started);
+        String currentQuestion = command.message().trim();
 
         // 已存在的请求只重放终态，避免重复调用模型和工具。
         if (!started.created()) {
@@ -154,15 +155,15 @@ public class AgentChatPipeline {
 
         AtomicBoolean terminal = new AtomicBoolean();
         try {
-            // 加载会话唯一摘要、结构化状态以及摘要边界后的最近消息。
-            ConversationContextService.ConversationContext conversationContext =
-                    loadConversationContext(context);
+            // 当前问题保持独立，只加载此前已经完成的完整历史轮次。
+            ConversationHistoryContext conversationHistory =
+                    loadConversationHistory(context, started, currentQuestion);
 
             // 当前不增加单独的意图识别模型调用，由回答模型在一次调用内完成意图判断和工具选择。
             List<ToolCallback> callbacks = resolveToolCallbacks();
 
             // 将系统规则、会话上下文和本轮安全工具组装为模型提示。
-            Prompt prompt = buildPrompt(context, conversationContext, callbacks);
+            Prompt prompt = buildPrompt(context, conversationHistory, callbacks);
             StringBuilder answer = new StringBuilder();
 
             // 调用回答模型并把每个文本增量转换成前端事件。
@@ -236,15 +237,26 @@ public class AgentChatPipeline {
     }
 
     /**
-     * 加载当前会话唯一摘要及摘要边界后的最近消息。
+     * 加载当前会话唯一摘要、最近完整轮次和独立当前问题。
      *
      * @param context 当前请求上下文
+     * @param started 当前持久化轮次
+     * @param currentQuestion 当前用户问题
      * @return 会话级模型上下文
      */
-    private ConversationContextService.ConversationContext loadConversationContext(AgentRequestContext context) {
-        // 当前设计不做主题判断，只按会话直接读取唯一摘要和最近消息。
+    private ConversationHistoryContext loadConversationHistory(
+            AgentRequestContext context,
+            ConversationMemoryService.StartedTurn started,
+            String currentQuestion) {
+        // 当前设计不做主题判断，只读取唯一摘要和当前轮次之前的完整问答。
         return conversationContextService.load(
-                context.userId(), context.requestId(), context.conversationId());
+                context.userId(),
+                context.requestId(),
+                context.conversationId(),
+                started.turnId(),
+                started.userMessageId(),
+                started.sequenceNo(),
+                currentQuestion);
     }
 
     /**
@@ -349,36 +361,32 @@ public class AgentChatPipeline {
      * 组装系统规则、会话摘要、结构化状态和最近消息。
      *
      * @param context 当前请求上下文
-     * @param conversationContext 当前会话上下文
+     * @param conversationHistory 当前会话历史上下文
      * @param callbacks 本次可用工具回调
      * @return 可直接交给回答模型的提示
      */
     private Prompt buildPrompt(
             AgentRequestContext context,
-            ConversationContextService.ConversationContext conversationContext,
+            ConversationHistoryContext conversationHistory,
             List<ToolCallback> callbacks) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(SYSTEM_PROMPT + "\n" + PURCHASE_ACTION_PROMPT + "\n当前日期："
                 + LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")))));
 
         // 摘要和结构化状态是服务端记忆，不与用户原始问题混为同一消息。
-        if (StringUtils.hasText(conversationContext.summaryContent())) {
-            messages.add(new SystemMessage("当前会话历史摘要：\n" + conversationContext.summaryContent()));
+        if (StringUtils.hasText(conversationHistory.summaryContent())) {
+            messages.add(new SystemMessage("当前会话历史摘要：\n" + conversationHistory.summaryContent()));
         }
-        if (StringUtils.hasText(conversationContext.structuredState())) {
-            messages.add(new SystemMessage("当前会话结构化业务状态：\n" + conversationContext.structuredState()));
+        if (StringUtils.hasText(conversationHistory.structuredState())) {
+            messages.add(new SystemMessage("当前会话结构化业务状态：\n" + conversationHistory.structuredState()));
         }
-        for (ConversationContextService.ContextMessage memoryMessage : conversationContext.messages()) {
-            // 回答上下文只还原文本问答，工具详情由独立审计表保存且不作为下一轮指令。
-            if (memoryMessage.messageType() != MessageType.TEXT || !StringUtils.hasText(memoryMessage.content())) {
-                continue;
-            }
-            if (memoryMessage.role() == MessageRole.USER) {
-                messages.add(new UserMessage(memoryMessage.content()));
-            } else if (memoryMessage.role() == MessageRole.ASSISTANT) {
-                messages.add(new AssistantMessage(memoryMessage.content()));
-            }
+        for (ConversationTurnContext turn : conversationHistory.recentTurns()) {
+            // 每个历史对象固定展开为 USER、ASSISTANT，避免出现半轮上下文。
+            messages.add(new UserMessage(turn.userMessage().content()));
+            messages.add(new AssistantMessage(turn.assistantMessage().content()));
         }
+        // 当前问题不进入历史列表，只在所有历史之后追加一次。
+        messages.add(new UserMessage(conversationHistory.currentQuestion().content()));
 
         // 运行时允许模型自动执行安全工具，并并行请求互不依赖的只读工具。
         OpenAiChatOptions options = OpenAiChatOptions.builder()

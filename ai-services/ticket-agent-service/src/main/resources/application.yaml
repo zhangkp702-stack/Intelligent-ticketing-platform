@@ -73,7 +73,7 @@ index12306:
     mcp:
       internal-secret: ${TICKET_MCP_INTERNAL_SECRET:}
     memory:
-      recent-message-limit: 16
+      recent-turn-limit: 6
       context-token-budget: 12000
       summary-trigger-message-count: 12
       summary-max-attempts: 3

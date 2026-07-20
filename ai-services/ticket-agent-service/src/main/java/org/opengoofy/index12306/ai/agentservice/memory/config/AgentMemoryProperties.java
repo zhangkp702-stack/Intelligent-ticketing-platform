@@ -8,7 +8,7 @@ import java.time.Duration;
 /**
  * 会话上下文与异步摘要任务配置。
  *
- * @param recentMessageLimit 会话最多加载的未压缩消息数
+ * @param recentTurnLimit 会话最多加载的未压缩完整轮次数
  * @param contextTokenBudget 单次会话上下文允许的估算 Token 上限
  * @param summaryTriggerMessageCount 触发新摘要所需的未压缩消息数
  * @param summaryMaxAttempts 摘要任务最大尝试次数
@@ -17,7 +17,7 @@ import java.time.Duration;
  */
 @ConfigurationProperties(prefix = "index12306.agent.memory")
 public record AgentMemoryProperties(
-        @DefaultValue("16") int recentMessageLimit,
+        @DefaultValue("6") int recentTurnLimit,
         @DefaultValue("12000") int contextTokenBudget,
         @DefaultValue("12") int summaryTriggerMessageCount,
         @DefaultValue("3") int summaryMaxAttempts,

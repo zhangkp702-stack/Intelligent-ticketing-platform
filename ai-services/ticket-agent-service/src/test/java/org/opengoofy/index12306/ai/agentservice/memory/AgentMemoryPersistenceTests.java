@@ -1,6 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.memory;
 
 import org.junit.jupiter.api.Test;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationSummaryEntity;
 import org.opengoofy.index12306.ai.agentservice.memory.domain.MessageEntity;
@@ -78,23 +79,34 @@ class AgentMemoryPersistenceTests {
     }
 
     /**
-     * 验证回答上下文直接加载会话摘要边界后的消息，不再执行主题判断。
+     * 验证回答上下文只加载当前问题之前的完整轮次，不再执行主题判断。
      */
     @Test
     void conversationContextLoadsMessagesAndPersistsSnapshot() {
         Fixture fixture = createCompletedTurn("查询北京到上海的余票", "已有可选车次");
         String requestId = unique("context");
 
-        // 新问题写入后直接按会话装配上下文，当前问题也属于摘要边界后的原始消息。
-        conversationMemoryService.startTurn(new ConversationMemoryService.StartTurnCommand(
+        // 新问题虽然已经持久化，但不会混入最近完整历史轮次。
+        ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
                 fixture.userId(), fixture.conversationId(), requestId, requestId, "二等座还有吗", 6));
-        ConversationContextService.ConversationContext context = conversationContextService.load(
-                fixture.userId(), requestId, fixture.conversationId());
+        ConversationHistoryContext context = conversationContextService.load(
+                fixture.userId(),
+                requestId,
+                fixture.conversationId(),
+                current.turnId(),
+                current.userMessageId(),
+                current.sequenceNo(),
+                "二等座还有吗");
 
-        assertThat(context.messages()).extracting(ConversationContextService.ContextMessage::role)
-                .containsExactly(MessageRole.USER, MessageRole.ASSISTANT, MessageRole.USER);
-        assertThat(context.messages()).extracting(ConversationContextService.ContextMessage::content)
-                .containsExactly("查询北京到上海的余票", "已有可选车次", "二等座还有吗");
+        assertThat(context.recentTurns()).hasSize(1);
+        assertThat(context.recentTurns().get(0).userMessage().role()).isEqualTo(MessageRole.USER);
+        assertThat(context.recentTurns().get(0).userMessage().content())
+                .isEqualTo("查询北京到上海的余票");
+        assertThat(context.recentTurns().get(0).assistantMessage().role())
+                .isEqualTo(MessageRole.ASSISTANT);
+        assertThat(context.recentTurns().get(0).assistantMessage().content())
+                .isEqualTo("已有可选车次");
         assertThat(snapshotRepository.findByRequestId(requestId)).isPresent();
     }
 
