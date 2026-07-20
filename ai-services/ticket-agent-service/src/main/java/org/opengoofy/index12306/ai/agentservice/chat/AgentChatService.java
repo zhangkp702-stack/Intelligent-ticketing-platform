@@ -47,6 +47,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
@@ -62,6 +63,19 @@ public class AgentChatService {
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentChatService.class);
     private static final int MAX_MESSAGE_LENGTH = 4000;
     private static final int MAX_TITLE_LENGTH = 200;
+    private static final Set<String> MODEL_ALLOWED_TOOLS = Set.of(
+            "resolve_station",
+            "query_tickets",
+            "query_train_stops",
+            "list_my_passengers",
+            "list_my_orders",
+            "get_my_order_detail",
+            "preview_order_cancellation",
+            "preview_ticket_refund",
+            "query_pay_status",
+            "prepare_ticket_purchase",
+            "prepare_order_cancellation",
+            "prepare_ticket_refund");
     private static final String PURCHASE_ACTION_PROMPT = """
             当用户明确要求购票且车次、出发站、到达站、乘车人和席别均已确定时，必须调用 prepare_ticket_purchase 生成购票草案。
             prepare_ticket_purchase 只保存草案，不会创建订单；调用后应提示用户核对结构化确认信息并点击前端“确认下单”按钮。
@@ -471,11 +485,19 @@ public class AgentChatService {
     private List<ToolCallback> resolveToolCallbacks() {
         Map<String, ToolCallback> callbacks = new LinkedHashMap<>();
 
-        // MCP 未启用时仍保留本地草案工具，但不会出现任何可绕过确认的真实写工具。
+        // 编排层再次执行最终白名单校验，防止未来新增提供器时把真实写工具意外暴露给回答模型。
         toolCallbackProviders.orderedStream()
                 .flatMap(provider -> Arrays.stream(provider.getToolCallbacks()))
-                .forEach(callback -> callbacks.putIfAbsent(
-                        callback.getToolDefinition().name(), callback));
+                .forEach(callback -> {
+                    String toolName = callback.getToolDefinition().name();
+                    if (!MODEL_ALLOWED_TOOLS.contains(toolName)) {
+                        // 被拒绝的工具只记录名称，不输出参数或定义，便于排查错误注册。
+                        LOGGER.warn("Agent回答模型拒绝注册非白名单工具，tool={}", toolName);
+                        return;
+                    }
+                    // 相同名称只保留优先级最高的提供器实现，避免同一工具在模型侧重复出现。
+                    callbacks.putIfAbsent(toolName, callback);
+                });
         return List.copyOf(callbacks.values());
     }
 

@@ -21,7 +21,9 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
@@ -30,9 +32,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -143,6 +145,43 @@ class AgentChatServiceTests {
     }
 
     /**
+     * 验证回答模型只获得普通查询和草案工具，真实购票写工具即使被错误注册也会被编排层拒绝。
+     */
+    @Test
+    void answerModelReceivesOnlyWhitelistedTools() {
+        ToolCallback queryTool = toolCallback("query_tickets");
+        ToolCallback draftTool = toolCallback("prepare_ticket_purchase");
+        ToolCallback writeTool = toolCallback("execute_confirmed_ticket_purchase");
+        ToolCallbackProvider provider = ToolCallbackProvider.from(queryTool, draftTool, writeTool);
+        TestContext test = context(Duration.ofSeconds(60), provider);
+        ChatCommand command = command();
+        ConversationContextService.ConversationContext conversationContext = new ConversationContextService.ConversationContext(
+                command.conversationId(), null, null, null, null, 0, List.of(), 0);
+        ChatResponse modelResponse = response("可以直接回答，也可以按需查询实时数据");
+
+        // 模拟一次启用安全工具的普通问答，模型本身不产生任何工具调用。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.contextService().load(command.userId(), command.requestId(), command.conversationId()))
+                .thenReturn(conversationContext);
+        when(test.model().stream(any(), any(), any(), eq(true))).thenReturn(Flux.just(modelResponse));
+
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .expectNextMatches(event -> event.type() == EventType.DONE)
+                .verifyComplete();
+
+        // 捕获最终提示选项，确认查询和草案工具保留，而真实写工具不进入模型上下文。
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true));
+        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
+        assertThat(options.getToolCallbacks())
+                .extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly("query_tickets", "prepare_ticket_purchase");
+    }
+
+    /**
      * 验证已完成幂等请求直接重放，不再加载上下文或调用模型。
      */
     @Test
@@ -206,12 +245,28 @@ class AgentChatServiceTests {
      */
     @SuppressWarnings("unchecked")
     private TestContext context(Duration responseTimeout) {
+        // 默认测试不注册任何工具，覆盖普通问答直接由模型生成正文的路径。
+        return context(responseTimeout, new ToolCallbackProvider[0]);
+    }
+
+    /**
+     * 使用指定超时和工具提供器创建编排测试上下文。
+     *
+     * @param responseTimeout 整轮响应超时
+     * @param configuredProviders 本轮需要注入的工具提供器
+     * @return 编排服务及依赖替身
+     */
+    @SuppressWarnings("unchecked")
+    private TestContext context(
+            Duration responseTimeout,
+            ToolCallbackProvider... configuredProviders) {
         ConversationMemoryService memory = mock(ConversationMemoryService.class);
         ConversationContextService contextService = mock(ConversationContextService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
-        when(providers.orderedStream()).thenReturn(Stream.empty());
+        // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
+        when(providers.orderedStream()).thenReturn(Arrays.stream(configuredProviders));
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AgentChatService service = new AgentChatService(
                 memory,
@@ -224,6 +279,21 @@ class AgentChatServiceTests {
                 new AgentChatProperties(responseTimeout),
                 new AgentChatMetrics(meterRegistry));
         return new TestContext(service, memory, contextService, model, purchaseActionService, meterRegistry);
+    }
+
+    /**
+     * 创建仅提供稳定名称的工具回调替身。
+     *
+     * @param name 工具名称
+     * @return 可参与编排白名单测试的工具回调
+     */
+    private ToolCallback toolCallback(String name) {
+        ToolCallback callback = mock(ToolCallback.class);
+        ToolDefinition definition = mock(ToolDefinition.class);
+        // 工具边界测试只依赖定义名称，不执行工具正文。
+        when(definition.name()).thenReturn(name);
+        when(callback.getToolDefinition()).thenReturn(definition);
+        return callback;
     }
 
     /**
