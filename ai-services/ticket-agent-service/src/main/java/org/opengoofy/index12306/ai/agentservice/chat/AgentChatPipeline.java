@@ -6,6 +6,8 @@ import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
+import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
+import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
@@ -49,8 +51,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 执行单轮智能体对话的独立流水线。
  * <p>
- * 流程为：创建或复用轮次 -> 加载会话上下文 -> 解析安全工具 -> 组装提示 ->
- * 流式调用回答模型 -> 按数据库草案状态收口 -> 持久化轮次终态。
+ * 流程为：创建或复用轮次 -> 加载会话上下文 -> 按需改写问题 -> 解析安全工具 ->
+ * 组装提示 -> 流式调用回答模型 -> 按数据库草案状态收口 -> 持久化轮次终态。
  */
 @Service
 public class AgentChatPipeline {
@@ -91,6 +93,7 @@ public class AgentChatPipeline {
 
     private final ConversationMemoryService conversationMemoryService;
     private final ConversationContextService conversationContextService;
+    private final QuestionRewriteService questionRewriteService;
     private final RoutedChatModelService routedChatModelService;
     private final PurchaseActionService purchaseActionService;
     private final ActionDraftCreationTracker actionDraftCreationTracker;
@@ -110,6 +113,7 @@ public class AgentChatPipeline {
      *
      * @param conversationMemoryService 会话和轮次持久化服务
      * @param conversationContextService 会话摘要与最近消息加载服务
+     * @param questionRewriteService 上下文相关问题改写服务
      * @param routedChatModelService 多模型回答路由服务
      * @param purchaseActionService 购票草案确认服务
      * @param actionDraftCreationTracker 本轮草案创建信号
@@ -120,6 +124,7 @@ public class AgentChatPipeline {
     public AgentChatPipeline(
             ConversationMemoryService conversationMemoryService,
             ConversationContextService conversationContextService,
+            QuestionRewriteService questionRewriteService,
             RoutedChatModelService routedChatModelService,
             PurchaseActionService purchaseActionService,
             ActionDraftCreationTracker actionDraftCreationTracker,
@@ -128,6 +133,7 @@ public class AgentChatPipeline {
             Clock clock) {
         this.conversationMemoryService = conversationMemoryService;
         this.conversationContextService = conversationContextService;
+        this.questionRewriteService = questionRewriteService;
         this.routedChatModelService = routedChatModelService;
         this.purchaseActionService = purchaseActionService;
         this.actionDraftCreationTracker = actionDraftCreationTracker;
@@ -159,11 +165,16 @@ public class AgentChatPipeline {
             ConversationHistoryContext conversationHistory =
                     loadConversationHistory(context, started, currentQuestion);
 
+            // 只对明显依赖历史的短问题执行改写，明确问题直接跳过该模型调用。
+            QuestionRewriteResult rewriteResult =
+                    rewriteCurrentQuestion(context, conversationHistory);
+
             // 当前不增加单独的意图识别模型调用，由回答模型在一次调用内完成意图判断和工具选择。
             List<ToolCallback> callbacks = resolveToolCallbacks();
 
             // 将系统规则、会话上下文和本轮安全工具组装为模型提示。
-            Prompt prompt = buildPrompt(context, conversationHistory, callbacks);
+            Prompt prompt = buildPrompt(
+                    context, conversationHistory, rewriteResult.effectiveQuestion(), callbacks);
             StringBuilder answer = new StringBuilder();
 
             // 调用回答模型并把每个文本增量转换成前端事件。
@@ -257,6 +268,22 @@ public class AgentChatPipeline {
                 started.userMessageId(),
                 started.sequenceNo(),
                 currentQuestion);
+    }
+
+    /**
+     * 根据最近完整轮次按需补全当前问题。
+     *
+     * @param context 当前请求上下文
+     * @param conversationHistory 包含独立当前问题的会话历史
+     * @return 回答模型实际使用的问题及改写状态
+     */
+    private QuestionRewriteResult rewriteCurrentQuestion(
+            AgentRequestContext context,
+            ConversationHistoryContext conversationHistory) {
+        // 改写调用复用当前请求审计标识，使模型分轮日志可以与最终回答关联。
+        ModelAttemptContext attemptContext = new ModelAttemptContext(
+                context.requestId(), context.conversationId(), context.turnId());
+        return questionRewriteService.rewrite(conversationHistory, attemptContext);
     }
 
     /**
@@ -362,12 +389,14 @@ public class AgentChatPipeline {
      *
      * @param context 当前请求上下文
      * @param conversationHistory 当前会话历史上下文
+     * @param effectiveQuestion 回答模型实际使用的问题
      * @param callbacks 本次可用工具回调
      * @return 可直接交给回答模型的提示
      */
     private Prompt buildPrompt(
             AgentRequestContext context,
             ConversationHistoryContext conversationHistory,
+            String effectiveQuestion,
             List<ToolCallback> callbacks) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(SYSTEM_PROMPT + "\n" + PURCHASE_ACTION_PROMPT + "\n当前日期："
@@ -385,8 +414,8 @@ public class AgentChatPipeline {
             messages.add(new UserMessage(turn.userMessage().content()));
             messages.add(new AssistantMessage(turn.assistantMessage().content()));
         }
-        // 当前问题不进入历史列表，只在所有历史之后追加一次。
-        messages.add(new UserMessage(conversationHistory.currentQuestion().content()));
+        // 当前问题不进入历史列表；发生改写时只把独立问题追加到模型提示一次。
+        messages.add(new UserMessage(effectiveQuestion));
 
         // 运行时允许模型自动执行安全工具，并并行请求互不依赖的只读工具。
         OpenAiChatOptions options = OpenAiChatOptions.builder()

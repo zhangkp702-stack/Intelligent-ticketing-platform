@@ -10,6 +10,8 @@ import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
+import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
+import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.memory.context.AgentChatMessage;
 import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
@@ -43,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -107,6 +110,54 @@ class AgentChatServiceTests {
                 .get("agent.chat.time.to.first.event").timer().count()).isEqualTo(1);
         assertThat(test.meterRegistry()
                 .get("agent.chat.time.to.first.token").timer().count()).isEqualTo(1);
+    }
+
+    /**
+     * 验证上下文相关短问题使用改写后的独立问题调用回答模型。
+     */
+    @Test
+    void contextualQuestionUsesRewrittenStandaloneQuestion() {
+        TestContext test = context();
+        ChatCommand command = new ChatCommand(
+                "request-2", "request-2", "user-1", "tester",
+                "conversation-1", "第二个呢");
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(),
+                command.message(),
+                List.of(new ConversationTurnContext(
+                        "history-turn",
+                        AgentChatMessage.user("查询明天北京到上海的车票"),
+                        AgentChatMessage.assistant("第一趟 G9001，第二趟 G9003"))));
+
+        // 模拟改写阶段把省略问句补全，回答模型仍只执行一次正式回答调用。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, conversationHistory);
+        doReturn(new QuestionRewriteResult(
+                command.message(),
+                "明天北京到上海的第二趟车 G9003 还有票吗",
+                true,
+                true))
+                .when(test.questionRewriteService())
+                .rewrite(eq(conversationHistory), any());
+        ChatResponse modelResponse = response("G9003 还有余票");
+        when(test.model().stream(any(), any(), any(), eq(false)))
+                .thenReturn(Flux.just(modelResponse));
+
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .expectNextMatches(event -> event.type() == EventType.DONE)
+                .verifyComplete();
+
+        // Prompt 最后一条用户消息应为独立问题，原始省略问句不重复进入回答模型输入。
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false));
+        assertThat(promptCaptor.getValue().getInstructions().get(
+                promptCaptor.getValue().getInstructions().size() - 1))
+                .isInstanceOfSatisfying(UserMessage.class, message ->
+                        assertThat(message.getText())
+                                .isEqualTo("明天北京到上海的第二趟车 G9003 还有票吗"));
     }
 
     /**
@@ -312,16 +363,23 @@ class AgentChatServiceTests {
             ToolCallbackProvider... configuredProviders) {
         ConversationMemoryService memory = mock(ConversationMemoryService.class);
         ConversationContextService contextService = mock(ConversationContextService.class);
+        QuestionRewriteService questionRewriteService = mock(QuestionRewriteService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
         ActionDraftCreationTracker actionDraftCreationTracker = new ActionDraftCreationTracker();
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
         // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
         when(providers.orderedStream()).thenReturn(Arrays.stream(configuredProviders));
+        when(questionRewriteService.rewrite(any(), any())).thenAnswer(invocation -> {
+            ConversationHistoryContext history = invocation.getArgument(0);
+            return QuestionRewriteResult.unchanged(
+                    history.currentQuestion().content(), false);
+        });
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AgentChatPipeline pipeline = new AgentChatPipeline(
                 memory,
                 contextService,
+                questionRewriteService,
                 model,
                 purchaseActionService,
                 actionDraftCreationTracker,
@@ -334,7 +392,7 @@ class AgentChatServiceTests {
                 new AgentChatProperties(responseTimeout),
                 new AgentChatMetrics(meterRegistry));
         return new TestContext(
-                service, memory, contextService, model,
+                service, memory, contextService, questionRewriteService, model,
                 purchaseActionService, actionDraftCreationTracker, meterRegistry);
     }
 
@@ -384,6 +442,7 @@ class AgentChatServiceTests {
      * @param service 待测服务
      * @param memory 会话记忆替身
      * @param contextService 会话上下文替身
+     * @param questionRewriteService 问题改写服务替身
      * @param model 回答模型替身
      * @param purchaseActionService 购票动作服务替身
      * @param actionDraftCreationTracker 本轮草案创建信号
@@ -393,6 +452,7 @@ class AgentChatServiceTests {
             AgentChatService service,
             ConversationMemoryService memory,
             ConversationContextService contextService,
+            QuestionRewriteService questionRewriteService,
             RoutedChatModelService model,
             PurchaseActionService purchaseActionService,
             ActionDraftCreationTracker actionDraftCreationTracker,

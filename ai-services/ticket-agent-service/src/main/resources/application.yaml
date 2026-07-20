@@ -157,6 +157,9 @@ index12306:
           - siliconflow-answer-secondary
           - siliconflow-answer-tertiary
           - bailian-flash
+        QUESTION_REWRITE:
+          - bailian-flash
+          - siliconflow-summary-primary
         MEMORY_SUMMARY:
           - siliconflow-summary-primary
           - bailian-flash
