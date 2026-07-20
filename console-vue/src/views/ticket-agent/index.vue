@@ -663,6 +663,21 @@ const handleAgentEvent = (eventName, event, assistantMessage) => {
  */
 const confirmAction = async (chatMessage) => {
   const action = chatMessage.action
+  if (!action || state.confirmingActionId === action.actionId) {
+    // 同一按钮请求正在执行时直接忽略重复点击，后端幂等仍作为最终保护。
+    return
+  }
+  const currentStatus = chatMessage.actionExecution?.status || action.status
+  if (currentStatus !== 'AWAITING_CONFIRMATION') {
+    // 只有待确认卡片允许发起写操作，其他状态统一通过刷新接口恢复。
+    message.warning('当前操作已不处于待确认状态，请先刷新')
+    return
+  }
+  if (new Date(action.confirmationExpiresAt).getTime() <= Date.now()) {
+    // 浏览器端提前阻止明显过期的确认，服务端仍会再次校验真实截止时间。
+    message.warning('确认已过期，请重新生成操作草案')
+    return
+  }
   state.confirmingActionId = action.actionId
   action.confirmRequestId = action.confirmRequestId || createAgentRequestId()
   try {

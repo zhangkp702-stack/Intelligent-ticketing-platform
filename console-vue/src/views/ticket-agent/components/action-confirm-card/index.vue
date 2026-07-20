@@ -85,7 +85,7 @@
           type="primary"
           :danger="action.actionType !== 'TICKET_PURCHASE'"
           :loading="confirming"
-          :disabled="expired"
+          :disabled="expired || confirming"
           @click="$emit('confirm')"
         >
           {{ confirmButtonText }}

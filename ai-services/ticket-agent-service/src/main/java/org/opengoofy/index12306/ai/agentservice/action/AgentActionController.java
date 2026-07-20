@@ -13,8 +13,6 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.UUID;
-
 /**
  * 提供高风险智能体操作的显式确认和状态查询接口。
  */
@@ -43,8 +41,8 @@ public class AgentActionController {
      *
      * @param userId 网关注入的用户标识
      * @param username 网关注入的用户名
-     * @param requestId 可选请求标识
-     * @param idempotencyKey 可选确认幂等键
+     * @param requestId 前端按钮生成并在重试时复用的请求标识
+     * @param idempotencyKey 前端按钮生成并在重试时复用的确认幂等键
      * @param actionId 待确认操作标识
      * @param request 包含确认令牌的请求体
      * @return 操作执行后的持久化状态
@@ -60,13 +58,17 @@ public class AgentActionController {
         if (request == null) {
             throw new AgentChatException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "确认请求体不能为空");
         }
+        if (!hasText(requestId) || !hasText(idempotencyKey)) {
+            // 确认重试必须复用稳定标识，禁止服务端每次随机生成导致客户端失去幂等语义。
+            throw new AgentChatException(
+                    HttpStatus.BAD_REQUEST,
+                    "INVALID_REQUEST",
+                    "确认请求必须携带请求标识和幂等键");
+        }
 
-        // 请求标识和幂等键由服务端补齐，保证客户端重试时可明确复用同一确认语义。
-        String actualRequestId = hasText(requestId) ? requestId.trim() : randomRequestId();
-        String actualIdempotencyKey = hasText(idempotencyKey)
-                ? idempotencyKey.trim() : actualRequestId;
+        // 按钮重试沿用同一组标识，服务端只负责校验并传递给原子确认状态机。
         return purchaseActionService.confirm(new ConfirmPurchaseCommand(
-                actualRequestId, actualIdempotencyKey, userId, username,
+                requestId.trim(), idempotencyKey.trim(), userId, username,
                 actionId, request.confirmationToken()));
     }
 
@@ -95,13 +97,4 @@ public class AgentActionController {
         return value != null && !value.trim().isEmpty();
     }
 
-    /**
-     * 生成符合数据库长度约束的请求标识。
-     *
-     * @return 32 位无分隔符 UUID
-     */
-    private String randomRequestId() {
-        // 去除连字符后长度固定，可同时作为默认确认幂等键。
-        return UUID.randomUUID().toString().replace("-", "");
-    }
 }
