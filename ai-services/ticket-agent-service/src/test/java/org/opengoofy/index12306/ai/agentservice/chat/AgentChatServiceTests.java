@@ -112,6 +112,16 @@ class AgentChatServiceTests {
                 .get("agent.chat.time.to.first.event").timer().count()).isEqualTo(1);
         assertThat(test.meterRegistry()
                 .get("agent.chat.time.to.first.token").timer().count()).isEqualTo(1);
+        assertThat(test.meterRegistry()
+                .get("agent.chat.context.duration").timer().count()).isEqualTo(1);
+        assertThat(test.meterRegistry()
+                .get("agent.chat.rewrite.duration").timer().count()).isEqualTo(1);
+        assertThat(test.meterRegistry()
+                .get("agent.chat.routing.duration").timer().count()).isEqualTo(1);
+        assertThat(test.meterRegistry()
+                .get("agent.chat.model.duration").timer().count()).isEqualTo(1);
+        assertThat(test.meterRegistry()
+                .get("agent.chat.completion.duration").timer().count()).isEqualTo(1);
     }
 
     /**
@@ -319,6 +329,15 @@ class AgentChatServiceTests {
 
         verify(test.model(), never()).stream(any(), any(), any(), anyBoolean());
         verify(test.memory()).failTurn(eq(command.userId()), eq("turn-1"), any());
+        assertThat(test.meterRegistry()
+                .get("agent.chat.tools.missing")
+                .tag("tool", "resolve_station")
+                .counter().count()).isEqualTo(1);
+        assertThat(test.meterRegistry()
+                .get("agent.chat.routing.requests")
+                .tag("route", "TOOL_ASSISTED")
+                .tag("toolAvailability", "MISSING")
+                .counter().count()).isEqualTo(1);
     }
 
     /**
@@ -453,11 +472,13 @@ class AgentChatServiceTests {
                     history.currentQuestion().content(), false);
         });
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        AgentChatMetrics chatMetrics = new AgentChatMetrics(meterRegistry);
         AgentChatPipeline pipeline = new AgentChatPipeline(
                 memory,
                 contextService,
                 questionRewriteService,
                 new QuestionToolRoutingService(),
+                chatMetrics,
                 model,
                 purchaseActionService,
                 actionDraftCreationTracker,
@@ -468,7 +489,7 @@ class AgentChatServiceTests {
                 memory,
                 pipeline,
                 new AgentChatProperties(responseTimeout),
-                new AgentChatMetrics(meterRegistry));
+                chatMetrics);
         return new TestContext(
                 service, memory, contextService, questionRewriteService, model,
                 purchaseActionService, actionDraftCreationTracker, meterRegistry);

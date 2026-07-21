@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 /**
  * 执行单轮智能体对话的独立流水线。
@@ -99,6 +100,7 @@ public class AgentChatPipeline {
     private final ConversationContextService conversationContextService;
     private final QuestionRewriteService questionRewriteService;
     private final QuestionToolRoutingService questionToolRoutingService;
+    private final AgentChatMetrics chatMetrics;
     private final RoutedChatModelService routedChatModelService;
     private final PurchaseActionService purchaseActionService;
     private final ActionDraftCreationTracker actionDraftCreationTracker;
@@ -129,6 +131,7 @@ public class AgentChatPipeline {
      * @param conversationContextService 会话摘要与最近消息加载服务
      * @param questionRewriteService 上下文相关问题改写服务
      * @param questionToolRoutingService 普通问答与业务工具路径选择服务
+     * @param chatMetrics 分阶段对话指标记录器
      * @param routedChatModelService 多模型回答路由服务
      * @param purchaseActionService 购票草案确认服务
      * @param actionDraftCreationTracker 本轮草案创建信号
@@ -141,6 +144,7 @@ public class AgentChatPipeline {
             ConversationContextService conversationContextService,
             QuestionRewriteService questionRewriteService,
             QuestionToolRoutingService questionToolRoutingService,
+            AgentChatMetrics chatMetrics,
             RoutedChatModelService routedChatModelService,
             PurchaseActionService purchaseActionService,
             ActionDraftCreationTracker actionDraftCreationTracker,
@@ -151,6 +155,7 @@ public class AgentChatPipeline {
         this.conversationContextService = conversationContextService;
         this.questionRewriteService = questionRewriteService;
         this.questionToolRoutingService = questionToolRoutingService;
+        this.chatMetrics = chatMetrics;
         this.routedChatModelService = routedChatModelService;
         this.purchaseActionService = purchaseActionService;
         this.actionDraftCreationTracker = actionDraftCreationTracker;
@@ -179,12 +184,25 @@ public class AgentChatPipeline {
         AtomicBoolean terminal = new AtomicBoolean();
         try {
             // 当前问题保持独立，只加载此前已经完成的完整历史轮次。
-            ConversationHistoryContext conversationHistory =
-                    loadConversationHistory(context, started, currentQuestion);
+            long contextStartedNanos = System.nanoTime();
+            ConversationHistoryContext conversationHistory;
+            try {
+                conversationHistory = loadConversationHistory(context, started, currentQuestion);
+                chatMetrics.recordContextLoad(contextStartedNanos, "SUCCESS");
+            } catch (RuntimeException exception) {
+                // 上下文加载失败需要单独计时，便于与后续模型耗时区分。
+                chatMetrics.recordContextLoad(contextStartedNanos, "ERROR");
+                throw exception;
+            }
 
             // 只对明显依赖历史的短问题执行改写，明确问题直接跳过该模型调用。
+            long rewriteStartedNanos = System.nanoTime();
             QuestionRewriteResult rewriteResult =
                     rewriteCurrentQuestion(context, conversationHistory);
+            chatMetrics.recordRewrite(
+                    rewriteStartedNanos,
+                    rewriteResult.modelInvoked(),
+                    rewriteResult.rewritten());
 
             // 使用本地规则选择普通回答或业务工具路径，不增加单独的意图识别模型调用。
             long routingStartedNanos = System.nanoTime();
@@ -192,6 +210,16 @@ public class AgentChatPipeline {
                     questionToolRoutingService.route(rewriteResult.effectiveQuestion(), conversationHistory);
             ResolvedTools resolvedTools = resolveToolCallbacks(routingDecision);
             long routingDurationMs = (System.nanoTime() - routingStartedNanos) / 1_000_000L;
+            String toolAvailability = routingDecision.route() == QuestionRoute.CHAT_ONLY
+                    ? "NOT_REQUIRED"
+                    : resolvedTools.missingToolNames().isEmpty() ? "AVAILABLE" : "MISSING";
+            chatMetrics.recordRouting(
+                    routingStartedNanos,
+                    routingDecision.route().name(),
+                    toolAvailability,
+                    routingDecision.matchedGroups().stream()
+                            .map(group -> group.name())
+                            .collect(Collectors.toUnmodifiableSet()));
             LOGGER.info(
                     "Agent问题分流完成，requestId={}, conversationId={}, turnId={}, route={}, groups={}, "
                             + "tools={}, rewriteModelInvoked={}, rewritten={}, durationMs={}",
@@ -341,8 +369,9 @@ public class AgentChatPipeline {
                 context.requestId(), context.conversationId(), context.turnId());
 
         // 回答模型只自动执行只读查询和本地草案工具，并按增量向前端输出正文。
-        return routedChatModelService.stream(
-                        ModelRole.ANSWER_TOOL, prompt, attemptContext, !callbacks.isEmpty())
+        Flux<ChatResponse> modelResponses = routedChatModelService.stream(
+                ModelRole.ANSWER_TOOL, prompt, attemptContext, !callbacks.isEmpty());
+        return chatMetrics.observeModel(modelResponses, !callbacks.isEmpty())
                 .map(this::extractText)
                 .filter(StringUtils::hasText)
                 .map(delta -> {
@@ -365,14 +394,23 @@ public class AgentChatPipeline {
             AtomicBoolean terminal) {
         // 完成阶段在订阅时执行，确保它严格发生在所有模型增量之后。
         return Mono.fromCallable(() -> {
-            ActionConfirmationView action = actionDraftCreationTracker.consumeCreated(context.turnId())
-                    ? purchaseActionService.confirmationForTurn(context.userId(), context.turnId()).orElse(null)
-                    : null;
-            String content = authoritativeContent(answer.toString(), action);
-            conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
-                    context.userId(), context.turnId(), content, estimateTokens(content)));
-            terminal.set(true);
-            return new CompletedAnswer(content, action);
+            long completionStartedNanos = System.nanoTime();
+            try {
+                // 数据库草案状态和轮次终态必须在同一个完成阶段指标内收口。
+                ActionConfirmationView action = actionDraftCreationTracker.consumeCreated(context.turnId())
+                        ? purchaseActionService.confirmationForTurn(context.userId(), context.turnId()).orElse(null)
+                        : null;
+                String content = authoritativeContent(answer.toString(), action);
+                conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
+                        context.userId(), context.turnId(), content, estimateTokens(content)));
+                terminal.set(true);
+                chatMetrics.recordCompletion(completionStartedNanos, "SUCCESS");
+                return new CompletedAnswer(content, action);
+            } catch (RuntimeException exception) {
+                // 完成阶段失败单独标记，避免被误判为模型生成异常。
+                chatMetrics.recordCompletion(completionStartedNanos, "ERROR");
+                throw exception;
+            }
         }).flatMapMany(completed -> completed.action() == null
                 ? Flux.just(ChatEvent.done(context, completed.content(), false))
                 : Flux.just(
@@ -520,6 +558,7 @@ public class AgentChatPipeline {
         }
 
         // 只记录工具名称和业务组，不记录用户问题或工具参数。
+        chatMetrics.recordMissingTools(resolvedTools.missingToolNames());
         LOGGER.warn(
                 "Agent业务工具不可用，requestId={}, conversationId={}, turnId={}, groups={}, missingTools={}",
                 context.requestId(),

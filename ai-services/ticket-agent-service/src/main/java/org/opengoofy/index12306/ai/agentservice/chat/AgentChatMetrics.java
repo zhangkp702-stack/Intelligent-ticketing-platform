@@ -9,6 +9,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.SignalType;
 
 import java.time.Duration;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -71,6 +72,123 @@ public class AgentChatMetrics {
     }
 
     /**
+     * 记录会话上下文加载阶段耗时。
+     *
+     * @param startedNanos 阶段开始的单调时钟值
+     * @param outcome 阶段结果
+     */
+    public void recordContextLoad(long startedNanos, String outcome) {
+        // 上下文阶段只使用成功或失败标签，避免会话标识进入指标系统。
+        recordTimer("agent.chat.context.duration", startedNanos, "outcome", outcome);
+    }
+
+    /**
+     * 记录问题改写阶段耗时和触发结果。
+     *
+     * @param startedNanos 阶段开始的单调时钟值
+     * @param modelInvoked 是否调用改写模型
+     * @param rewritten 问题正文是否实际发生变化
+     */
+    public void recordRewrite(
+            long startedNanos,
+            boolean modelInvoked,
+            boolean rewritten) {
+        // 触发率和实际改写率使用布尔标签聚合，不记录问题正文。
+        Timer.builder("agent.chat.rewrite.duration")
+                .tags(
+                        "modelInvoked", Boolean.toString(modelInvoked),
+                        "rewritten", Boolean.toString(rewritten))
+                .register(meterRegistry)
+                .record(elapsed(startedNanos));
+        meterRegistry.counter(
+                "agent.chat.rewrite.requests",
+                "modelInvoked", Boolean.toString(modelInvoked),
+                "rewritten", Boolean.toString(rewritten)).increment();
+    }
+
+    /**
+     * 记录问题分流耗时、路径、工具可用状态和命中业务组。
+     *
+     * @param startedNanos 阶段开始的单调时钟值
+     * @param route 普通问答或工具辅助路径
+     * @param toolAvailability 工具无需加载、可用或缺失
+     * @param businessGroups 命中的低基数业务组
+     */
+    public void recordRouting(
+            long startedNanos,
+            String route,
+            String toolAvailability,
+            Set<String> businessGroups) {
+        // 路径和工具状态用于直接比较普通问答与 MCP 业务流量。
+        Timer.builder("agent.chat.routing.duration")
+                .tags("route", route, "toolAvailability", toolAvailability)
+                .register(meterRegistry)
+                .record(elapsed(startedNanos));
+        meterRegistry.counter(
+                "agent.chat.routing.requests",
+                "route", route,
+                "toolAvailability", toolAvailability).increment();
+        for (String group : businessGroups) {
+            // 每个业务组单独计数，避免把任意组合拼成高基数标签。
+            meterRegistry.counter("agent.chat.routing.groups", "group", group).increment();
+        }
+    }
+
+    /**
+     * 记录本轮分流要求但未注册的安全工具。
+     *
+     * @param missingToolNames 缺失工具名称
+     */
+    public void recordMissingTools(Set<String> missingToolNames) {
+        for (String toolName : missingToolNames) {
+            // 工具名称来自固定白名单，属于可控的低基数标签。
+            meterRegistry.counter("agent.chat.tools.missing", "tool", toolName).increment();
+        }
+    }
+
+    /**
+     * 为回答模型的完整响应流记录耗时和终态。
+     *
+     * @param source 回答模型响应流
+     * @param toolsEnabled 是否向回答模型注册了工具
+     * @param <T> 模型响应块类型
+     * @return 保持原响应和异常语义不变的观测流
+     */
+    public <T> Flux<T> observeModel(Flux<T> source, boolean toolsEnabled) {
+        return Flux.defer(() -> {
+            long startedNanos = System.nanoTime();
+            AtomicReference<String> outcome = new AtomicReference<>("SUCCESS");
+
+            // 错误和取消分别统计，正常完成保持 SUCCESS。
+            return source
+                    .doOnError(ignored -> outcome.set("ERROR"))
+                    .doOnCancel(() -> outcome.set("CANCELLED"))
+                    .doFinally(signal -> {
+                        String actualOutcome = signal == SignalType.CANCEL
+                                ? "CANCELLED"
+                                : signal == SignalType.ON_ERROR ? "ERROR" : outcome.get();
+                        Timer.builder("agent.chat.model.duration")
+                                .tags(
+                                        "outcome", actualOutcome,
+                                        "toolsEnabled", Boolean.toString(toolsEnabled))
+                                .register(meterRegistry)
+                                .record(elapsed(startedNanos));
+                    });
+        });
+    }
+
+    /**
+     * 记录模型完成后的业务收口和轮次持久化耗时。
+     *
+     * @param startedNanos 阶段开始的单调时钟值
+     * @param outcome 阶段结果
+     */
+    public void recordCompletion(long startedNanos, String outcome) {
+        // 完成阶段覆盖草案读取、权威正文校正和轮次终态持久化。
+        recordTimer("agent.chat.completion.duration", startedNanos, "outcome", outcome);
+    }
+
+    /**
      * 记录整轮对话的最终结果和总耗时，确保取消、异常和正常结束只记录一次。
      *
      * @param startedNanos 对话订阅开始时间
@@ -111,6 +229,20 @@ public class AgentChatMetrics {
      */
     private void recordTimer(String metricName, long startedNanos) {
         Timer.builder(metricName)
+                .register(meterRegistry)
+                .record(elapsed(startedNanos));
+    }
+
+    /**
+     * 使用指定低基数标签记录阶段耗时。
+     *
+     * @param metricName 指标名称
+     * @param startedNanos 阶段开始的单调时钟值
+     * @param tags 成对出现的标签名称和值
+     */
+    private void recordTimer(String metricName, long startedNanos, String... tags) {
+        Timer.builder(metricName)
+                .tags(tags)
                 .register(meterRegistry)
                 .record(elapsed(startedNanos));
     }
