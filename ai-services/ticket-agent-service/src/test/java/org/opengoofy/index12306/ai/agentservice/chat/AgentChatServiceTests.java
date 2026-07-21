@@ -44,6 +44,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
@@ -118,7 +119,10 @@ class AgentChatServiceTests {
      */
     @Test
     void contextualQuestionUsesRewrittenStandaloneQuestion() {
-        TestContext test = context();
+        ToolCallbackProvider provider = ToolCallbackProvider.from(
+                toolCallback("resolve_station"),
+                toolCallback("query_tickets"));
+        TestContext test = context(Duration.ofSeconds(60), provider);
         ChatCommand command = new ChatCommand(
                 "request-2", "request-2", "user-1", "tester",
                 "conversation-1", "第二个呢");
@@ -142,7 +146,7 @@ class AgentChatServiceTests {
                 .when(test.questionRewriteService())
                 .rewrite(eq(conversationHistory), any());
         ChatResponse modelResponse = response("G9003 还有余票");
-        when(test.model().stream(any(), any(), any(), eq(false)))
+        when(test.model().stream(any(), any(), any(), eq(true)))
                 .thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -153,7 +157,7 @@ class AgentChatServiceTests {
 
         // Prompt 最后一条用户消息应为独立问题，原始省略问句不重复进入回答模型输入。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false));
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true));
         assertThat(promptCaptor.getValue().getInstructions().get(
                 promptCaptor.getValue().getInstructions().size() - 1))
                 .isInstanceOfSatisfying(UserMessage.class, message ->
@@ -214,10 +218,13 @@ class AgentChatServiceTests {
      */
     @Test
     void answerModelReceivesOnlyWhitelistedTools() {
+        ToolCallback stationTool = toolCallback("resolve_station");
         ToolCallback queryTool = toolCallback("query_tickets");
+        ToolCallback passengerTool = toolCallback("list_my_passengers");
         ToolCallback draftTool = toolCallback("prepare_ticket_purchase");
         ToolCallback writeTool = toolCallback("execute_confirmed_ticket_purchase");
-        ToolCallbackProvider provider = ToolCallbackProvider.from(queryTool, draftTool, writeTool);
+        ToolCallbackProvider provider = ToolCallbackProvider.from(
+                stationTool, queryTool, passengerTool, draftTool, writeTool);
         TestContext test = context(Duration.ofSeconds(60), provider);
         ChatCommand command = new ChatCommand(
                 "request-purchase", "request-purchase", "user-1", "tester",
@@ -244,7 +251,11 @@ class AgentChatServiceTests {
         OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
         assertThat(options.getToolCallbacks())
                 .extracting(callback -> callback.getToolDefinition().name())
-                .containsExactly("query_tickets", "prepare_ticket_purchase");
+                .containsExactly(
+                        "resolve_station",
+                        "query_tickets",
+                        "list_my_passengers",
+                        "prepare_ticket_purchase");
     }
 
     /**
@@ -279,6 +290,35 @@ class AgentChatServiceTests {
         verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false));
         OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
         assertThat(options.getToolCallbacks()).isEmpty();
+    }
+
+    /**
+     * 验证业务路径缺少必需工具时不会继续调用回答模型。
+     */
+    @Test
+    void missingBusinessToolsStopsBeforeModelCall() {
+        TestContext test = context();
+        ChatCommand command = new ChatCommand(
+                "request-missing-tools", "request-missing-tools", "user-1", "tester",
+                "conversation-1", "查询明天北京到上海的余票");
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
+
+        // 模拟业务问题已经完成上下文加载，但当前没有任何 MCP 工具提供器。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, conversationHistory);
+
+        StepVerifier.create(test.service().stream(command))
+                .expectErrorSatisfies(error -> assertThat(error)
+                        .isInstanceOfSatisfying(AgentChatException.class, exception -> {
+                            assertThat(exception.failureCategory()).isEqualTo("MCP_TOOLS_UNAVAILABLE");
+                            assertThat(exception.getMessage()).contains("工具暂时不可用");
+                        }))
+                .verify();
+
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean());
+        verify(test.memory()).failTurn(eq(command.userId()), eq("turn-1"), any());
     }
 
     /**
@@ -457,7 +497,7 @@ class AgentChatServiceTests {
     private ChatCommand command() {
         return new ChatCommand(
                 "request-1", "request-1", "user-1", "tester",
-                "conversation-1", "查询北京到上海的票");
+                "conversation-1", "你好，请介绍一下你自己");
     }
 
     /**

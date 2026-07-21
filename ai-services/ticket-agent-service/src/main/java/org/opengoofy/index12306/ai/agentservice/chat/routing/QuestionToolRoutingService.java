@@ -1,5 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.chat.routing;
 
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -51,6 +53,13 @@ public class QuestionToolRoutingService {
             "退票|退款|退掉|退订");
     private static final Pattern TRAIN_CODE_PATTERN = Pattern.compile(
             "(?i)(?:G|D|C|Z|T|K)\\d{1,5}");
+    private static final Pattern CONTEXTUAL_TRAIN_PATTERN = Pattern.compile(
+            "第[一二三四五六七八九十\\d]+个|这个|那个|这趟|那趟|上一个|下一个|还有吗|怎么样|呢[？?]?$");
+    private static final Pattern CONTEXTUAL_PURCHASE_PATTERN = Pattern.compile(
+            "刚才.{0,10}(?:那个|那趟).{0,10}(?:要|买)|(?:这个|那个|这趟|那趟).{0,10}(?:要了|买了)|"
+                    + "就(?:要|买)(?:这个|那个)|帮我弄一张");
+    private static final Pattern CONTEXTUAL_ORDER_PATTERN = Pattern.compile(
+            "(?:那个|这笔|刚才).{0,10}(?:怎么样|什么状态|支付了吗|成功了吗)|看看我的那个");
 
     /**
      * 使用本地规则判断回答模型是否需要获得 MCP 工具。
@@ -59,46 +68,138 @@ public class QuestionToolRoutingService {
      * @return 本轮问答路径和允许注册的最小工具集合
      */
     public QuestionRoutingDecision route(String effectiveQuestion) {
+        // 无历史的调用只执行当前问题的明确业务规则，主要供独立问题和单元测试使用。
+        return route(effectiveQuestion, null);
+    }
+
+    /**
+     * 结合当前独立问题和最近业务上下文选择最小 MCP 工具集合。
+     *
+     * @param effectiveQuestion 问题改写后供回答模型使用的独立问题
+     * @param history 当前会话摘要、结构化状态和最近完整轮次
+     * @return 本轮问答路径、命中业务组和允许工具集合
+     */
+    public QuestionRoutingDecision route(
+            String effectiveQuestion,
+            ConversationHistoryContext history) {
         if (!StringUtils.hasText(effectiveQuestion)) {
             // 空问题不具备任何可执行业务意图，交由普通回答路径处理输入错误。
             return QuestionRoutingDecision.chatOnly();
         }
 
         Set<String> allowedToolNames = new LinkedHashSet<>();
+        Set<BusinessGroup> matchedGroups = new LinkedHashSet<>();
 
         // 先识别相互独立的只读查询能力，同一问题命中多类业务时自动合并工具组。
         if (matches(TRAIN_QUERY_PATTERN, effectiveQuestion)
                 || matches(TRAIN_CODE_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(TRAIN_QUERY_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.TRAIN_QUERY, TRAIN_QUERY_TOOLS);
         }
         if (matches(TRAIN_STOP_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(TRAIN_STOP_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.TRAIN_STOP, TRAIN_STOP_TOOLS);
         }
         if (matches(PASSENGER_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(PASSENGER_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.PASSENGER, PASSENGER_TOOLS);
         }
         if (matches(ORDER_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(ORDER_QUERY_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.ORDER_QUERY, ORDER_QUERY_TOOLS);
         }
         if (matches(PAYMENT_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(ORDER_QUERY_TOOLS);
-            allowedToolNames.addAll(PAYMENT_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.ORDER_QUERY, ORDER_QUERY_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.PAYMENT, PAYMENT_TOOLS);
         }
 
         // 写操作只向模型开放草案工具，确认后的真实写工具继续由服务端按钮接口隔离执行。
         if (matches(PURCHASE_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(PURCHASE_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.PURCHASE, PURCHASE_TOOLS);
         }
         if (matches(CANCELLATION_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(CANCELLATION_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.CANCELLATION, CANCELLATION_TOOLS);
         }
         if (matches(REFUND_PATTERN, effectiveQuestion)) {
-            allowedToolNames.addAll(REFUND_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.REFUND, REFUND_TOOLS);
         }
+
+        // 明确规则未覆盖口语化追问时，只使用最近业务事实补足工具组，不重新调用意图模型。
+        applyContextFallback(effectiveQuestion, history, matchedGroups, allowedToolNames);
 
         return allowedToolNames.isEmpty()
                 ? QuestionRoutingDecision.chatOnly()
-                : QuestionRoutingDecision.toolAssisted(allowedToolNames);
+                : QuestionRoutingDecision.toolAssisted(matchedGroups, allowedToolNames);
+    }
+
+    /**
+     * 对依赖历史的购票、查票和订单追问补充工具组。
+     *
+     * @param question 当前独立问题或改写失败后保留的原问题
+     * @param history 当前会话上下文
+     * @param matchedGroups 已命中的业务组
+     * @param allowedToolNames 已选工具名称
+     */
+    private void applyContextFallback(
+            String question,
+            ConversationHistoryContext history,
+            Set<BusinessGroup> matchedGroups,
+            Set<String> allowedToolNames) {
+        if (history == null || history.recentTurns().isEmpty()) {
+            return;
+        }
+
+        // 兜底只查看最近一轮和服务端摘要状态，避免较早业务主题污染当前问题。
+        String businessContext = recentBusinessContext(history);
+        boolean trainContext = matches(TRAIN_QUERY_PATTERN, businessContext)
+                || matches(TRAIN_CODE_PATTERN, businessContext);
+        boolean orderContext = matches(ORDER_PATTERN, businessContext)
+                || matches(PAYMENT_PATTERN, businessContext);
+        if (trainContext && matches(CONTEXTUAL_TRAIN_PATTERN, question)) {
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.TRAIN_QUERY, TRAIN_QUERY_TOOLS);
+        }
+        if (trainContext && matches(CONTEXTUAL_PURCHASE_PATTERN, question)) {
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.PURCHASE, PURCHASE_TOOLS);
+        }
+        if (orderContext && matches(CONTEXTUAL_ORDER_PATTERN, question)) {
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.ORDER_QUERY, ORDER_QUERY_TOOLS);
+            addGroup(matchedGroups, allowedToolNames, BusinessGroup.PAYMENT, PAYMENT_TOOLS);
+        }
+    }
+
+    /**
+     * 提取仅供兜底判断使用的最近业务上下文。
+     *
+     * @param history 当前会话上下文
+     * @return 摘要状态和最近完整轮次组成的文本
+     */
+    private String recentBusinessContext(ConversationHistoryContext history) {
+        StringBuilder context = new StringBuilder();
+        if (StringUtils.hasText(history.summaryContent())) {
+            context.append(history.summaryContent()).append('\n');
+        }
+        if (StringUtils.hasText(history.structuredState())) {
+            context.append(history.structuredState()).append('\n');
+        }
+        ConversationTurnContext latestTurn = history.recentTurns().get(history.recentTurns().size() - 1);
+        // 最近一轮同时保留用户问题和助手回答，覆盖选车、草案和订单状态追问。
+        context.append(latestTurn.userMessage().content()).append('\n');
+        context.append(latestTurn.assistantMessage().content());
+        return context.toString();
+    }
+
+    /**
+     * 合并命中的业务组及其最小工具集合。
+     *
+     * @param matchedGroups 已命中的业务组
+     * @param allowedToolNames 已选工具名称
+     * @param group 当前命中的业务组
+     * @param toolNames 当前业务组依赖的工具名称
+     */
+    private void addGroup(
+            Set<BusinessGroup> matchedGroups,
+            Set<String> allowedToolNames,
+            BusinessGroup group,
+            Set<String> toolNames) {
+        // 业务组和工具集合分别去重，支持一个问题同时查询订单并检查支付状态。
+        matchedGroups.add(group);
+        allowedToolNames.addAll(toolNames);
     }
 
     /**
@@ -122,13 +223,29 @@ public class QuestionToolRoutingService {
     }
 
     /**
+     * 可独立组合的票务业务工具组。
+     */
+    public enum BusinessGroup {
+        TRAIN_QUERY,
+        TRAIN_STOP,
+        PASSENGER,
+        ORDER_QUERY,
+        PAYMENT,
+        PURCHASE,
+        CANCELLATION,
+        REFUND
+    }
+
+    /**
      * 问题分流结果。
      *
      * @param route 普通问答或工具辅助路径
+     * @param matchedGroups 当前问题命中的业务工具组
      * @param allowedToolNames 本轮允许注册到回答模型的工具名称
      */
     public record QuestionRoutingDecision(
             QuestionRoute route,
+            Set<BusinessGroup> matchedGroups,
             Set<String> allowedToolNames) {
 
         /**
@@ -138,19 +255,24 @@ public class QuestionToolRoutingService {
          */
         public static QuestionRoutingDecision chatOnly() {
             // 普通问答固定使用不可变空集合，避免后续阶段意外追加工具。
-            return new QuestionRoutingDecision(QuestionRoute.CHAT_ONLY, Set.of());
+            return new QuestionRoutingDecision(QuestionRoute.CHAT_ONLY, Set.of(), Set.of());
         }
 
         /**
          * 创建仅携带已选工具组的业务问答结果。
          *
+         * @param matchedGroups 本轮命中的业务组
          * @param allowedToolNames 本轮命中的工具名称
          * @return 工具辅助分流结果
          */
-        public static QuestionRoutingDecision toolAssisted(Set<String> allowedToolNames) {
-            // 复制规则计算结果，防止调用方修改集合破坏本轮安全边界。
+        public static QuestionRoutingDecision toolAssisted(
+                Set<BusinessGroup> matchedGroups,
+                Set<String> allowedToolNames) {
+            // 复制规则计算结果，防止调用方修改业务组或工具集合破坏本轮安全边界。
             return new QuestionRoutingDecision(
-                    QuestionRoute.TOOL_ASSISTED, Set.copyOf(allowedToolNames));
+                    QuestionRoute.TOOL_ASSISTED,
+                    Set.copyOf(matchedGroups),
+                    Set.copyOf(allowedToolNames));
         }
     }
 }

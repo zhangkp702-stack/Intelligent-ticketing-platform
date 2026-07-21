@@ -46,6 +46,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -113,6 +114,15 @@ public class AgentChatPipeline {
     }
 
     /**
+     * @param callbacks 本轮实际注册到回答模型的工具
+     * @param missingToolNames 分流要求但当前未注册的工具名称
+     */
+    private record ResolvedTools(
+            List<ToolCallback> callbacks,
+            Set<String> missingToolNames) {
+    }
+
+    /**
      * 创建智能体对话流水线。
      *
      * @param conversationMemoryService 会话和轮次持久化服务
@@ -177,18 +187,27 @@ public class AgentChatPipeline {
                     rewriteCurrentQuestion(context, conversationHistory);
 
             // 使用本地规则选择普通回答或业务工具路径，不增加单独的意图识别模型调用。
+            long routingStartedNanos = System.nanoTime();
             QuestionRoutingDecision routingDecision =
-                    questionToolRoutingService.route(rewriteResult.effectiveQuestion());
-            List<ToolCallback> callbacks = resolveToolCallbacks(routingDecision);
+                    questionToolRoutingService.route(rewriteResult.effectiveQuestion(), conversationHistory);
+            ResolvedTools resolvedTools = resolveToolCallbacks(routingDecision);
+            long routingDurationMs = (System.nanoTime() - routingStartedNanos) / 1_000_000L;
             LOGGER.info(
-                    "Agent问题分流完成，requestId={}, conversationId={}, turnId={}, route={}, tools={}",
+                    "Agent问题分流完成，requestId={}, conversationId={}, turnId={}, route={}, groups={}, "
+                            + "tools={}, rewriteModelInvoked={}, rewritten={}, durationMs={}",
                     context.requestId(),
                     context.conversationId(),
                     context.turnId(),
                     routingDecision.route(),
-                    callbacks.stream()
+                    routingDecision.matchedGroups(),
+                    resolvedTools.callbacks().stream()
                             .map(callback -> callback.getToolDefinition().name())
-                            .toList());
+                            .toList(),
+                    rewriteResult.modelInvoked(),
+                    rewriteResult.rewritten(),
+                    routingDurationMs);
+            ensureRequiredToolsAvailable(context, routingDecision, resolvedTools);
+            List<ToolCallback> callbacks = resolvedTools.callbacks();
 
             // 将系统规则、会话上下文和本轮安全工具组装为模型提示。
             Prompt prompt = buildPrompt(
@@ -449,12 +468,12 @@ public class AgentChatPipeline {
      * 合并并按工具名称去重所有已启用的工具提供器。
      *
      * @param routingDecision 当前问题选择的执行路径和允许工具名称
-     * @return 不可重复的安全工具回调列表
+     * @return 实际注册的安全工具和缺失工具名称
      */
-    private List<ToolCallback> resolveToolCallbacks(QuestionRoutingDecision routingDecision) {
+    private ResolvedTools resolveToolCallbacks(QuestionRoutingDecision routingDecision) {
         if (routingDecision.route() == QuestionRoute.CHAT_ONLY) {
             // 普通问答不遍历工具提供器，也不向模型发送 MCP 工具定义。
-            return List.of();
+            return new ResolvedTools(List.of(), Set.of());
         }
 
         Map<String, ToolCallback> callbacks = new LinkedHashMap<>();
@@ -476,7 +495,42 @@ public class AgentChatPipeline {
                     // 相同名称只保留优先级最高的提供器实现。
                     callbacks.putIfAbsent(toolName, callback);
                 });
-        return List.copyOf(callbacks.values());
+
+        // 使用集合差值识别配置缺失，避免回答模型在工具不完整时继续生成业务结论。
+        Set<String> missingToolNames = new LinkedHashSet<>(routingDecision.allowedToolNames());
+        missingToolNames.removeAll(callbacks.keySet());
+        return new ResolvedTools(
+                List.copyOf(callbacks.values()),
+                Set.copyOf(missingToolNames));
+    }
+
+    /**
+     * 在调用回答模型前校验业务路径所需工具是否全部可用。
+     *
+     * @param context 当前请求上下文
+     * @param routingDecision 当前问题分流结果
+     * @param resolvedTools 工具解析结果
+     */
+    private void ensureRequiredToolsAvailable(
+            AgentRequestContext context,
+            QuestionRoutingDecision routingDecision,
+            ResolvedTools resolvedTools) {
+        if (resolvedTools.missingToolNames().isEmpty()) {
+            return;
+        }
+
+        // 只记录工具名称和业务组，不记录用户问题或工具参数。
+        LOGGER.warn(
+                "Agent业务工具不可用，requestId={}, conversationId={}, turnId={}, groups={}, missingTools={}",
+                context.requestId(),
+                context.conversationId(),
+                context.turnId(),
+                routingDecision.matchedGroups(),
+                resolvedTools.missingToolNames());
+        throw new AgentChatException(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "MCP_TOOLS_UNAVAILABLE",
+                "票务查询或操作工具暂时不可用，请稍后重试");
     }
 
     /**

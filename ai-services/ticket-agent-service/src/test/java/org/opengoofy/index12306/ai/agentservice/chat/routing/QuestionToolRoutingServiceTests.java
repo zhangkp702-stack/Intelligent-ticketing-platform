@@ -1,8 +1,14 @@
 package org.opengoofy.index12306.ai.agentservice.chat.routing;
 
 import org.junit.jupiter.api.Test;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.BusinessGroup;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoute;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoutingDecision;
+import org.opengoofy.index12306.ai.agentservice.memory.context.AgentChatMessage;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -82,5 +88,53 @@ class QuestionToolRoutingServiceTests {
                 "get_my_order_detail",
                 "preview_ticket_refund",
                 "prepare_ticket_refund");
+    }
+
+    /**
+     * 验证购票口语化追问可以根据最近车次上下文获得购票工具组。
+     */
+    @Test
+    void contextualPurchaseFollowupUsesRecentBusinessContext() {
+        ConversationHistoryContext history = trainHistory("刚才那个我要了");
+
+        // 当前问题没有明确“购票”字样，但最近一轮已经给出候选车次。
+        QuestionRoutingDecision decision = service.route("刚才那个我要了", history);
+
+        assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
+        assertThat(decision.matchedGroups()).contains(BusinessGroup.PURCHASE);
+        assertThat(decision.allowedToolNames()).contains(
+                "list_my_passengers", "prepare_ticket_purchase");
+    }
+
+    /**
+     * 验证普通致谢不会因为最近存在车票上下文而误入工具路径。
+     */
+    @Test
+    void ordinaryFollowupDoesNotReuseBusinessTools() {
+        ConversationHistoryContext history = trainHistory("谢谢");
+
+        // 只有当前表达包含受控指代或操作信号时才允许使用历史业务兜底。
+        QuestionRoutingDecision decision = service.route("谢谢", history);
+
+        assertThat(decision.route()).isEqualTo(QuestionRoute.CHAT_ONLY);
+        assertThat(decision.allowedToolNames()).isEmpty();
+    }
+
+    /**
+     * 创建包含最近车次查询结果的测试会话上下文。
+     *
+     * @param currentQuestion 当前用户问题
+     * @return 可用于上下文兜底的会话历史
+     */
+    private ConversationHistoryContext trainHistory(String currentQuestion) {
+        ConversationTurnContext turn = new ConversationTurnContext(
+                "turn-history",
+                AgentChatMessage.user("查询明天北京到上海的车票"),
+                AgentChatMessage.assistant("第一趟 G9001，第二趟 G9003"));
+        // 测试只需要最近完整轮次，摘要边界和快照信息保持为空。
+        return new ConversationHistoryContext(
+                "conversation-1", null, null, null, null, 0,
+                List.of(turn), AgentChatMessage.user(currentQuestion),
+                List.of("message-1", "message-2"), 1L, 2L, 20);
     }
 }
