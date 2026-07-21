@@ -163,6 +163,64 @@ public final class AgentChatModels {
     }
 
     /**
+     * 单次对话流水线的性能快照，仅随当前 SSE 完成事件返回，不写入会话历史。
+     *
+     * @param totalDurationMs 后端整轮处理耗时
+     * @param contextDurationMs 会话上下文加载耗时
+     * @param rewriteDurationMs 问题改写阶段耗时
+     * @param routingDurationMs 问题分流和工具解析耗时
+     * @param modelDurationMs 回答模型完整响应流耗时
+     * @param completionDurationMs 业务收口和轮次持久化耗时
+     * @param rewriteModelInvoked 是否调用了问题改写模型
+     * @param rewritten 当前问题是否实际发生改写
+     * @param route 本轮选择的问答路径
+     * @param matchedGroups 命中的业务工具组
+     * @param toolAvailability 业务工具可用状态
+     * @param enabledTools 实际提供给回答模型的工具名称
+     * @param missingTools 分流要求但当前未注册的工具名称
+     * @param modelCalls 回答模型每轮真实 HTTP 调用耗时
+     */
+    public record ChatPerformance(
+            long totalDurationMs,
+            long contextDurationMs,
+            long rewriteDurationMs,
+            long routingDurationMs,
+            long modelDurationMs,
+            long completionDurationMs,
+            boolean rewriteModelInvoked,
+            boolean rewritten,
+            String route,
+            List<String> matchedGroups,
+            String toolAvailability,
+            List<String> enabledTools,
+            List<String> missingTools,
+            List<ModelCallPerformance> modelCalls) {
+    }
+
+    /**
+     * 回答模型单轮真实 HTTP 调用的前端安全视图。
+     *
+     * @param round 当前回答请求内的模型调用轮次
+     * @param providerId 模型平台标识
+     * @param candidateId 路由候选项标识
+     * @param modelId 平台模型标识
+     * @param outcome 调用结果
+     * @param firstChunkMillis 首包耗时，未收到首包时为 -1
+     * @param durationMillis 完整响应流耗时
+     * @param httpStatus HTTP 状态码，未收到响应头时为 -1
+     */
+    public record ModelCallPerformance(
+            long round,
+            String providerId,
+            String candidateId,
+            String modelId,
+            String outcome,
+            long firstChunkMillis,
+            long durationMillis,
+            int httpStatus) {
+    }
+
+    /**
      * SSE 对话事件。
      *
      * @param type 事件类型
@@ -175,6 +233,7 @@ public final class AgentChatModels {
      * @param failureCategory 稳定失败分类
      * @param message 安全的用户提示
      * @param action 仅在 ACTION_REQUIRED 事件中返回的确认视图
+     * @param performance 仅在新生成回答的 DONE 事件中返回的本轮性能快照
      */
     public record ChatEvent(
             EventType type,
@@ -186,7 +245,8 @@ public final class AgentChatModels {
             boolean reused,
             String failureCategory,
             String message,
-            ActionConfirmationView action) {
+            ActionConfirmationView action,
+            ChatPerformance performance) {
 
         /**
          * 创建开始输出前的元数据事件。
@@ -200,7 +260,7 @@ public final class AgentChatModels {
                 boolean reused) {
             return new ChatEvent(
                     EventType.META, context.requestId(), context.conversationId(), context.turnId(),
-                    null, null, reused, null, null, null);
+                    null, null, reused, null, null, null, null);
         }
 
         /**
@@ -215,7 +275,7 @@ public final class AgentChatModels {
                 String delta) {
             return new ChatEvent(
                     EventType.DELTA, context.requestId(), context.conversationId(), context.turnId(),
-                    delta, null, false, null, null, null);
+                    delta, null, false, null, null, null, null);
         }
 
         /**
@@ -231,7 +291,7 @@ public final class AgentChatModels {
             // 确认令牌只通过服务端结构化事件返回，不写入模型回答正文。
             return new ChatEvent(
                     EventType.ACTION_REQUIRED, context.requestId(), context.conversationId(), context.turnId(),
-                    null, null, false, null, null, action);
+                    null, null, false, null, null, action, null);
         }
 
         /**
@@ -246,9 +306,28 @@ public final class AgentChatModels {
                 org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
                 String content,
                 boolean reused) {
+            // 幂等重放没有本次流水线的分阶段数据，因此沿用无性能快照的完成事件。
+            return done(context, content, reused, null);
+        }
+
+        /**
+         * 创建携带单次流水线性能快照的回答完成事件。
+         *
+         * @param context 当前请求上下文
+         * @param content 完整回答
+         * @param reused 是否复用已有回答
+         * @param performance 本轮性能快照
+         * @return 携带性能快照的完成事件
+         */
+        public static ChatEvent done(
+                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                String content,
+                boolean reused,
+                ChatPerformance performance) {
+            // 性能数据与最终正文在同一个终态事件返回，避免增加新的 SSE 事件顺序。
             return new ChatEvent(
                     EventType.DONE, context.requestId(), context.conversationId(), context.turnId(),
-                    null, content, reused, null, null, null);
+                    null, content, reused, null, null, null, performance);
         }
 
         /**
@@ -262,7 +341,7 @@ public final class AgentChatModels {
         public static ChatEvent error(ChatCommand command, String category, String safeMessage) {
             return new ChatEvent(
                     EventType.ERROR, command.requestId(), command.conversationId(), null,
-                    null, null, false, category, safeMessage, null);
+                    null, null, false, category, safeMessage, null, null);
         }
     }
 

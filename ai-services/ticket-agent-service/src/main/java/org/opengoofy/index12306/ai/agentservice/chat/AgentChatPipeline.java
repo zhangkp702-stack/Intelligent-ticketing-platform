@@ -6,6 +6,8 @@ import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
+import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatPerformance;
+import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ModelCallPerformance;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService;
@@ -20,6 +22,7 @@ import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationConte
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallRound;
 import org.opengoofy.index12306.ai.agentservice.model.routing.ModelRoutingException;
 import org.opengoofy.index12306.ai.agentservice.model.routing.RoutedChatModelService;
 import org.slf4j.Logger;
@@ -125,6 +128,88 @@ public class AgentChatPipeline {
     }
 
     /**
+     * 汇集单次流水线各阶段结果，完成后转换为只读的前端性能快照。
+     */
+    private static final class RequestPerformanceTrace {
+
+        private final long startedNanos = System.nanoTime();
+        private long contextDurationMs;
+        private long rewriteDurationMs;
+        private long routingDurationMs;
+        private long modelDurationMs;
+        private long completionDurationMs;
+        private boolean rewriteModelInvoked;
+        private boolean rewritten;
+        private String route;
+        private List<String> matchedGroups = List.of();
+        private String toolAvailability;
+        private List<String> enabledTools = List.of();
+        private List<String> missingTools = List.of();
+        private final List<ModelCallPerformance> modelCalls = new ArrayList<>();
+
+        /**
+         * 接收回答模型一轮真实 HTTP 调用结果。
+         *
+         * @param round 不包含提示词和响应正文的单轮耗时
+         */
+        private void recordModelRound(ModelHttpCallRound round) {
+            // 网络过滤器可能运行在不同线程，只复制前端诊断需要的安全字段。
+            synchronized (modelCalls) {
+                modelCalls.add(new ModelCallPerformance(
+                        round.round(),
+                        round.providerId(),
+                        round.candidateId(),
+                        round.modelId(),
+                        round.outcome(),
+                        round.firstChunkMillis(),
+                        round.durationMillis(),
+                        round.httpStatus()));
+            }
+        }
+
+        /**
+         * 生成返回给当前请求的不可变性能快照。
+         *
+         * @return 包含耗时、分流和工具状态的性能快照
+         */
+        private ChatPerformance snapshot() {
+            // 总耗时在完成持久化以后计算，覆盖本轮已完成的全部后端阶段。
+            List<ModelCallPerformance> modelCallSnapshot;
+            synchronized (modelCalls) {
+                modelCallSnapshot = modelCalls.stream()
+                        .sorted(java.util.Comparator.comparingLong(ModelCallPerformance::round))
+                        .toList();
+            }
+            return new ChatPerformance(
+                    elapsedMillis(startedNanos),
+                    contextDurationMs,
+                    rewriteDurationMs,
+                    routingDurationMs,
+                    modelDurationMs,
+                    completionDurationMs,
+                    rewriteModelInvoked,
+                    rewritten,
+                    route,
+                    matchedGroups,
+                    toolAvailability,
+                    enabledTools,
+                    missingTools,
+                    modelCallSnapshot);
+        }
+
+        /**
+         * 计算指定阶段从开始到当前时刻的非负毫秒耗时。
+         *
+         * @param stageStartedNanos 阶段开始的单调时钟值
+         * @return 非负毫秒耗时
+         */
+        private static long elapsedMillis(long stageStartedNanos) {
+            // 纳秒时钟只用于计算时间差，不与系统时间混用。
+            return Math.max(0L, (System.nanoTime() - stageStartedNanos) / 1_000_000L);
+        }
+    }
+
+    /**
      * 创建智能体对话流水线。
      *
      * @param conversationMemoryService 会话和轮次持久化服务
@@ -171,6 +256,7 @@ public class AgentChatPipeline {
      * @return 元数据、正文增量、待确认操作和完成事件组成的流
      */
     public Flux<ChatEvent> execute(ChatCommand command) {
+        RequestPerformanceTrace performanceTrace = new RequestPerformanceTrace();
         // 第一阶段先持久化或复用幂等轮次，确保后续模型和工具调用都有稳定审计边界。
         ConversationMemoryService.StartedTurn started = startTurn(command);
         AgentRequestContext context = createRequestContext(command, started);
@@ -188,6 +274,7 @@ public class AgentChatPipeline {
             ConversationHistoryContext conversationHistory;
             try {
                 conversationHistory = loadConversationHistory(context, started, currentQuestion);
+                performanceTrace.contextDurationMs = RequestPerformanceTrace.elapsedMillis(contextStartedNanos);
                 chatMetrics.recordContextLoad(contextStartedNanos, "SUCCESS");
             } catch (RuntimeException exception) {
                 // 上下文加载失败需要单独计时，便于与后续模型耗时区分。
@@ -199,6 +286,9 @@ public class AgentChatPipeline {
             long rewriteStartedNanos = System.nanoTime();
             QuestionRewriteResult rewriteResult =
                     rewriteCurrentQuestion(context, conversationHistory);
+            performanceTrace.rewriteDurationMs = RequestPerformanceTrace.elapsedMillis(rewriteStartedNanos);
+            performanceTrace.rewriteModelInvoked = rewriteResult.modelInvoked();
+            performanceTrace.rewritten = rewriteResult.rewritten();
             chatMetrics.recordRewrite(
                     rewriteStartedNanos,
                     rewriteResult.modelInvoked(),
@@ -213,6 +303,18 @@ public class AgentChatPipeline {
             String toolAvailability = routingDecision.route() == QuestionRoute.CHAT_ONLY
                     ? "NOT_REQUIRED"
                     : resolvedTools.missingToolNames().isEmpty() ? "AVAILABLE" : "MISSING";
+            performanceTrace.routingDurationMs = routingDurationMs;
+            performanceTrace.route = routingDecision.route().name();
+            performanceTrace.matchedGroups = routingDecision.matchedGroups().stream()
+                    .map(group -> group.name())
+                    .sorted()
+                    .toList();
+            performanceTrace.toolAvailability = toolAvailability;
+            performanceTrace.enabledTools = resolvedTools.callbacks().stream()
+                    .map(callback -> callback.getToolDefinition().name())
+                    .sorted()
+                    .toList();
+            performanceTrace.missingTools = resolvedTools.missingToolNames().stream().sorted().toList();
             chatMetrics.recordRouting(
                     routingStartedNanos,
                     routingDecision.route().name(),
@@ -243,10 +345,12 @@ public class AgentChatPipeline {
             StringBuilder answer = new StringBuilder();
 
             // 调用回答模型并把每个文本增量转换成前端事件。
-            Flux<ChatEvent> answerEvents = streamModelResponse(context, prompt, callbacks, answer);
+            Flux<ChatEvent> answerEvents = streamModelResponse(
+                    context, prompt, callbacks, answer, performanceTrace);
 
             // 模型结束后读取数据库草案状态，生成权威正文并持久化轮次终态。
-            Flux<ChatEvent> completionEvents = completeAnswer(context, answer, terminal);
+            Flux<ChatEvent> completionEvents = completeAnswer(
+                    context, answer, terminal, performanceTrace);
 
             // 统一按元数据、模型增量、操作确认和完成事件的顺序输出。
             return assembleEventStream(context, answerEvents, completionEvents, terminal);
@@ -358,26 +462,37 @@ public class AgentChatPipeline {
      * @param prompt 已组装提示
      * @param callbacks 本轮安全工具
      * @param answer 模型正文累计容器
+     * @param performanceTrace 本轮性能数据容器
      * @return 模型正文增量事件流
      */
     private Flux<ChatEvent> streamModelResponse(
             AgentRequestContext context,
             Prompt prompt,
             List<ToolCallback> callbacks,
-            StringBuilder answer) {
+            StringBuilder answer,
+            RequestPerformanceTrace performanceTrace) {
         ModelAttemptContext attemptContext = new ModelAttemptContext(
                 context.requestId(), context.conversationId(), context.turnId());
 
         // 回答模型只自动执行只读查询和本地草案工具，并按增量向前端输出正文。
         Flux<ChatResponse> modelResponses = routedChatModelService.stream(
-                ModelRole.ANSWER_TOOL, prompt, attemptContext, !callbacks.isEmpty());
-        return chatMetrics.observeModel(modelResponses, !callbacks.isEmpty())
-                .map(this::extractText)
-                .filter(StringUtils::hasText)
-                .map(delta -> {
-                    answer.append(delta);
-                    return ChatEvent.delta(context, delta);
-                });
+                ModelRole.ANSWER_TOOL,
+                prompt,
+                attemptContext,
+                !callbacks.isEmpty(),
+                performanceTrace::recordModelRound);
+        return Flux.defer(() -> {
+            long modelStartedNanos = System.nanoTime();
+            return chatMetrics.observeModel(modelResponses, !callbacks.isEmpty())
+                    .map(this::extractText)
+                    .filter(StringUtils::hasText)
+                    .map(delta -> {
+                        answer.append(delta);
+                        return ChatEvent.delta(context, delta);
+                    })
+                    .doOnComplete(() -> performanceTrace.modelDurationMs =
+                            RequestPerformanceTrace.elapsedMillis(modelStartedNanos));
+        });
     }
 
     /**
@@ -386,12 +501,14 @@ public class AgentChatPipeline {
      * @param context 当前请求上下文
      * @param answer 已累计的模型正文
      * @param terminal 是否已经持久化终态
+     * @param performanceTrace 本轮性能数据容器
      * @return 待确认操作和完成事件
      */
     private Flux<ChatEvent> completeAnswer(
             AgentRequestContext context,
             StringBuilder answer,
-            AtomicBoolean terminal) {
+            AtomicBoolean terminal,
+            RequestPerformanceTrace performanceTrace) {
         // 完成阶段在订阅时执行，确保它严格发生在所有模型增量之后。
         return Mono.fromCallable(() -> {
             long completionStartedNanos = System.nanoTime();
@@ -404,6 +521,8 @@ public class AgentChatPipeline {
                 conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
                         context.userId(), context.turnId(), content, estimateTokens(content)));
                 terminal.set(true);
+                performanceTrace.completionDurationMs =
+                        RequestPerformanceTrace.elapsedMillis(completionStartedNanos);
                 chatMetrics.recordCompletion(completionStartedNanos, "SUCCESS");
                 return new CompletedAnswer(content, action);
             } catch (RuntimeException exception) {
@@ -412,10 +531,11 @@ public class AgentChatPipeline {
                 throw exception;
             }
         }).flatMapMany(completed -> completed.action() == null
-                ? Flux.just(ChatEvent.done(context, completed.content(), false))
+                ? Flux.just(ChatEvent.done(
+                        context, completed.content(), false, performanceTrace.snapshot()))
                 : Flux.just(
                         ChatEvent.actionRequired(context, completed.action()),
-                        ChatEvent.done(context, completed.content(), false)));
+                        ChatEvent.done(context, completed.content(), false, performanceTrace.snapshot())));
     }
 
     /**

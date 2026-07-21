@@ -4,12 +4,14 @@ import org.opengoofy.index12306.ai.agentservice.model.config.ModelCapability;
 import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallTraceContext;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallRound;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -131,13 +133,34 @@ public class RoutedChatModelService {
             Prompt prompt,
             ModelAttemptContext attemptContext,
             boolean toolsEnabled) {
+        // 不需要分轮回调的调用继续复用同一实现。
+        return stream(role, prompt, attemptContext, toolsEnabled, null);
+    }
+
+    /**
+     * 使用显式审计上下文创建回答流，并逐轮回传真实模型 HTTP 调用耗时。
+     *
+     * @param role 模型业务角色
+     * @param prompt Spring AI 提示对象
+     * @param attemptContext 模型审计关联信息
+     * @param toolsEnabled 本次回答是否允许调用只读工具
+     * @param roundConsumer 每轮真实模型 HTTP 调用结束后的结果接收器
+     * @return 带首包前模型降级能力和分轮观测的回答流
+     */
+    public Flux<ChatResponse> stream(
+            ModelRole role,
+            Prompt prompt,
+            ModelAttemptContext attemptContext,
+            boolean toolsEnabled,
+            Consumer<ModelHttpCallRound> roundConsumer) {
         // 工具开启时只选择同时支持流式输出和工具调用的候选模型。
         Set<ModelCapability> capabilities = toolsEnabled
                 ? Set.of(ModelCapability.STREAMING, ModelCapability.TOOL_CALLING)
                 : Set.of(ModelCapability.STREAMING);
         return Flux.defer(() -> {
             // 每次订阅创建独立的分轮计数器，使自动工具执行产生的模型 HTTP 往返可以逐次计时。
-            ModelHttpCallTraceContext traceContext = ModelHttpCallTraceContext.create(role, attemptContext);
+            ModelHttpCallTraceContext traceContext =
+                    ModelHttpCallTraceContext.create(role, attemptContext, roundConsumer);
             return modelRouter.stream(
                             role,
                             capabilities,

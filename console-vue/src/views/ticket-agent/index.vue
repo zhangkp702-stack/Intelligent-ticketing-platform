@@ -642,10 +642,13 @@ const handleAgentEvent = (eventName, event, assistantMessage) => {
     assistantMessage.turnId = event.turnId
     assistantMessage.topicId = event.topicId
   } else if (type === 'delta') {
+    // 每个服务端增量到达后立即更新响应式正文，不人为延迟或重放整段回答。
     assistantMessage.content += event.delta || ''
   } else if (type === 'action_required') {
     assistantMessage.action = event.action
   } else if (type === 'done') {
+    // 性能快照只属于当前实时请求，不写入历史消息，刷新页面后不再展示。
+    assistantMessage.performance = event.performance || null
     assistantMessage.content = event.content || assistantMessage.content
     assistantMessage.pending = false
   } else if (type === 'error') {

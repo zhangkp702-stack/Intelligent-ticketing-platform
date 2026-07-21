@@ -20,6 +20,7 @@ import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnC
 import org.opengoofy.index12306.ai.agentservice.memory.domain.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationContextService;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallRound;
 import org.opengoofy.index12306.ai.agentservice.model.routing.RoutedChatModelService;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -41,6 +42,7 @@ import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -79,8 +81,15 @@ class AgentChatServiceTests {
         stubHistory(test, command, conversationHistory);
         ChatResponse firstResponse = response("北京到");
         ChatResponse secondResponse = response("上海有票");
-        when(test.model().stream(any(), any(), any(), eq(false))).thenReturn(
-                Flux.just(firstResponse, secondResponse));
+        when(test.model().stream(any(), any(), any(), eq(false), any())).thenAnswer(invocation -> {
+            Consumer<ModelHttpCallRound> roundConsumer = invocation.getArgument(4);
+            return Flux.defer(() -> {
+                // 模拟底层过滤器在模型 HTTP 响应结束时回传单轮耗时。
+                roundConsumer.accept(new ModelHttpCallRound(
+                        1, "bailian", "primary", "qwen", "SUCCESS", 120, 480, 200));
+                return Flux.just(firstResponse, secondResponse);
+            });
+        });
 
         StepVerifier.create(test.service().stream(command))
                 .assertNext(event -> org.assertj.core.api.Assertions.assertThat(event.type()).isEqualTo(EventType.META))
@@ -89,6 +98,28 @@ class AgentChatServiceTests {
                 .assertNext(event -> {
                     org.assertj.core.api.Assertions.assertThat(event.type()).isEqualTo(EventType.DONE);
                     org.assertj.core.api.Assertions.assertThat(event.content()).isEqualTo("北京到上海有票");
+                    // 完成事件同时返回本轮性能快照，前端无需读取全局 Micrometer 聚合数据。
+                    org.assertj.core.api.Assertions.assertThat(event.performance()).isNotNull();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().totalDurationMs()).isNotNegative();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().contextDurationMs()).isNotNegative();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().rewriteDurationMs()).isNotNegative();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().routingDurationMs()).isNotNegative();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().modelDurationMs()).isNotNegative();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().completionDurationMs()).isNotNegative();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().rewriteModelInvoked()).isFalse();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().rewritten()).isFalse();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().route()).isEqualTo("CHAT_ONLY");
+                    org.assertj.core.api.Assertions.assertThat(event.performance().toolAvailability())
+                            .isEqualTo("NOT_REQUIRED");
+                    org.assertj.core.api.Assertions.assertThat(event.performance().enabledTools()).isEmpty();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().missingTools()).isEmpty();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().modelCalls())
+                            .singleElement()
+                            .satisfies(call -> {
+                                org.assertj.core.api.Assertions.assertThat(call.round()).isEqualTo(1);
+                                org.assertj.core.api.Assertions.assertThat(call.firstChunkMillis()).isEqualTo(120);
+                                org.assertj.core.api.Assertions.assertThat(call.durationMillis()).isEqualTo(480);
+                            });
                 })
                 .verifyComplete();
         verify(test.memory()).completeTurn(any());
@@ -99,7 +130,7 @@ class AgentChatServiceTests {
 
         // 捕获实际发送给模型的提示，确认独立只读工具可以在同一模型轮次中批量请求。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model(), atLeastOnce()).stream(any(), promptCaptor.capture(), any(), eq(false));
+        verify(test.model(), atLeastOnce()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
         OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
         assertThat(options.getParallelToolCalls()).isTrue();
         assertThat(promptCaptor.getValue().getInstructions())
@@ -156,7 +187,7 @@ class AgentChatServiceTests {
                 .when(test.questionRewriteService())
                 .rewrite(eq(conversationHistory), any());
         ChatResponse modelResponse = response("G9003 还有余票");
-        when(test.model().stream(any(), any(), any(), eq(true)))
+        when(test.model().stream(any(), any(), any(), eq(true), any()))
                 .thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -167,7 +198,7 @@ class AgentChatServiceTests {
 
         // Prompt 最后一条用户消息应为独立问题，原始省略问句不重复进入回答模型输入。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true));
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true), any());
         assertThat(promptCaptor.getValue().getInstructions().get(
                 promptCaptor.getValue().getInstructions().size() - 1))
                 .isInstanceOfSatisfying(UserMessage.class, message ->
@@ -193,7 +224,7 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        when(test.model().stream(any(), any(), any(), eq(false)))
+        when(test.model().stream(any(), any(), any(), eq(false), any()))
                 .thenReturn(Flux.just(incorrectModelResponse));
         when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
                 .thenReturn(Optional.of(action));
@@ -247,7 +278,7 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        when(test.model().stream(any(), any(), any(), eq(true))).thenReturn(Flux.just(modelResponse));
+        when(test.model().stream(any(), any(), any(), eq(true), any())).thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
@@ -257,7 +288,7 @@ class AgentChatServiceTests {
 
         // 捕获最终提示选项，确认查询和草案工具保留，而真实写工具不进入模型上下文。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true));
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true), any());
         OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
         assertThat(options.getToolCallbacks())
                 .extracting(callback -> callback.getToolDefinition().name())
@@ -287,7 +318,7 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        when(test.model().stream(any(), any(), any(), eq(false)))
+        when(test.model().stream(any(), any(), any(), eq(false), any()))
                 .thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -297,7 +328,7 @@ class AgentChatServiceTests {
                 .verifyComplete();
 
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false));
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
         OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
         assertThat(options.getToolCallbacks()).isEmpty();
     }
@@ -327,7 +358,7 @@ class AgentChatServiceTests {
                         }))
                 .verify();
 
-        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean());
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
         verify(test.memory()).failTurn(eq(command.userId()), eq("turn-1"), any());
         assertThat(test.meterRegistry()
                 .get("agent.chat.tools.missing")
@@ -362,7 +393,7 @@ class AgentChatServiceTests {
                 .verifyComplete();
         verify(test.contextService(), never()).load(
                 any(), any(), any(), any(), any(), any(Long.class), any());
-        verify(test.model(), never()).stream(any(), any(), any(), any(Boolean.class));
+        verify(test.model(), never()).stream(any(), any(), any(), any(Boolean.class), any());
     }
 
     /**
@@ -377,7 +408,7 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        when(test.model().stream(any(), any(), any(), eq(false))).thenReturn(Flux.never());
+        when(test.model().stream(any(), any(), any(), eq(false), any())).thenReturn(Flux.never());
         test.actionDraftCreationTracker().markCreated("turn-1");
 
         StepVerifier.create(test.service().stream(command))

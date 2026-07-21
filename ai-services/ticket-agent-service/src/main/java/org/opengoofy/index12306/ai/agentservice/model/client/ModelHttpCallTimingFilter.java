@@ -1,6 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.model.client;
 
 import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallTraceContext;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallRound;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatusCode;
@@ -97,7 +98,19 @@ final class ModelHttpCallTimingFilter {
                         .doOnNext(ignored -> recordFirstChunk(
                                 identity, providerId, candidateId, modelId, startedNanos,
                                 firstChunkMillis, response.statusCode()))
-                        .doOnError(failure::set)
+                        .doOnError(exception -> {
+                            // 异常先于下游终止事件记录，确保完成快照不会遗漏失败轮次。
+                            failure.set(exception);
+                            recordTerminal(
+                                    SignalType.ON_ERROR, identity, providerId, candidateId, modelId,
+                                    startedNanos, firstChunkMillis, terminalRecorded, exception, status.get());
+                        })
+                        .doOnComplete(() -> recordTerminal(
+                                SignalType.ON_COMPLETE, identity, providerId, candidateId, modelId,
+                                startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get()))
+                        .doOnCancel(() -> recordTerminal(
+                                SignalType.CANCEL, identity, providerId, candidateId, modelId,
+                                startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get()))
                         .doFinally(signalType -> recordTerminal(
                                 signalType, identity, providerId, candidateId, modelId,
                                 startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get())))
@@ -179,14 +192,23 @@ final class ModelHttpCallTimingFilter {
         } else {
             outcome = "SUCCESS";
         }
+        long durationMillis = elapsedMillis(startedNanos);
+        int httpStatus = status == null ? -1 : status.value();
         LOGGER.info(
                 "Agent模型分轮调用完成，requestId={}, conversationId={}, turnId={}, role={}, provider={}, "
                         + "candidate={}, model={}, round={}, outcome={}, firstChunkMs={}, durationMs={}, "
                         + "httpStatus={}, exceptionType={}",
                 safe(identity.requestId()), safe(identity.conversationId()), safe(identity.turnId()),
                 safe(identity.role()), providerId, candidateId, modelId, identity.round(), outcome,
-                firstChunkMillis.get(), elapsedMillis(startedNanos), status == null ? -1 : status.value(),
+                firstChunkMillis.get(), durationMillis, httpStatus,
                 failure == null ? "-" : failure.getClass().getName());
+
+        // 已关联在线请求时把安全的分轮耗时回传流水线，供当前 SSE 完成事件展示。
+        if (identity.traceContext() != null) {
+            identity.traceContext().recordRound(new ModelHttpCallRound(
+                    identity.round(), providerId, candidateId, modelId, outcome,
+                    firstChunkMillis.get(), durationMillis, httpStatus));
+        }
     }
 
     /**
@@ -200,9 +222,9 @@ final class ModelHttpCallTimingFilter {
         return ModelHttpCallTraceContext.find(contextView)
                 .map(trace -> new CallIdentity(
                         trace.requestId(), trace.conversationId(), trace.turnId(),
-                        trace.role() == null ? null : trace.role().name(), trace.nextRound()))
+                        trace.role() == null ? null : trace.role().name(), trace.nextRound(), trace))
                 .orElseGet(() -> new CallIdentity(
-                        null, null, null, null, UNCORRELATED_CALL_SEQUENCE.incrementAndGet()));
+                        null, null, null, null, UNCORRELATED_CALL_SEQUENCE.incrementAndGet(), null));
     }
 
     /**
@@ -233,12 +255,14 @@ final class ModelHttpCallTimingFilter {
      * @param turnId 对话轮次标识
      * @param role 模型业务角色
      * @param round 当前请求内的模型调用轮次
+     * @param traceContext 当前请求的分轮调用上下文，未关联业务请求时为空
      */
     private record CallIdentity(
             String requestId,
             String conversationId,
             String turnId,
             String role,
-            long round) {
+            long round,
+            ModelHttpCallTraceContext traceContext) {
     }
 }

@@ -4,8 +4,12 @@ import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
 import reactor.util.context.Context;
 import reactor.util.context.ContextView;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 /**
  * 在同一业务请求的 Reactor 链路中关联每一次真实模型 HTTP 调用及其轮次。
@@ -17,10 +21,16 @@ public final class ModelHttpCallTraceContext {
     private final ModelRole role;
     private final ModelAttemptContext attemptContext;
     private final AtomicInteger roundSequence = new AtomicInteger();
+    private final List<ModelHttpCallRound> rounds = new ArrayList<>();
+    private final Consumer<ModelHttpCallRound> roundConsumer;
 
-    private ModelHttpCallTraceContext(ModelRole role, ModelAttemptContext attemptContext) {
+    private ModelHttpCallTraceContext(
+            ModelRole role,
+            ModelAttemptContext attemptContext,
+            Consumer<ModelHttpCallRound> roundConsumer) {
         this.role = role;
         this.attemptContext = attemptContext == null ? ModelAttemptContext.empty() : attemptContext;
+        this.roundConsumer = roundConsumer == null ? ignored -> { } : roundConsumer;
     }
 
     /**
@@ -32,7 +42,23 @@ public final class ModelHttpCallTraceContext {
      */
     public static ModelHttpCallTraceContext create(ModelRole role, ModelAttemptContext attemptContext) {
         // 每次订阅持有独立计数器，避免并发会话之间互相影响分轮序号。
-        return new ModelHttpCallTraceContext(role, attemptContext);
+        return new ModelHttpCallTraceContext(role, attemptContext, null);
+    }
+
+    /**
+     * 创建可实时接收每轮真实 HTTP 调用结果的模型链路上下文。
+     *
+     * @param role 本次模型调用承担的业务角色
+     * @param attemptContext 请求、会话和轮次审计信息
+     * @param roundConsumer 单轮调用结束后的安全结果接收器
+     * @return 尚未分配模型调用轮次的上下文
+     */
+    public static ModelHttpCallTraceContext create(
+            ModelRole role,
+            ModelAttemptContext attemptContext,
+            Consumer<ModelHttpCallRound> roundConsumer) {
+        // 接收器只获得模型标识和耗时，不传递提示词、工具参数或响应正文。
+        return new ModelHttpCallTraceContext(role, attemptContext, roundConsumer);
     }
 
     /**
@@ -68,6 +94,33 @@ public final class ModelHttpCallTraceContext {
     public int nextRound() {
         // 工具结果再次提交模型时会进入下一轮，序号用于从聚合耗时中区分每次往返。
         return roundSequence.incrementAndGet();
+    }
+
+    /**
+     * 保存一轮真实模型 HTTP 调用，并通知当前请求的性能收集器。
+     *
+     * @param round 已完成的单轮模型调用
+     */
+    public void recordRound(ModelHttpCallRound round) {
+        // 过滤器可能运行在不同网络线程，列表写入和快照读取必须保持原子性。
+        synchronized (rounds) {
+            rounds.add(round);
+        }
+        roundConsumer.accept(round);
+    }
+
+    /**
+     * 返回按调用轮次升序排列的当前快照。
+     *
+     * @return 不可修改的单轮调用列表
+     */
+    public List<ModelHttpCallRound> rounds() {
+        // 复制后排序，避免调用方观察到后续网络线程写入。
+        synchronized (rounds) {
+            return rounds.stream()
+                    .sorted(Comparator.comparingLong(ModelHttpCallRound::round))
+                    .toList();
+        }
     }
 
     /**

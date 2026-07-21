@@ -1,6 +1,9 @@
 package org.opengoofy.index12306.ai.agentservice.model.client;
 
 import org.junit.jupiter.api.Test;
+import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
+import org.opengoofy.index12306.ai.agentservice.model.observability.ModelHttpCallTraceContext;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
@@ -46,6 +49,9 @@ class ModelHttpCallTimingFilterTests {
                 HttpMethod.POST, URI.create("http://localhost/v1/chat/completions")).build();
         ExchangeFilterFunction filter = ModelHttpCallTimingFilter.create(
                 "provider-a", "candidate-a", "model-a");
+        ModelHttpCallTraceContext traceContext = ModelHttpCallTraceContext.create(
+                ModelRole.ANSWER_TOOL,
+                new ModelAttemptContext("request-1", "conversation-1", "turn-1"));
 
         // 消费过滤后的响应，确认计时监听没有提前读取或重复订阅原始响应体。
         Flux<String> responseBody = filter.filter(request, exchangeFunction)
@@ -55,11 +61,23 @@ class ModelHttpCallTimingFilterTests {
                     buffer.read(bytes);
                     DataBufferUtils.release(buffer);
                     return new String(bytes, StandardCharsets.UTF_8);
-                });
+                })
+                .contextWrite(traceContext::writeTo);
 
         StepVerifier.create(responseBody)
                 .expectNext("data: {\"content\":\"ok\"}\n\n")
                 .verifyComplete();
         assertThat(subscriptionCount).hasValue(1);
+        // 当前请求应获得单轮首包和完整耗时，供 DONE 事件返回前端展示。
+        assertThat(traceContext.rounds()).singleElement().satisfies(round -> {
+            assertThat(round.round()).isEqualTo(1);
+            assertThat(round.providerId()).isEqualTo("provider-a");
+            assertThat(round.candidateId()).isEqualTo("candidate-a");
+            assertThat(round.modelId()).isEqualTo("model-a");
+            assertThat(round.outcome()).isEqualTo("SUCCESS");
+            assertThat(round.firstChunkMillis()).isNotNegative();
+            assertThat(round.durationMillis()).isNotNegative();
+            assertThat(round.httpStatus()).isEqualTo(200);
+        });
     }
 }

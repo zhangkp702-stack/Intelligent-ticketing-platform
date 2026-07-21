@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
+import jakarta.servlet.http.HttpServletResponse;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCancelRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
@@ -14,7 +15,6 @@ import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationHistoryService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,11 +23,12 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import reactor.core.publisher.Flux;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 
-import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 为网关认证后的用户提供会话创建、普通回答和 SSE 流式回答接口。
@@ -161,24 +162,79 @@ public class AgentChatController {
      * @param requestId 可选请求标识
      * @param idempotencyKey 可选幂等键
      * @param request 用户问题
-     * @return SSE 对话事件流
+     * @param response Servlet 响应，用于关闭代理缓冲
+     * @return 会逐事件刷新到客户端的 SSE 发射器
      */
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<ChatEvent>> stream(
+    public SseEmitter stream(
             @RequestHeader(USER_ID_HEADER) String userId,
             @RequestHeader(value = USERNAME_HEADER, required = false) String username,
             @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
             @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody ChatRequest request) {
+            @RequestBody ChatRequest request,
+            HttpServletResponse response) {
         ChatCommand command = buildCommand(userId, username, requestId, idempotencyKey, request);
+        SseEmitter emitter = new SseEmitter(0L);
+        AtomicReference<Disposable> subscriptionRef = new AtomicReference<>();
 
-        // SSE 已经开始后不能再修改 HTTP 状态，异常统一转为安全 ERROR 事件。
-        return agentChatService.stream(command)
-                .onErrorResume(exception -> Flux.just(agentChatService.toErrorEvent(command, exception)))
-                .map(event -> ServerSentEvent.<ChatEvent>builder(event)
-                        .id(event.requestId())
-                        .event(event.type().name().toLowerCase(Locale.ROOT))
-                        .build());
+        // 禁止网关或反向代理转换、压缩和缓冲 SSE，确保每个 DELTA 都能立即抵达浏览器。
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
+
+        // SseEmitter.send 会在每个事件写入后刷新 Servlet 响应，不等待整个 Flux 完成。
+        Disposable subscription = agentChatService.stream(command)
+                .onErrorResume(exception -> Mono.just(agentChatService.toErrorEvent(command, exception)))
+                .subscribe(
+                        event -> sendEvent(emitter, event, subscriptionRef),
+                        emitter::completeWithError,
+                        emitter::complete);
+        subscriptionRef.set(subscription);
+
+        // 浏览器断开、页面切换或容器超时时必须取消上游，避免模型继续生成无消费者的内容。
+        emitter.onCompletion(() -> dispose(subscriptionRef));
+        emitter.onTimeout(() -> {
+            dispose(subscriptionRef);
+            emitter.complete();
+        });
+        emitter.onError(ignored -> dispose(subscriptionRef));
+        return emitter;
+    }
+
+    /**
+     * 把单个对话事件立即写入 SSE 响应，写入失败时同步取消模型上游。
+     *
+     * @param emitter 当前 HTTP 连接的 SSE 发射器
+     * @param event 待发送的对话事件
+     * @param subscriptionRef 当前模型流订阅引用
+     */
+    private void sendEvent(
+            SseEmitter emitter,
+            ChatEvent event,
+            AtomicReference<Disposable> subscriptionRef) {
+        try {
+            // 事件名保持与前端协议一致，正文作为 JSON 数据逐条发送并立即刷新。
+            emitter.send(SseEmitter.event()
+                    .id(event.requestId())
+                    .name(event.type().name().toLowerCase(java.util.Locale.ROOT))
+                    .data(event, MediaType.APPLICATION_JSON));
+        } catch (Exception exception) {
+            // 客户端断开后停止消费模型和工具流，异常由连接终止语义处理。
+            dispose(subscriptionRef);
+            emitter.completeWithError(exception);
+        }
+    }
+
+    /**
+     * 原子取消当前 SSE 对应的 Reactor 订阅。
+     *
+     * @param subscriptionRef 当前模型流订阅引用
+     */
+    private void dispose(AtomicReference<Disposable> subscriptionRef) {
+        // getAndSet 防止完成、超时和网络错误并发触发重复取消。
+        Disposable subscription = subscriptionRef.getAndSet(null);
+        if (subscription != null && !subscription.isDisposed()) {
+            subscription.dispose();
+        }
     }
 
     /**
