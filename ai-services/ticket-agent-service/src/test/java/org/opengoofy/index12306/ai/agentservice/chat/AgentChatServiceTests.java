@@ -12,6 +12,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.memory.context.AgentChatMessage;
 import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
@@ -218,12 +219,14 @@ class AgentChatServiceTests {
         ToolCallback writeTool = toolCallback("execute_confirmed_ticket_purchase");
         ToolCallbackProvider provider = ToolCallbackProvider.from(queryTool, draftTool, writeTool);
         TestContext test = context(Duration.ofSeconds(60), provider);
-        ChatCommand command = command();
+        ChatCommand command = new ChatCommand(
+                "request-purchase", "request-purchase", "user-1", "tester",
+                "conversation-1", "帮我购买明天北京到上海的二等座车票");
         ConversationHistoryContext conversationHistory = history(
                 command.conversationId(), command.message(), List.of());
         ChatResponse modelResponse = response("可以直接回答，也可以按需查询实时数据");
 
-        // 模拟一次启用安全工具的普通问答，模型本身不产生任何工具调用。
+        // 模拟一次购票业务问答，模型本身不产生任何工具调用。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
@@ -242,6 +245,40 @@ class AgentChatServiceTests {
         assertThat(options.getToolCallbacks())
                 .extracting(callback -> callback.getToolDefinition().name())
                 .containsExactly("query_tickets", "prepare_ticket_purchase");
+    }
+
+    /**
+     * 验证普通问答即使存在工具提供器也不会向回答模型注册 MCP 工具。
+     */
+    @Test
+    void ordinaryQuestionSkipsMcpTools() {
+        ToolCallback queryTool = toolCallback("query_tickets");
+        ToolCallbackProvider provider = ToolCallbackProvider.from(queryTool);
+        TestContext test = context(Duration.ofSeconds(60), provider);
+        ChatCommand command = new ChatCommand(
+                "request-chat", "request-chat", "user-1", "tester",
+                "conversation-1", "你好，请介绍一下你自己");
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
+        ChatResponse modelResponse = response("你好，我是 12306 购票智能体助手");
+
+        // 普通问答仍经过统一编排和持久化，但模型调用不携带任何工具定义。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, conversationHistory);
+        when(test.model().stream(any(), any(), any(), eq(false)))
+                .thenReturn(Flux.just(modelResponse));
+
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .expectNextMatches(event -> event.type() == EventType.DONE)
+                .verifyComplete();
+
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false));
+        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
+        assertThat(options.getToolCallbacks()).isEmpty();
     }
 
     /**
@@ -380,6 +417,7 @@ class AgentChatServiceTests {
                 memory,
                 contextService,
                 questionRewriteService,
+                new QuestionToolRoutingService(),
                 model,
                 purchaseActionService,
                 actionDraftCreationTracker,

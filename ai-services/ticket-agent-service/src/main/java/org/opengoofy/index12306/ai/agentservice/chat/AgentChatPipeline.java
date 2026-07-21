@@ -8,6 +8,9 @@ import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatCommand
 import org.opengoofy.index12306.ai.agentservice.chat.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoute;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoutingDecision;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
@@ -51,7 +54,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 执行单轮智能体对话的独立流水线。
  * <p>
- * 流程为：创建或复用轮次 -> 加载会话上下文 -> 按需改写问题 -> 解析安全工具 ->
+ * 流程为：创建或复用轮次 -> 加载会话上下文 -> 按需改写问题 -> 选择问答路径 -> 解析安全工具 ->
  * 组装提示 -> 流式调用回答模型 -> 按数据库草案状态收口 -> 持久化轮次终态。
  */
 @Service
@@ -94,6 +97,7 @@ public class AgentChatPipeline {
     private final ConversationMemoryService conversationMemoryService;
     private final ConversationContextService conversationContextService;
     private final QuestionRewriteService questionRewriteService;
+    private final QuestionToolRoutingService questionToolRoutingService;
     private final RoutedChatModelService routedChatModelService;
     private final PurchaseActionService purchaseActionService;
     private final ActionDraftCreationTracker actionDraftCreationTracker;
@@ -114,6 +118,7 @@ public class AgentChatPipeline {
      * @param conversationMemoryService 会话和轮次持久化服务
      * @param conversationContextService 会话摘要与最近消息加载服务
      * @param questionRewriteService 上下文相关问题改写服务
+     * @param questionToolRoutingService 普通问答与业务工具路径选择服务
      * @param routedChatModelService 多模型回答路由服务
      * @param purchaseActionService 购票草案确认服务
      * @param actionDraftCreationTracker 本轮草案创建信号
@@ -125,6 +130,7 @@ public class AgentChatPipeline {
             ConversationMemoryService conversationMemoryService,
             ConversationContextService conversationContextService,
             QuestionRewriteService questionRewriteService,
+            QuestionToolRoutingService questionToolRoutingService,
             RoutedChatModelService routedChatModelService,
             PurchaseActionService purchaseActionService,
             ActionDraftCreationTracker actionDraftCreationTracker,
@@ -134,6 +140,7 @@ public class AgentChatPipeline {
         this.conversationMemoryService = conversationMemoryService;
         this.conversationContextService = conversationContextService;
         this.questionRewriteService = questionRewriteService;
+        this.questionToolRoutingService = questionToolRoutingService;
         this.routedChatModelService = routedChatModelService;
         this.purchaseActionService = purchaseActionService;
         this.actionDraftCreationTracker = actionDraftCreationTracker;
@@ -169,8 +176,19 @@ public class AgentChatPipeline {
             QuestionRewriteResult rewriteResult =
                     rewriteCurrentQuestion(context, conversationHistory);
 
-            // 当前不增加单独的意图识别模型调用，由回答模型在一次调用内完成意图判断和工具选择。
-            List<ToolCallback> callbacks = resolveToolCallbacks();
+            // 使用本地规则选择普通回答或业务工具路径，不增加单独的意图识别模型调用。
+            QuestionRoutingDecision routingDecision =
+                    questionToolRoutingService.route(rewriteResult.effectiveQuestion());
+            List<ToolCallback> callbacks = resolveToolCallbacks(routingDecision);
+            LOGGER.info(
+                    "Agent问题分流完成，requestId={}, conversationId={}, turnId={}, route={}, tools={}",
+                    context.requestId(),
+                    context.conversationId(),
+                    context.turnId(),
+                    routingDecision.route(),
+                    callbacks.stream()
+                            .map(callback -> callback.getToolDefinition().name())
+                            .toList());
 
             // 将系统规则、会话上下文和本轮安全工具组装为模型提示。
             Prompt prompt = buildPrompt(
@@ -430,9 +448,15 @@ public class AgentChatPipeline {
     /**
      * 合并并按工具名称去重所有已启用的工具提供器。
      *
+     * @param routingDecision 当前问题选择的执行路径和允许工具名称
      * @return 不可重复的安全工具回调列表
      */
-    private List<ToolCallback> resolveToolCallbacks() {
+    private List<ToolCallback> resolveToolCallbacks(QuestionRoutingDecision routingDecision) {
+        if (routingDecision.route() == QuestionRoute.CHAT_ONLY) {
+            // 普通问答不遍历工具提供器，也不向模型发送 MCP 工具定义。
+            return List.of();
+        }
+
         Map<String, ToolCallback> callbacks = new LinkedHashMap<>();
 
         // 流水线执行最终白名单校验，防止真实写工具意外暴露给回答模型。
@@ -443,6 +467,10 @@ public class AgentChatPipeline {
                     if (!MODEL_ALLOWED_TOOLS.contains(toolName)) {
                         // 被拒绝的工具只记录名称，不输出参数或定义。
                         LOGGER.warn("Agent回答模型拒绝注册非白名单工具，tool={}", toolName);
+                        return;
+                    }
+                    if (!routingDecision.allowedToolNames().contains(toolName)) {
+                        // 本轮未命中的安全工具不进入模型上下文，减少工具定义和误调用概率。
                         return;
                     }
                     // 相同名称只保留优先级最高的提供器实现。
