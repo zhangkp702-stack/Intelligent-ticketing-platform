@@ -104,9 +104,7 @@ class QuestionToolRoutingServiceTests {
         assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
         assertThat(decision.intent()).isEqualTo(AgentIntent.TICKET_REFUND);
         assertThat(decision.allowedToolNames()).containsExactlyInAnyOrder(
-                "list_my_orders",
-                "get_my_order_detail",
-                "preview_ticket_refund",
+                "resolve_ticket_refund",
                 "prepare_ticket_refund");
     }
 

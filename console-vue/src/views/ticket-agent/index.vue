@@ -75,6 +75,14 @@
                   "
                   @submit="selectWorkflowOrder(chatMessage, $event)"
                 />
+                <RefundTicketSelectCard
+                  v-if="chatMessage.workflow?.tickets"
+                  :workflow="chatMessage.workflow"
+                  :submitting="
+                    state.selectingWorkflowId === chatMessage.workflow.workflowId
+                  "
+                  @submit="selectRefundWorkflowTickets(chatMessage, $event)"
+                />
                 <ActionConfirmCard
                   v-if="chatMessage.action"
                   :action="chatMessage.action"
@@ -133,7 +141,9 @@ import {
   fetchConfirmAgentAction,
   fetchCreateAgentConversation,
   submitAgentWorkflowPassengers,
-  submitAgentWorkflowOrder
+  submitAgentWorkflowOrder,
+  submitAgentRefundWorkflowOrder,
+  submitAgentRefundWorkflowTickets
 } from '@/service'
 import {
   cancelAgentChat,
@@ -146,6 +156,7 @@ import ChatInput from './components/chat-input'
 import ActionConfirmCard from './components/action-confirm-card'
 import PassengerSelectCard from './components/passenger-select-card'
 import OrderSelectCard from './components/order-select-card'
+import RefundTicketSelectCard from './components/refund-ticket-select-card'
 
 const router = useRouter()
 const messageContainer = ref(null)
@@ -769,19 +780,63 @@ const selectWorkflowOrder = async (chatMessage, orderSn) => {
   }
   state.selectingWorkflowId = workflow.workflowId
   try {
-    const result = await submitAgentWorkflowOrder(
-      state.conversationId,
-      workflow.workflowId,
-      orderSn
-    )
+    const isRefund = workflow.stage === 'SELECTING_REFUND_ORDER'
+    const result = isRefund
+      ? await submitAgentRefundWorkflowOrder(
+          state.conversationId,
+          workflow.workflowId,
+          orderSn
+        )
+      : await submitAgentWorkflowOrder(
+          state.conversationId,
+          workflow.workflowId,
+          orderSn
+        )
 
     // 订单选择已由服务端持久化，下一轮只能使用返回的已确认订单号创建草案。
     chatMessage.workflow = null
-    message.success(`已选择订单：${result.selectedOrder.orderSn}`)
+    const selectedOrderSn = isRefund ? result.orderSn : result.selectedOrder.orderSn
+    message.success(`已选择订单：${selectedOrderSn}`)
     state.selectingWorkflowId = null
-    await sendMessage('继续取消订单，使用刚才选择的订单生成取消草案')
+    await sendMessage(
+      isRefund
+        ? '继续退票，查询刚才选择订单中的可退乘车人车票'
+        : '继续取消订单，使用刚才选择的订单生成取消草案'
+    )
   } catch (error) {
     message.error(error.response?.data?.message || '提交订单选择失败')
+  } finally {
+    state.selectingWorkflowId = null
+  }
+}
+
+/**
+ * 提交用户勾选的可退车票，并继续生成退票草案。
+ *
+ * @param {object} chatMessage 包含退票车票选择卡片的助手消息
+ * @param {string[]} orderItemIds 用户勾选的子订单记录标识
+ * @returns {Promise<void>} 提交完成后继续发起退票对话
+ */
+const selectRefundWorkflowTickets = async (chatMessage, orderItemIds) => {
+  const workflow = chatMessage.workflow
+  if (!workflow || state.selectingWorkflowId === workflow.workflowId) {
+    return
+  }
+  state.selectingWorkflowId = workflow.workflowId
+  try {
+    const result = await submitAgentRefundWorkflowTickets(
+      state.conversationId,
+      workflow.workflowId,
+      orderItemIds
+    )
+
+    // 退票范围已持久化，下一轮只能使用服务端返回的订单、类型和车票标识创建草案。
+    chatMessage.workflow = null
+    message.success(`已选择 ${result.orderItemIds.length} 张退票车票`)
+    state.selectingWorkflowId = null
+    await sendMessage('继续退票，使用刚才确认的退票范围生成退票草案')
+  } catch (error) {
+    message.error(error.response?.data?.message || '提交退票范围失败')
   } finally {
     state.selectingWorkflowId = null
   }

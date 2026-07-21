@@ -5,5 +5,6 @@ package org.opengoofy.index12306.ai.agentservice.workflow.enums;
  */
 public enum WorkflowType {
     TICKET_PURCHASE,
-    ORDER_CANCELLATION
+    ORDER_CANCELLATION,
+    TICKET_REFUND
 }

@@ -4,6 +4,7 @@ import org.opengoofy.index12306.ai.agentservice.action.mcp.PurchaseDraftTools;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.TicketOperationDraftTools;
 import org.opengoofy.index12306.ai.agentservice.workflow.mcp.PurchasePassengerTools;
 import org.opengoofy.index12306.ai.agentservice.workflow.mcp.CancellationOrderTools;
+import org.opengoofy.index12306.ai.agentservice.workflow.mcp.RefundTicketTools;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
@@ -22,6 +23,7 @@ public class PurchaseDraftToolConfiguration {
      * @param ticketOperationTools 取消和退票草案工具对象
      * @param purchasePassengerTools 购票乘车人解析工具
      * @param cancellationOrderTools 取消订单解析工具
+     * @param refundTicketTools 退票订单和车票解析工具
      * @return Spring AI 工具提供器
      */
     @Bean
@@ -29,12 +31,14 @@ public class PurchaseDraftToolConfiguration {
             PurchaseDraftTools purchaseTools,
             TicketOperationDraftTools ticketOperationTools,
             PurchasePassengerTools purchasePassengerTools,
-            CancellationOrderTools cancellationOrderTools) {
+            CancellationOrderTools cancellationOrderTools,
+            RefundTicketTools refundTicketTools) {
         // 三类真实 MCP 写工具都不放入该提供器，回答模型只能创建待确认草案。
         return ToolCallbackProvider.from(ToolCallbacks.from(
                 purchaseTools,
                 ticketOperationTools,
                 purchasePassengerTools,
-                cancellationOrderTools));
+                cancellationOrderTools,
+                refundTicketTools));
     }
 }

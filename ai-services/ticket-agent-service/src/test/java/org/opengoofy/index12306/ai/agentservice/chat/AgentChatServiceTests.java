@@ -29,6 +29,7 @@ import org.opengoofy.index12306.ai.agentservice.infra.model.routing.RoutedChatMo
 import org.opengoofy.index12306.ai.agentservice.workflow.service.WorkflowInteractionTracker;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.RefundWorkflowService;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -503,6 +504,7 @@ class AgentChatServiceTests {
         ActionDraftCreationTracker actionDraftCreationTracker = new ActionDraftCreationTracker();
         PurchaseWorkflowService purchaseWorkflowService = mock(PurchaseWorkflowService.class);
         CancellationWorkflowService cancellationWorkflowService = mock(CancellationWorkflowService.class);
+        RefundWorkflowService refundWorkflowService = mock(RefundWorkflowService.class);
         WorkflowInteractionTracker workflowSelectionTracker = new WorkflowInteractionTracker();
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
         // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
@@ -525,6 +527,7 @@ class AgentChatServiceTests {
                 actionDraftCreationTracker,
                 purchaseWorkflowService,
                 cancellationWorkflowService,
+                refundWorkflowService,
                 workflowSelectionTracker,
                 new McpToolContextFactory(),
                 providers,

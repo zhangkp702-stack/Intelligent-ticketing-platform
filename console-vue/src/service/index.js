@@ -277,6 +277,32 @@ const submitAgentWorkflowOrder = async (
   return data
 }
 
+const submitAgentRefundWorkflowOrder = async (
+  conversationId,
+  workflowId,
+  orderSn
+) => {
+  const { data } = await http({
+    method: 'POST',
+    url: `/api/agent-service/conversations/${conversationId}/workflows/${workflowId}/refund-order`,
+    data: { orderSn }
+  })
+  return data
+}
+
+const submitAgentRefundWorkflowTickets = async (
+  conversationId,
+  workflowId,
+  orderItemIds
+) => {
+  const { data } = await http({
+    method: 'POST',
+    url: `/api/agent-service/conversations/${conversationId}/workflows/${workflowId}/refund-tickets`,
+    data: { orderItemIds }
+  })
+  return data
+}
+
 const fetchConfirmAgentAction = async (
   actionId,
   confirmationToken,
@@ -334,6 +360,8 @@ export {
   fetchAgentPendingWorkflow,
   submitAgentWorkflowPassengers,
   submitAgentWorkflowOrder,
+  submitAgentRefundWorkflowOrder,
+  submitAgentRefundWorkflowTickets,
   fetchConfirmAgentAction,
   fetchAgentActionStatus
 }

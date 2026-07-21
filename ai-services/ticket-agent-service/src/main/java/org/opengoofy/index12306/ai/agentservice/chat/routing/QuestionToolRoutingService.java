@@ -31,8 +31,7 @@ public class QuestionToolRoutingService {
     private static final Set<String> CANCELLATION_TOOLS = Set.of(
             "resolve_order_cancellation", "prepare_order_cancellation");
     private static final Set<String> REFUND_TOOLS = Set.of(
-            "list_my_orders", "get_my_order_detail",
-            "preview_ticket_refund", "prepare_ticket_refund");
+            "resolve_ticket_refund", "prepare_ticket_refund");
     private static final Pattern TRAIN_QUERY_PATTERN = Pattern.compile(
             "余票|票价|车次|列车|火车|高铁|动车|席别|座位|一等座|二等座|商务座|"
                     + "硬座|软座|硬卧|软卧|无座|站点|车站|"
@@ -125,6 +124,13 @@ public class QuestionToolRoutingService {
         }
         if (matches(REFUND_PATTERN, effectiveQuestion)) {
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.REFUND, REFUND_TOOLS);
+            // 退票解析器在服务端内部读取本人订单和可退预览，模型不直接接触列表后猜测退票范围。
+            matchedGroups.remove(BusinessGroup.ORDER_QUERY);
+            allowedToolNames.removeAll(ORDER_QUERY_TOOLS);
+            matchedGroups.remove(BusinessGroup.PAYMENT);
+            allowedToolNames.removeAll(PAYMENT_TOOLS);
+            matchedGroups.remove(BusinessGroup.TRAIN_QUERY);
+            allowedToolNames.removeAll(TRAIN_QUERY_TOOLS);
         }
 
         // 明确规则未覆盖口语化追问时，只使用最近业务事实补足工具组，不重新调用意图模型。
@@ -199,6 +205,7 @@ public class QuestionToolRoutingService {
         }
         if (orderContext
                 && !matchedGroups.contains(BusinessGroup.CANCELLATION)
+                && !matchedGroups.contains(BusinessGroup.REFUND)
                 && matches(CONTEXTUAL_ORDER_PATTERN, question)) {
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.ORDER_QUERY, ORDER_QUERY_TOOLS);
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.PAYMENT, PAYMENT_TOOLS);

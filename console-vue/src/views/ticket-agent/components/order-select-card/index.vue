@@ -1,5 +1,5 @@
 <template>
-  <Card class="order-card" size="small" title="选择要取消的订单">
+  <Card class="order-card" size="small" :title="cardTitle">
     <Alert type="warning" show-icon :message="workflow.prompt" />
     <RadioGroup v-model:value="selectedOrderSn" class="order-options">
       <Radio
@@ -20,7 +20,7 @@
       </Radio>
     </RadioGroup>
     <div class="order-actions">
-      <span>这里只生成取消草案，仍需在确认卡片中确认</span>
+      <span>{{ actionHint }}</span>
       <Button
         danger
         type="primary"
@@ -28,17 +28,17 @@
         :disabled="!selectedOrderSn"
         @click="$emit('submit', selectedOrderSn)"
       >
-        选择此订单
+        {{ buttonText }}
       </Button>
     </div>
   </Card>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Alert, Button, Card, Radio, RadioGroup } from 'ant-design-vue'
 
-defineProps({
+const props = defineProps({
   workflow: {
     type: Object,
     required: true
@@ -52,6 +52,20 @@ defineProps({
 defineEmits(['submit'])
 
 const selectedOrderSn = ref(null)
+const isRefund = computed(
+  () => props.workflow.stage === 'SELECTING_REFUND_ORDER'
+)
+const cardTitle = computed(() =>
+  isRefund.value ? '选择要退票的订单' : '选择要取消的订单'
+)
+const actionHint = computed(() =>
+  isRefund.value
+    ? '选择后继续确认具体退票乘车人，最终仍需在确认卡片中确认'
+    : '这里只生成取消草案，仍需在确认卡片中确认'
+)
+const buttonText = computed(() =>
+  isRefund.value ? '选择并继续' : '选择此订单'
+)
 </script>
 
 <style lang="scss" scoped>

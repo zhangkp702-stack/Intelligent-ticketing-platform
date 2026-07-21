@@ -26,6 +26,13 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflo
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionView;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundOrderSelectionRequest;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundOrderSelectionResult;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundOrderSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundTicketSelectionRequest;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundTicketSelectionResult;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundTicketSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.RefundWorkflowService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -60,6 +67,7 @@ public class AgentChatController {
     private final PurchaseActionService purchaseActionService;
     private final PurchaseWorkflowService purchaseWorkflowService;
     private final CancellationWorkflowService cancellationWorkflowService;
+    private final RefundWorkflowService refundWorkflowService;
 
     /**
      * 创建智能体对话控制器。
@@ -69,18 +77,21 @@ public class AgentChatController {
      * @param purchaseActionService 高风险操作恢复服务
      * @param purchaseWorkflowService 购票工作流服务
      * @param cancellationWorkflowService 取消订单工作流服务
+     * @param refundWorkflowService 退票工作流服务
      */
     public AgentChatController(
             AgentChatService agentChatService,
             ConversationHistoryService conversationHistoryService,
             PurchaseActionService purchaseActionService,
             PurchaseWorkflowService purchaseWorkflowService,
-            CancellationWorkflowService cancellationWorkflowService) {
+            CancellationWorkflowService cancellationWorkflowService,
+            RefundWorkflowService refundWorkflowService) {
         this.agentChatService = agentChatService;
         this.conversationHistoryService = conversationHistoryService;
         this.purchaseActionService = purchaseActionService;
         this.purchaseWorkflowService = purchaseWorkflowService;
         this.cancellationWorkflowService = cancellationWorkflowService;
+        this.refundWorkflowService = refundWorkflowService;
     }
 
     /**
@@ -169,6 +180,7 @@ public class AgentChatController {
                 .map(WorkflowInteractionView.class::cast)
                 .or(() -> cancellationWorkflowService.findPendingSelection(userId, conversationId)
                         .map(WorkflowInteractionView.class::cast))
+                .or(() -> refundWorkflowService.findPendingSelection(userId, conversationId))
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }
@@ -241,6 +253,92 @@ public class AgentChatController {
                     org.springframework.http.HttpStatus.FORBIDDEN,
                     "INVALID_ORDER_SELECTION",
                     "订单选择无效");
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKFLOW_STATE_CHANGED",
+                    exception.getMessage());
+        }
+    }
+
+    /**
+     * 提交退票工作流中的订单选择结果。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @param workflowId 工作流标识
+     * @param request 用户选择的可退订单号
+     * @return 已校验订单和下一阶段
+     */
+    @PostMapping("/conversations/{conversationId}/workflows/{workflowId}/refund-order")
+    public RefundOrderSelectionResult selectRefundOrder(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId,
+            @PathVariable String workflowId,
+            @RequestBody RefundOrderSelectionRequest request) {
+        // 先从当前会话恢复退票订单表单，禁止跨会话提交工作流选择。
+        WorkflowInteractionView pending = refundWorkflowService.findPendingSelection(userId, conversationId)
+                .filter(view -> view.workflowId().equals(workflowId))
+                .orElseThrow(() -> new AgentChatException(
+                        org.springframework.http.HttpStatus.CONFLICT,
+                        "WORKFLOW_NOT_SELECTABLE",
+                        "当前会话没有可提交的退票订单选择"));
+        if (!(pending instanceof RefundOrderSelectionView)) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKFLOW_STATE_CHANGED",
+                    "当前退票工作流不处于订单选择阶段");
+        }
+        try {
+            return refundWorkflowService.selectOrder(userId, workflowId, request);
+        } catch (SecurityException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.FORBIDDEN,
+                    "INVALID_REFUND_ORDER_SELECTION",
+                    "退票订单选择无效");
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKFLOW_STATE_CHANGED",
+                    exception.getMessage());
+        }
+    }
+
+    /**
+     * 提交退票工作流中的车票勾选结果。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @param workflowId 工作流标识
+     * @param request 用户勾选的可退车票标识
+     * @return 已校验退票范围、类型和下一阶段
+     */
+    @PostMapping("/conversations/{conversationId}/workflows/{workflowId}/refund-tickets")
+    public RefundTicketSelectionResult selectRefundTickets(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId,
+            @PathVariable String workflowId,
+            @RequestBody RefundTicketSelectionRequest request) {
+        // 车票候选项必须来自当前会话已保存的退票预览结果。
+        WorkflowInteractionView pending = refundWorkflowService.findPendingSelection(userId, conversationId)
+                .filter(view -> view.workflowId().equals(workflowId))
+                .orElseThrow(() -> new AgentChatException(
+                        org.springframework.http.HttpStatus.CONFLICT,
+                        "WORKFLOW_NOT_SELECTABLE",
+                        "当前会话没有可提交的退票车票选择"));
+        if (!(pending instanceof RefundTicketSelectionView)) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKFLOW_STATE_CHANGED",
+                    "当前退票工作流不处于车票选择阶段");
+        }
+        try {
+            return refundWorkflowService.selectTickets(userId, workflowId, request);
+        } catch (SecurityException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.FORBIDDEN,
+                    "INVALID_REFUND_TICKET_SELECTION",
+                    "退票车票选择无效");
         } catch (IllegalArgumentException | IllegalStateException exception) {
             throw new AgentChatException(
                     org.springframework.http.HttpStatus.CONFLICT,

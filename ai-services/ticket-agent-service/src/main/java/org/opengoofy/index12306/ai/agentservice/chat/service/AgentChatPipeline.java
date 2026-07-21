@@ -31,6 +31,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteraction
 import org.opengoofy.index12306.ai.agentservice.workflow.service.WorkflowInteractionTracker;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.RefundWorkflowService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -78,6 +79,7 @@ public class AgentChatPipeline {
             "query_train_stops",
             "resolve_purchase_passengers",
             "resolve_order_cancellation",
+            "resolve_ticket_refund",
             "list_my_orders",
             "get_my_order_detail",
             "preview_order_cancellation",
@@ -113,6 +115,14 @@ public class AgentChatPipeline {
             返回 SELECTION_REQUIRED 时必须停止创建草案并等待用户在结构化订单列表中选择。
             如果服务端工作流提示 stage=CREATING_DRAFT，说明用户已经选定订单，此时直接使用 context.selectedOrderSn 创建草案，不得再次解析订单。
             """;
+    private static final String REFUND_RESOLUTION_TOOL = "resolve_ticket_refund";
+    private static final String REFUND_RESOLUTION_PROMPT = """
+            处理退票时必须先调用 resolve_ticket_refund，由服务端查询本人可退订单和实时可退车票。
+            用户提供乘车人姓名时传入 passengerNames，由服务端精确匹配；未提供姓名时传空列表并等待车票选择表单。
+            返回 ORDER_SELECTION_REQUIRED 或 TICKET_SELECTION_REQUIRED 时必须停止创建草案并等待用户选择。
+            只有返回 RESOLVED 或工作流提示 stage=CREATING_DRAFT 时，才能使用服务端 context 中的 selectedOrderSn、refundType 和 selectedOrderItemIds 调用 prepare_ticket_refund。
+            不得自行查询订单列表后猜测订单号、乘车人或子订单 ID，也不得更换服务端已经确认的退票范围。
+            """;
     private static final String SYSTEM_PROMPT = """
             你是 12306 购票智能体助手。
             回答车票余量、车次经停、乘车人或本人订单时，必须优先调用已提供的只读工具获取实时数据，不得编造。
@@ -133,6 +143,7 @@ public class AgentChatPipeline {
     private final ActionDraftCreationTracker actionDraftCreationTracker;
     private final PurchaseWorkflowService purchaseWorkflowService;
     private final CancellationWorkflowService cancellationWorkflowService;
+    private final RefundWorkflowService refundWorkflowService;
     private final WorkflowInteractionTracker workflowSelectionTracker;
     private final McpToolContextFactory mcpToolContextFactory;
     private final ObjectProvider<ToolCallbackProvider> toolCallbackProviders;
@@ -252,6 +263,7 @@ public class AgentChatPipeline {
      * @param actionDraftCreationTracker 本轮草案创建信号
      * @param purchaseWorkflowService 购票工作流阶段服务
      * @param cancellationWorkflowService 取消订单工作流阶段服务
+     * @param refundWorkflowService 退票工作流阶段服务
      * @param workflowSelectionTracker 本轮工作流选择事件跟踪器
      * @param mcpToolContextFactory MCP 显式上下文工厂
      * @param toolCallbackProviders 已启用的安全工具提供器
@@ -268,6 +280,7 @@ public class AgentChatPipeline {
             ActionDraftCreationTracker actionDraftCreationTracker,
             PurchaseWorkflowService purchaseWorkflowService,
             CancellationWorkflowService cancellationWorkflowService,
+            RefundWorkflowService refundWorkflowService,
             WorkflowInteractionTracker workflowSelectionTracker,
             McpToolContextFactory mcpToolContextFactory,
             ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
@@ -282,6 +295,7 @@ public class AgentChatPipeline {
         this.actionDraftCreationTracker = actionDraftCreationTracker;
         this.purchaseWorkflowService = purchaseWorkflowService;
         this.cancellationWorkflowService = cancellationWorkflowService;
+        this.refundWorkflowService = refundWorkflowService;
         this.workflowSelectionTracker = workflowSelectionTracker;
         this.mcpToolContextFactory = mcpToolContextFactory;
         this.toolCallbackProviders = toolCallbackProviders;
@@ -381,6 +395,8 @@ public class AgentChatPipeline {
                     .activeWorkflowPrompt(context.userId(), context.conversationId())
                     .or(() -> cancellationWorkflowService.activeWorkflowPrompt(
                             context.userId(), context.conversationId()))
+                    .or(() -> refundWorkflowService.activeWorkflowPrompt(
+                            context.userId(), context.conversationId()))
                     .orElse("");
 
             // 将系统规则、会话上下文和本轮安全工具组装为模型提示。
@@ -453,6 +469,8 @@ public class AgentChatPipeline {
                     .map(WorkflowInteractionView.class::cast)
                     .or(() -> cancellationWorkflowService.findPendingSelection(
                             context.userId(), context.conversationId()).map(WorkflowInteractionView.class::cast))
+                    .or(() -> refundWorkflowService.findPendingSelection(
+                            context.userId(), context.conversationId()))
                     .ifPresent(workflow -> events.add(ChatEvent.workflowRequired(context, workflow)));
             events.add(ChatEvent.done(context, state.assistantContent(), true));
             return Flux.fromIterable(events);
@@ -636,9 +654,14 @@ public class AgentChatPipeline {
             return "取消订单草案已生成，请核对下方订单信息，并点击“确认取消”按钮。"
                     + "当前订单尚未取消。";
         }
+        if (action != null && AgentActionType.TICKET_REFUND.name().equals(action.actionType())) {
+            // 退票草案存在时固定说明尚未退款，聊天文字不能替代独立确认按钮。
+            return "退票草案已生成，请核对下方订单、乘车人和预计退款金额，并点击“确认退票”按钮。"
+                    + "当前车票尚未退票。";
+        }
         if (workflow != null) {
             // 工作流处于等待选择阶段时由服务端固定提示，模型不能用文本绕过表单继续创建草案。
-            return workflow.prompt() + "。选择结果会直接写入购票流程，无需输入证件号码。";
+            return workflow.prompt() + "。选择结果会直接写入当前业务流程，无需在对话中提供敏感信息。";
         }
         if (!StringUtils.hasText(modelContent)) {
             // 没有数据库草案兜底时，空模型正文仍按原有协议作为失败处理。
@@ -675,8 +698,11 @@ public class AgentChatPipeline {
                 ? PASSENGER_RESOLUTION_PROMPT : "";
         String cancellationResolutionPrompt = callbackNames.contains(CANCELLATION_RESOLUTION_TOOL)
                 ? CANCELLATION_RESOLUTION_PROMPT : "";
+        String refundResolutionPrompt = callbackNames.contains(REFUND_RESOLUTION_TOOL)
+                ? REFUND_RESOLUTION_PROMPT : "";
         messages.add(new SystemMessage(SYSTEM_PROMPT + "\n" + actionPrompt + "\n"
                 + passengerResolutionPrompt + "\n" + cancellationResolutionPrompt + "\n"
+                + refundResolutionPrompt + "\n"
                 + workflowPrompt + "\n当前日期："
                 + LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")))));
 

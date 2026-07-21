@@ -8,6 +8,7 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.TicketOperationAction
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.RefundWorkflowService;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -25,6 +26,7 @@ public class TicketOperationDraftTools {
     private final TicketOperationActionService actionService;
     private final ActionDraftCreationTracker actionDraftCreationTracker;
     private final CancellationWorkflowService cancellationWorkflowService;
+    private final RefundWorkflowService refundWorkflowService;
 
     /**
      * 创建订单操作草案工具。
@@ -32,14 +34,17 @@ public class TicketOperationDraftTools {
      * @param actionService 取消和退票草案服务
      * @param actionDraftCreationTracker 本轮草案创建信号
      * @param cancellationWorkflowService 取消订单工作流服务
+     * @param refundWorkflowService 退票工作流服务
      */
     public TicketOperationDraftTools(
             TicketOperationActionService actionService,
             ActionDraftCreationTracker actionDraftCreationTracker,
-            CancellationWorkflowService cancellationWorkflowService) {
+            CancellationWorkflowService cancellationWorkflowService,
+            RefundWorkflowService refundWorkflowService) {
         this.actionService = actionService;
         this.actionDraftCreationTracker = actionDraftCreationTracker;
         this.cancellationWorkflowService = cancellationWorkflowService;
+        this.refundWorkflowService = refundWorkflowService;
     }
 
     /**
@@ -88,10 +93,15 @@ public class TicketOperationDraftTools {
             ToolContext toolContext) {
         // 退款范围和金额由服务端预览重新计算，模型不能直接写入草案金额。
         AgentRequestContext context = requestContext(toolContext);
+        // 退票草案只能使用服务端按姓名匹配或用户勾选后持久化的订单和车票范围。
+        refundWorkflowService.validateDraft(
+                context.userId(), context.conversationId(), orderSn, type, orderItemIds);
         TicketOperationDraftResult result = actionService.prepareRefund(
                 context, orderSn, type, orderItemIds);
         // 只有真实保存的退票草案才允许对话层继续读取数据库确认视图。
         actionDraftCreationTracker.markCreated(context.turnId());
+        // 草案保存成功后结束退票工作流，真实退款仍等待独立确认。
+        refundWorkflowService.completeAfterDraft(context.userId(), context.conversationId());
         return result;
     }
 
