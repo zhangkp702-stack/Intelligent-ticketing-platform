@@ -4,9 +4,9 @@ import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.BusinessGroup;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoute;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoutingDecision;
-import org.opengoofy.index12306.ai.agentservice.memory.context.AgentChatMessage;
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationTurnContext;
 
 import java.util.List;
 

@@ -1,7 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.chat.routing;
 
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationTurnContext;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 

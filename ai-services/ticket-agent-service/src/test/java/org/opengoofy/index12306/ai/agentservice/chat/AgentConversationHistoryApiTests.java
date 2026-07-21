@@ -1,12 +1,12 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.PurchasePassenger;
-import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.PurchasePayload;
-import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionService;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.PurchasePassenger;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.PurchasePayload;
+import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.ConversationEntity;
-import org.opengoofy.index12306.ai.agentservice.memory.service.ConversationMemoryService;
+import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
+import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;

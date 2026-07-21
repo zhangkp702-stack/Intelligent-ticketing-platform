@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.action.config;
 
+
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.util.Assert;

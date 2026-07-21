@@ -1,11 +1,13 @@
 package org.opengoofy.index12306.ai.agentservice.action;
 
+import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.junit.jupiter.api.Test;
+import org.opengoofy.index12306.ai.agentservice.action.controller.AgentActionController;
 import org.mockito.ArgumentCaptor;
-import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ActionStatusView;
-import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ConfirmPurchaseCommand;
-import org.opengoofy.index12306.ai.agentservice.action.PurchaseActionModels.ConfirmPurchaseRequest;
-import org.opengoofy.index12306.ai.agentservice.action.domain.AgentActionStatus;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ActionStatusView;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ConfirmPurchaseCommand;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ConfirmPurchaseRequest;
+import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

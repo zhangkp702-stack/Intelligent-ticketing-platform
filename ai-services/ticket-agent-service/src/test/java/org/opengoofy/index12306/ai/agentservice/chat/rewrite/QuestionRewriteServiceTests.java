@@ -4,12 +4,12 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.RewriteModelOutput;
-import org.opengoofy.index12306.ai.agentservice.memory.context.AgentChatMessage;
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
-import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
-import org.opengoofy.index12306.ai.agentservice.model.routing.ModelCallResult;
-import org.opengoofy.index12306.ai.agentservice.model.structured.StructuredModelInvoker;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationTurnContext;
+import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelAttemptContext;
+import org.opengoofy.index12306.ai.agentservice.infra.model.routing.ModelCallResult;
+import org.opengoofy.index12306.ai.agentservice.infra.model.structured.StructuredModelInvoker;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 

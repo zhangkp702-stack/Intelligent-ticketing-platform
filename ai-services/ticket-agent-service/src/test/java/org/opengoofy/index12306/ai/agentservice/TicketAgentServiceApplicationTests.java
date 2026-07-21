@@ -1,9 +1,9 @@
 package org.opengoofy.index12306.ai.agentservice;
 
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.ai.agentservice.model.client.ModelClientRegistry;
-import org.opengoofy.index12306.ai.agentservice.model.config.AgentModelProperties;
-import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
+import org.opengoofy.index12306.ai.agentservice.infra.chat.ModelClientRegistry;
+import org.opengoofy.index12306.ai.agentservice.infra.config.AgentModelProperties;
+import org.opengoofy.index12306.ai.agentservice.infra.enums.ModelRole;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.beans.factory.annotation.Autowired;

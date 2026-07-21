@@ -1,12 +1,12 @@
 package org.opengoofy.index12306.ai.agentservice.chat.rewrite;
 
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationHistoryContext;
-import org.opengoofy.index12306.ai.agentservice.memory.context.ConversationTurnContext;
-import org.opengoofy.index12306.ai.agentservice.model.config.ModelRole;
-import org.opengoofy.index12306.ai.agentservice.model.observability.ModelAttemptContext;
-import org.opengoofy.index12306.ai.agentservice.model.routing.ModelCallResult;
-import org.opengoofy.index12306.ai.agentservice.model.structured.InvalidModelOutputException;
-import org.opengoofy.index12306.ai.agentservice.model.structured.StructuredModelInvoker;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationTurnContext;
+import org.opengoofy.index12306.ai.agentservice.infra.enums.ModelRole;
+import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelAttemptContext;
+import org.opengoofy.index12306.ai.agentservice.infra.model.routing.ModelCallResult;
+import org.opengoofy.index12306.ai.agentservice.infra.model.structured.InvalidModelOutputException;
+import org.opengoofy.index12306.ai.agentservice.infra.model.structured.StructuredModelInvoker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;

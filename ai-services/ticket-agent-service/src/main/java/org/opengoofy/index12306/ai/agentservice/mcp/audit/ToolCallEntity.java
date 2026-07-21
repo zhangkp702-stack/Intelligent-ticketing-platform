@@ -8,7 +8,7 @@ import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import org.opengoofy.index12306.ai.agentservice.memory.domain.AgentBaseEntity;
+import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.AgentBaseEntity;
 
 import java.time.Instant;
 import java.util.Objects;
