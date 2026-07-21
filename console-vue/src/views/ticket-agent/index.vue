@@ -59,6 +59,22 @@
                 :key="chatMessage.id"
               >
                 <MessageItem :message="chatMessage" />
+                <PassengerSelectCard
+                  v-if="chatMessage.workflow?.options"
+                  :workflow="chatMessage.workflow"
+                  :submitting="
+                    state.selectingWorkflowId === chatMessage.workflow.workflowId
+                  "
+                  @submit="selectWorkflowPassengers(chatMessage, $event)"
+                />
+                <OrderSelectCard
+                  v-if="chatMessage.workflow?.orders"
+                  :workflow="chatMessage.workflow"
+                  :submitting="
+                    state.selectingWorkflowId === chatMessage.workflow.workflowId
+                  "
+                  @submit="selectWorkflowOrder(chatMessage, $event)"
+                />
                 <ActionConfirmCard
                   v-if="chatMessage.action"
                   :action="chatMessage.action"
@@ -113,8 +129,11 @@ import {
   fetchAgentConversationMessages,
   fetchAgentConversations,
   fetchAgentPendingAction,
+  fetchAgentPendingWorkflow,
   fetchConfirmAgentAction,
-  fetchCreateAgentConversation
+  fetchCreateAgentConversation,
+  submitAgentWorkflowPassengers,
+  submitAgentWorkflowOrder
 } from '@/service'
 import {
   cancelAgentChat,
@@ -125,6 +144,8 @@ import ConversationPanel from './components/conversation-panel'
 import MessageItem from './components/message-item'
 import ChatInput from './components/chat-input'
 import ActionConfirmCard from './components/action-confirm-card'
+import PassengerSelectCard from './components/passenger-select-card'
+import OrderSelectCard from './components/order-select-card'
 
 const router = useRouter()
 const messageContainer = ref(null)
@@ -159,7 +180,8 @@ const state = reactive({
   creatingConversation: false,
   streaming: false,
   confirmingActionId: null,
-  refreshingActionId: null
+  refreshingActionId: null,
+  selectingWorkflowId: null
 })
 
 const starterQuestions = [
@@ -261,6 +283,7 @@ const cancelActiveConversationWork = () => {
   state.loadingMoreHistory = false
   state.confirmingActionId = null
   state.refreshingActionId = null
+  state.selectingWorkflowId = null
   clearStatusPolls()
   if (activeRequest) {
     // 显式通知后端取消，网关没有立刻感知连接断开时也能终止模型任务。
@@ -300,6 +323,34 @@ const applyRecoveredAction = (recoveredAction) => {
   actionMessage.action = recoveredAction.action
   actionMessage.actionExecution = recoveredAction.execution
   return actionMessage
+}
+
+/**
+ * 把服务端恢复出的乘车人选择状态挂载到最近一条助手消息。
+ *
+ * @param {object | null} recoveredWorkflow 服务端返回的待处理工作流
+ * @returns {object | null} 挂载选择卡片的页面消息
+ */
+const applyRecoveredWorkflow = (recoveredWorkflow) => {
+  if (!recoveredWorkflow?.workflowId) {
+    return null
+  }
+  let workflowMessage = state.messages
+    .slice()
+    .reverse()
+    .find((item) => item.role === 'ASSISTANT')
+  if (!workflowMessage) {
+    workflowMessage = {
+      id: `recovered-workflow-${recoveredWorkflow.workflowId}`,
+      role: 'ASSISTANT',
+      content: recoveredWorkflow.prompt
+    }
+    state.messages.push(workflowMessage)
+  }
+
+  // 恢复的选择数据只保留安全展示字段，证件号不会进入聊天正文。
+  workflowMessage.workflow = recoveredWorkflow
+  return workflowMessage
 }
 
 /**
@@ -353,9 +404,10 @@ const selectConversation = async (conversationId, force = false) => {
 
   try {
     // 消息与操作恢复互不依赖，并行读取可缩短页面切换等待时间。
-    const [historyResult, actionResult] = await Promise.allSettled([
+    const [historyResult, actionResult, workflowResult] = await Promise.allSettled([
       fetchAgentConversationMessages(conversationId, { size: 50 }),
-      fetchAgentPendingAction(conversationId)
+      fetchAgentPendingAction(conversationId),
+      fetchAgentPendingWorkflow(conversationId)
     ])
     if (
       loadGeneration !== conversationLoadGeneration ||
@@ -378,6 +430,11 @@ const selectConversation = async (conversationId, force = false) => {
       }
     } else {
       message.warning('会话消息已恢复，但操作状态加载失败')
+    }
+    if (workflowResult.status === 'fulfilled') {
+      applyRecoveredWorkflow(workflowResult.value)
+    } else {
+      message.warning('会话消息已恢复，但乘车人选择状态加载失败')
     }
   } catch (error) {
     if (
@@ -646,6 +703,9 @@ const handleAgentEvent = (eventName, event, assistantMessage) => {
     assistantMessage.content += event.delta || ''
   } else if (type === 'action_required') {
     assistantMessage.action = event.action
+  } else if (type === 'workflow_required') {
+    // 服务端输出结构化选择数据，页面不再要求用户在聊天中输入证件号。
+    assistantMessage.workflow = event.workflow
   } else if (type === 'done') {
     // 性能快照只属于当前实时请求，不写入历史消息，刷新页面后不再展示。
     assistantMessage.performance = event.performance || null
@@ -657,6 +717,74 @@ const handleAgentEvent = (eventName, event, assistantMessage) => {
     assistantMessage.pending = false
   }
   scrollToBottom()
+}
+
+/**
+ * 提交用户勾选的乘车人，并继续执行当前购票工作流。
+ *
+ * @param {object} chatMessage 包含乘车人选择卡片的助手消息
+ * @param {string[]} passengerIds 用户勾选的乘车人标识
+ * @returns {Promise<void>} 提交完成后继续发起购票对话
+ */
+const selectWorkflowPassengers = async (chatMessage, passengerIds) => {
+  const workflow = chatMessage.workflow
+  if (!workflow || state.selectingWorkflowId === workflow.workflowId) {
+    return
+  }
+  state.selectingWorkflowId = workflow.workflowId
+  try {
+    const result = await submitAgentWorkflowPassengers(
+      state.conversationId,
+      workflow.workflowId,
+      passengerIds
+    )
+    const passengerNames = (result.selectedPassengers || [])
+      .map((passenger) => passenger.realName)
+      .filter(Boolean)
+      .join('、')
+
+    // 选择已经持久化到服务端，移除旧卡片后让下一轮从工作流状态继续。
+    chatMessage.workflow = null
+    message.success(passengerNames ? `已选择乘车人：${passengerNames}` : '乘车人已选择')
+    state.selectingWorkflowId = null
+    await sendMessage('继续购票，使用刚才选择的乘车人生成购票草案')
+  } catch (error) {
+    message.error(error.response?.data?.message || '提交乘车人失败')
+  } finally {
+    state.selectingWorkflowId = null
+  }
+}
+
+/**
+ * 提交用户选择的可取消订单，并继续生成取消草案。
+ *
+ * @param {object} chatMessage 包含订单选择卡片的助手消息
+ * @param {string} orderSn 用户选择的订单号
+ * @returns {Promise<void>} 提交完成后继续发起取消订单对话
+ */
+const selectWorkflowOrder = async (chatMessage, orderSn) => {
+  const workflow = chatMessage.workflow
+  if (!workflow || state.selectingWorkflowId === workflow.workflowId) {
+    return
+  }
+  state.selectingWorkflowId = workflow.workflowId
+  try {
+    const result = await submitAgentWorkflowOrder(
+      state.conversationId,
+      workflow.workflowId,
+      orderSn
+    )
+
+    // 订单选择已由服务端持久化，下一轮只能使用返回的已确认订单号创建草案。
+    chatMessage.workflow = null
+    message.success(`已选择订单：${result.selectedOrder.orderSn}`)
+    state.selectingWorkflowId = null
+    await sendMessage('继续取消订单，使用刚才选择的订单生成取消草案')
+  } catch (error) {
+    message.error(error.response?.data?.message || '提交订单选择失败')
+  } finally {
+    state.selectingWorkflowId = null
+  }
 }
 
 /**

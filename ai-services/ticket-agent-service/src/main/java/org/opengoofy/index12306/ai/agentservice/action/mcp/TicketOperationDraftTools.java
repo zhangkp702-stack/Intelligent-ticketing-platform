@@ -7,6 +7,7 @@ import org.opengoofy.index12306.ai.agentservice.action.service.TicketOperationAc
 import org.opengoofy.index12306.ai.agentservice.action.dto.TicketOperationActionModels.TicketOperationDraftResult;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -23,18 +24,22 @@ public class TicketOperationDraftTools {
 
     private final TicketOperationActionService actionService;
     private final ActionDraftCreationTracker actionDraftCreationTracker;
+    private final CancellationWorkflowService cancellationWorkflowService;
 
     /**
      * 创建订单操作草案工具。
      *
      * @param actionService 取消和退票草案服务
      * @param actionDraftCreationTracker 本轮草案创建信号
+     * @param cancellationWorkflowService 取消订单工作流服务
      */
     public TicketOperationDraftTools(
             TicketOperationActionService actionService,
-            ActionDraftCreationTracker actionDraftCreationTracker) {
+            ActionDraftCreationTracker actionDraftCreationTracker,
+            CancellationWorkflowService cancellationWorkflowService) {
         this.actionService = actionService;
         this.actionDraftCreationTracker = actionDraftCreationTracker;
+        this.cancellationWorkflowService = cancellationWorkflowService;
     }
 
     /**
@@ -52,9 +57,14 @@ public class TicketOperationDraftTools {
             ToolContext toolContext) {
         // 本地工具只创建可信状态快照，真实取消必须由独立确认接口继续执行。
         AgentRequestContext context = requestContext(toolContext);
+        // 取消草案只能使用服务端唯一匹配或用户勾选的本人订单。
+        cancellationWorkflowService.validateDraft(
+                context.userId(), context.conversationId(), orderSn);
         TicketOperationDraftResult result = actionService.prepareCancellation(context, orderSn);
         // 预览和草案持久化都成功后再标记本轮，失败请求不会产生确认事件。
         actionDraftCreationTracker.markCreated(context.turnId());
+        // 草案持久化成功后再结束取消订单工作流，真实取消仍等待独立确认。
+        cancellationWorkflowService.completeAfterDraft(context.userId(), context.conversationId());
         return result;
     }
 

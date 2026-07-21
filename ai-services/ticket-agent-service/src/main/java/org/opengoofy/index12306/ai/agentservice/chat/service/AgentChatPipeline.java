@@ -27,6 +27,10 @@ import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelA
 import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelHttpCallRound;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.exception.ModelRoutingException;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.RoutedChatModelService;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.WorkflowInteractionTracker;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -72,7 +76,8 @@ public class AgentChatPipeline {
             "resolve_station",
             "query_tickets",
             "query_train_stops",
-            "list_my_passengers",
+            "resolve_purchase_passengers",
+            "resolve_order_cancellation",
             "list_my_orders",
             "get_my_order_detail",
             "preview_order_cancellation",
@@ -87,17 +92,26 @@ public class AgentChatPipeline {
             用户输入“确认”“可以”“没有问题”等文字只表示继续交流，绝不代表授权下单，也不能据此声称订单已提交。
             当用户明确要求取消未支付订单且已经确定本人订单号时，必须调用 prepare_order_cancellation 生成取消草案。
             当用户明确要求退票且已经确定本人订单号、全部或部分退票范围时，必须调用 prepare_ticket_refund 生成退票草案。
-            取消或退票前应先查询本人订单详情；部分退票必须使用详情返回的子订单 ID，不得根据姓名猜测。
+            取消订单必须先使用服务端取消解析工具定位目标；退票前应先查询本人订单详情。部分退票必须使用详情返回的子订单 ID，不得根据姓名猜测。
             不得声称已经购票，不得要求或复述确认令牌，不得尝试调用任何真实购票、退票、取消或支付工具。
             参数不完整时先提问；不得猜测乘车人、席别、车次、站点、订单号或退票范围。
             """;
     private static final String PURCHASE_DRAFT_TOOL = "prepare_ticket_purchase";
-    private static final String PASSENGER_LOOKUP_TOOL = "list_my_passengers";
+    private static final String PASSENGER_LOOKUP_TOOL = "resolve_purchase_passengers";
     private static final String PASSENGER_RESOLUTION_PROMPT = """
             处理购票乘车人时，绝不能要求用户在对话中提供或确认身份证号、护照号、手机号等敏感信息。
-            当用户提供乘车人姓名时，必须先调用 list_my_passengers 查询当前登录用户的常用乘车人；仅可使用该工具返回的 passengerId 传给 prepare_ticket_purchase。
-            姓名精确匹配且只有一条记录时，直接使用该 passengerId 继续生成购票草稿，无需再次询问证件号。
-            姓名没有匹配记录时，提示用户先在常用信息管理中添加乘车人；同名匹配到多条记录时，不得猜测或按证件号追问，应列出每条记录的姓名和已脱敏证件信息，请用户选择对应乘车人。
+            新购票工作流必须调用 resolve_purchase_passengers，由服务端查询当前账号乘车人并按姓名精确匹配。
+            如果用户没有提供姓名，passengerNames 传空列表；工具会返回结构化选择表单，不得自行编造乘车人。
+            只有工具返回 RESOLVED 时才能使用其中的 passengerId 调用 prepare_ticket_purchase；返回 SELECTION_REQUIRED 时必须停止创建草案并等待用户勾选。
+            如果服务端工作流提示 stage=CREATING_DRAFT，说明用户已经通过表单选定乘车人，此时必须直接使用 context.selectedPassengerIds 创建草案，不得再次调用 resolve_purchase_passengers。
+            """;
+    private static final String CANCELLATION_RESOLUTION_TOOL = "resolve_order_cancellation";
+    private static final String CANCELLATION_RESOLUTION_PROMPT = """
+            处理取消订单时，必须先调用 resolve_order_cancellation，由服务端查询当前账号订单并定位可取消目标。
+            用户没有提供订单号时，可以把明确给出的车次和乘车日期传给工具；不得自行猜测订单号。
+            只有工具返回 RESOLVED 时才能使用 selectedOrder.orderSn 调用 prepare_order_cancellation。
+            返回 SELECTION_REQUIRED 时必须停止创建草案并等待用户在结构化订单列表中选择。
+            如果服务端工作流提示 stage=CREATING_DRAFT，说明用户已经选定订单，此时直接使用 context.selectedOrderSn 创建草案，不得再次解析订单。
             """;
     private static final String SYSTEM_PROMPT = """
             你是 12306 购票智能体助手。
@@ -117,6 +131,9 @@ public class AgentChatPipeline {
     private final RoutedChatModelService routedChatModelService;
     private final PurchaseActionService purchaseActionService;
     private final ActionDraftCreationTracker actionDraftCreationTracker;
+    private final PurchaseWorkflowService purchaseWorkflowService;
+    private final CancellationWorkflowService cancellationWorkflowService;
+    private final WorkflowInteractionTracker workflowSelectionTracker;
     private final McpToolContextFactory mcpToolContextFactory;
     private final ObjectProvider<ToolCallbackProvider> toolCallbackProviders;
     private final Clock clock;
@@ -125,7 +142,10 @@ public class AgentChatPipeline {
      * @param content 经服务端业务状态校正后的最终正文
      * @param action 本轮数据库中的待确认操作
      */
-    private record CompletedAnswer(String content, ActionConfirmationView action) {
+    private record CompletedAnswer(
+            String content,
+            ActionConfirmationView action,
+            WorkflowInteractionView workflow) {
     }
 
     /**
@@ -230,6 +250,9 @@ public class AgentChatPipeline {
      * @param routedChatModelService 多模型回答路由服务
      * @param purchaseActionService 购票草案确认服务
      * @param actionDraftCreationTracker 本轮草案创建信号
+     * @param purchaseWorkflowService 购票工作流阶段服务
+     * @param cancellationWorkflowService 取消订单工作流阶段服务
+     * @param workflowSelectionTracker 本轮工作流选择事件跟踪器
      * @param mcpToolContextFactory MCP 显式上下文工厂
      * @param toolCallbackProviders 已启用的安全工具提供器
      * @param clock 统一时钟
@@ -243,6 +266,9 @@ public class AgentChatPipeline {
             RoutedChatModelService routedChatModelService,
             PurchaseActionService purchaseActionService,
             ActionDraftCreationTracker actionDraftCreationTracker,
+            PurchaseWorkflowService purchaseWorkflowService,
+            CancellationWorkflowService cancellationWorkflowService,
+            WorkflowInteractionTracker workflowSelectionTracker,
             McpToolContextFactory mcpToolContextFactory,
             ObjectProvider<ToolCallbackProvider> toolCallbackProviders,
             Clock clock) {
@@ -254,6 +280,9 @@ public class AgentChatPipeline {
         this.routedChatModelService = routedChatModelService;
         this.purchaseActionService = purchaseActionService;
         this.actionDraftCreationTracker = actionDraftCreationTracker;
+        this.purchaseWorkflowService = purchaseWorkflowService;
+        this.cancellationWorkflowService = cancellationWorkflowService;
+        this.workflowSelectionTracker = workflowSelectionTracker;
         this.mcpToolContextFactory = mcpToolContextFactory;
         this.toolCallbackProviders = toolCallbackProviders;
         this.clock = clock;
@@ -348,10 +377,15 @@ public class AgentChatPipeline {
                     routingDurationMs);
             ensureRequiredToolsAvailable(context, routingDecision, resolvedTools);
             List<ToolCallback> callbacks = resolvedTools.callbacks();
+            String workflowPrompt = purchaseWorkflowService
+                    .activeWorkflowPrompt(context.userId(), context.conversationId())
+                    .or(() -> cancellationWorkflowService.activeWorkflowPrompt(
+                            context.userId(), context.conversationId()))
+                    .orElse("");
 
             // 将系统规则、会话上下文和本轮安全工具组装为模型提示。
             Prompt prompt = buildPrompt(
-                    context, conversationHistory, rewriteResult.effectiveQuestion(), callbacks);
+                    context, conversationHistory, rewriteResult.effectiveQuestion(), callbacks, workflowPrompt);
             StringBuilder answer = new StringBuilder();
 
             // 调用回答模型并把每个文本增量转换成前端事件。
@@ -415,6 +449,11 @@ public class AgentChatPipeline {
             events.add(ChatEvent.delta(context, state.assistantContent()));
             purchaseActionService.confirmationForTurn(context.userId(), context.turnId())
                     .ifPresent(action -> events.add(ChatEvent.actionRequired(context, action)));
+            purchaseWorkflowService.findPendingSelection(context.userId(), context.conversationId())
+                    .map(WorkflowInteractionView.class::cast)
+                    .or(() -> cancellationWorkflowService.findPendingSelection(
+                            context.userId(), context.conversationId()).map(WorkflowInteractionView.class::cast))
+                    .ifPresent(workflow -> events.add(ChatEvent.workflowRequired(context, workflow)));
             events.add(ChatEvent.done(context, state.assistantContent(), true));
             return Flux.fromIterable(events);
         }
@@ -527,25 +566,32 @@ public class AgentChatPipeline {
                 ActionConfirmationView action = actionDraftCreationTracker.consumeCreated(context.turnId())
                         ? purchaseActionService.confirmationForTurn(context.userId(), context.turnId()).orElse(null)
                         : null;
-                String content = authoritativeContent(answer.toString(), action);
+                WorkflowInteractionView workflow = workflowSelectionTracker.consume(context.turnId());
+                String content = authoritativeContent(answer.toString(), action, workflow);
                 conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
                         context.userId(), context.turnId(), content, estimateTokens(content)));
                 terminal.set(true);
                 performanceTrace.completionDurationMs =
                         RequestPerformanceTrace.elapsedMillis(completionStartedNanos);
                 chatMetrics.recordCompletion(completionStartedNanos, "SUCCESS");
-                return new CompletedAnswer(content, action);
+                return new CompletedAnswer(content, action, workflow);
             } catch (RuntimeException exception) {
                 // 完成阶段失败单独标记，避免被误判为模型生成异常。
                 chatMetrics.recordCompletion(completionStartedNanos, "ERROR");
                 throw exception;
             }
-        }).flatMapMany(completed -> completed.action() == null
-                ? Flux.just(ChatEvent.done(
-                        context, completed.content(), false, performanceTrace.snapshot()))
-                : Flux.just(
-                        ChatEvent.actionRequired(context, completed.action()),
-                        ChatEvent.done(context, completed.content(), false, performanceTrace.snapshot())));
+        }).flatMapMany(completed -> {
+            List<ChatEvent> events = new ArrayList<>();
+            if (completed.workflow() != null) {
+                events.add(ChatEvent.workflowRequired(context, completed.workflow()));
+            }
+            if (completed.action() != null) {
+                events.add(ChatEvent.actionRequired(context, completed.action()));
+            }
+            events.add(ChatEvent.done(
+                    context, completed.content(), false, performanceTrace.snapshot()));
+            return Flux.fromIterable(events);
+        });
     }
 
     /**
@@ -573,13 +619,26 @@ public class AgentChatPipeline {
      *
      * @param modelContent 模型生成的原始正文
      * @param action 本轮从数据库读取的待确认操作
+     * @param workflow 本轮需要用户补充的工作流选择
      * @return 可持久化并返回前端的最终正文
      */
-    private String authoritativeContent(String modelContent, ActionConfirmationView action) {
+    private String authoritativeContent(
+            String modelContent,
+            ActionConfirmationView action,
+            WorkflowInteractionView workflow) {
         if (action != null && AgentActionType.TICKET_PURCHASE.name().equals(action.actionType())) {
             // 购票草案存在时由服务端固定说明业务状态，确认按钮之外的文字不能授权下单。
             return "购票草案已生成，请核对下方车次、日期、乘车人和席别，并点击“确认下单”按钮。"
                     + "当前尚未创建订单。";
+        }
+        if (action != null && AgentActionType.TICKET_CANCEL.name().equals(action.actionType())) {
+            // 取消草案存在时固定说明尚未执行，聊天文字不能替代独立确认按钮。
+            return "取消订单草案已生成，请核对下方订单信息，并点击“确认取消”按钮。"
+                    + "当前订单尚未取消。";
+        }
+        if (workflow != null) {
+            // 工作流处于等待选择阶段时由服务端固定提示，模型不能用文本绕过表单继续创建草案。
+            return workflow.prompt() + "。选择结果会直接写入购票流程，无需输入证件号码。";
         }
         if (!StringUtils.hasText(modelContent)) {
             // 没有数据库草案兜底时，空模型正文仍按原有协议作为失败处理。
@@ -596,13 +655,15 @@ public class AgentChatPipeline {
      * @param conversationHistory 当前会话历史上下文
      * @param effectiveQuestion 回答模型实际使用的问题
      * @param callbacks 本次可用工具回调
+     * @param workflowPrompt 服务端活动工作流提示
      * @return 可直接交给回答模型的提示
      */
     private Prompt buildPrompt(
             AgentRequestContext context,
             ConversationHistoryContext conversationHistory,
             String effectiveQuestion,
-            List<ToolCallback> callbacks) {
+            List<ToolCallback> callbacks,
+            String workflowPrompt) {
         List<Message> messages = new ArrayList<>();
         // 仅在本轮已开放购票草案工具时告知模型其名称，避免查询路径的模型调用未授权工具。
         Set<String> callbackNames = callbacks.stream()
@@ -612,8 +673,11 @@ public class AgentChatPipeline {
                 ? PURCHASE_ACTION_PROMPT : "";
         String passengerResolutionPrompt = callbackNames.contains(PASSENGER_LOOKUP_TOOL)
                 ? PASSENGER_RESOLUTION_PROMPT : "";
+        String cancellationResolutionPrompt = callbackNames.contains(CANCELLATION_RESOLUTION_TOOL)
+                ? CANCELLATION_RESOLUTION_PROMPT : "";
         messages.add(new SystemMessage(SYSTEM_PROMPT + "\n" + actionPrompt + "\n"
-                + passengerResolutionPrompt + "\n当前日期："
+                + passengerResolutionPrompt + "\n" + cancellationResolutionPrompt + "\n"
+                + workflowPrompt + "\n当前日期："
                 + LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai")))));
 
         // 摘要和结构化状态是服务端记忆，不与用户原始问题混为同一消息。
@@ -735,6 +799,7 @@ public class AgentChatPipeline {
     private void failTurn(AgentRequestContext context, AtomicBoolean terminal, Throwable exception) {
         // 异常结束不再生成确认事件，及时消费可能已经创建的本轮信号。
         actionDraftCreationTracker.consumeCreated(context.turnId());
+        workflowSelectionTracker.consume(context.turnId());
         if (!terminal.compareAndSet(false, true)) {
             return;
         }
@@ -754,6 +819,7 @@ public class AgentChatPipeline {
     private void cancelTurn(AgentRequestContext context, AtomicBoolean terminal) {
         // 用户取消后清理本轮信号，避免后续请求误判为需要读取动作表。
         actionDraftCreationTracker.consumeCreated(context.turnId());
+        workflowSelectionTracker.consume(context.turnId());
         if (terminal.compareAndSet(false, true)) {
             // 显式取消避免轮次永久停留在运行状态。
             conversationMemoryService.cancelTurn(context.userId(), context.turnId());

@@ -13,6 +13,7 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.exception.ModelRoutingException;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -195,9 +196,15 @@ public class AgentChatService {
                     .map(ChatEvent::action)
                     .findFirst()
                     .orElse(null);
+            // 非流式接口与 SSE 使用相同工作流协议，返回本轮可选的乘车人表单。
+            WorkflowInteractionView workflow = events.stream()
+                    .filter(event -> event.type() == AgentChatModels.EventType.WORKFLOW_REQUIRED)
+                    .map(ChatEvent::workflow)
+                    .findFirst()
+                    .orElse(null);
             return new ChatResult(
                     done.requestId(), done.conversationId(), done.turnId(),
-                    done.content(), done.reused(), action);
+                    done.content(), done.reused(), action, workflow);
         });
     }
 

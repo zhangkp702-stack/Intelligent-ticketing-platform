@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.chat.routing;
 
+import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationTurnContext;
 import org.springframework.stereotype.Service;
@@ -26,10 +27,9 @@ public class QuestionToolRoutingService {
     private static final Set<String> PAYMENT_TOOLS = Set.of(
             "query_pay_status");
     private static final Set<String> PURCHASE_TOOLS = Set.of(
-            "resolve_station", "query_tickets", "list_my_passengers", "prepare_ticket_purchase");
+            "resolve_station", "query_tickets", "resolve_purchase_passengers", "prepare_ticket_purchase");
     private static final Set<String> CANCELLATION_TOOLS = Set.of(
-            "list_my_orders", "get_my_order_detail",
-            "preview_order_cancellation", "prepare_order_cancellation");
+            "resolve_order_cancellation", "prepare_order_cancellation");
     private static final Set<String> REFUND_TOOLS = Set.of(
             "list_my_orders", "get_my_order_detail",
             "preview_ticket_refund", "prepare_ticket_refund");
@@ -48,7 +48,7 @@ public class QuestionToolRoutingService {
     private static final Pattern PURCHASE_PATTERN = Pattern.compile(
             "购票|买票|订票|预订|下单|购买.{0,30}(?:票|车次)");
     private static final Pattern CANCELLATION_PATTERN = Pattern.compile(
-            "取消(?:订单|购票)|撤销订单");
+            "取消.{0,20}(?:订单|购票)|撤销订单");
     private static final Pattern REFUND_PATTERN = Pattern.compile(
             "退票|退款|退掉|退订");
     private static final Pattern TRAIN_CODE_PATTERN = Pattern.compile(
@@ -115,6 +115,13 @@ public class QuestionToolRoutingService {
         }
         if (matches(CANCELLATION_PATTERN, effectiveQuestion)) {
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.CANCELLATION, CANCELLATION_TOOLS);
+            // 取消链路由服务端包装器内部查询本人订单，回答模型不再直接获得订单列表后猜测目标。
+            matchedGroups.remove(BusinessGroup.ORDER_QUERY);
+            allowedToolNames.removeAll(ORDER_QUERY_TOOLS);
+            matchedGroups.remove(BusinessGroup.PAYMENT);
+            allowedToolNames.removeAll(PAYMENT_TOOLS);
+            matchedGroups.remove(BusinessGroup.TRAIN_QUERY);
+            allowedToolNames.removeAll(TRAIN_QUERY_TOOLS);
         }
         if (matches(REFUND_PATTERN, effectiveQuestion)) {
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.REFUND, REFUND_TOOLS);
@@ -125,7 +132,40 @@ public class QuestionToolRoutingService {
 
         return allowedToolNames.isEmpty()
                 ? QuestionRoutingDecision.chatOnly()
-                : QuestionRoutingDecision.toolAssisted(matchedGroups, allowedToolNames);
+                : QuestionRoutingDecision.toolAssisted(
+                        resolveIntent(matchedGroups), matchedGroups, allowedToolNames);
+    }
+
+    /**
+     * 按写操作优先于只读查询的规则，将命中的业务组归并为一个稳定主意图。
+     *
+     * @param matchedGroups 当前问题命中的业务组
+     * @return 可供后续工作流选择使用的主意图
+     */
+    private AgentIntent resolveIntent(Set<BusinessGroup> matchedGroups) {
+        // 高风险写操作必须优先分流，避免同时出现订单或车票关键词时退化为只读查询。
+        if (matchedGroups.contains(BusinessGroup.CANCELLATION)) {
+            return AgentIntent.ORDER_CANCELLATION;
+        }
+        if (matchedGroups.contains(BusinessGroup.REFUND)) {
+            return AgentIntent.TICKET_REFUND;
+        }
+        if (matchedGroups.contains(BusinessGroup.PURCHASE)) {
+            return AgentIntent.TICKET_PURCHASE;
+        }
+        if (matchedGroups.contains(BusinessGroup.PAYMENT)) {
+            return AgentIntent.PAYMENT_QUERY;
+        }
+        if (matchedGroups.contains(BusinessGroup.ORDER_QUERY)) {
+            return AgentIntent.ORDER_QUERY;
+        }
+        if (matchedGroups.contains(BusinessGroup.PASSENGER)) {
+            return AgentIntent.PASSENGER_QUERY;
+        }
+        if (matchedGroups.contains(BusinessGroup.TRAIN_STOP)) {
+            return AgentIntent.TRAIN_STOP_QUERY;
+        }
+        return AgentIntent.TRAIN_QUERY;
     }
 
     /**
@@ -157,7 +197,9 @@ public class QuestionToolRoutingService {
         if (trainContext && matches(CONTEXTUAL_PURCHASE_PATTERN, question)) {
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.PURCHASE, PURCHASE_TOOLS);
         }
-        if (orderContext && matches(CONTEXTUAL_ORDER_PATTERN, question)) {
+        if (orderContext
+                && !matchedGroups.contains(BusinessGroup.CANCELLATION)
+                && matches(CONTEXTUAL_ORDER_PATTERN, question)) {
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.ORDER_QUERY, ORDER_QUERY_TOOLS);
             addGroup(matchedGroups, allowedToolNames, BusinessGroup.PAYMENT, PAYMENT_TOOLS);
         }
@@ -240,11 +282,13 @@ public class QuestionToolRoutingService {
      * 问题分流结果。
      *
      * @param route 普通问答或工具辅助路径
+     * @param intent 当前问题的稳定主意图
      * @param matchedGroups 当前问题命中的业务工具组
      * @param allowedToolNames 本轮允许注册到回答模型的工具名称
      */
     public record QuestionRoutingDecision(
             QuestionRoute route,
+            AgentIntent intent,
             Set<BusinessGroup> matchedGroups,
             Set<String> allowedToolNames) {
 
@@ -255,22 +299,29 @@ public class QuestionToolRoutingService {
          */
         public static QuestionRoutingDecision chatOnly() {
             // 普通问答固定使用不可变空集合，避免后续阶段意外追加工具。
-            return new QuestionRoutingDecision(QuestionRoute.CHAT_ONLY, Set.of(), Set.of());
+            return new QuestionRoutingDecision(
+                    QuestionRoute.CHAT_ONLY,
+                    AgentIntent.GENERAL_CHAT,
+                    Set.of(),
+                    Set.of());
         }
 
         /**
          * 创建仅携带已选工具组的业务问答结果。
          *
+         * @param intent 当前问题的稳定主意图
          * @param matchedGroups 本轮命中的业务组
          * @param allowedToolNames 本轮命中的工具名称
          * @return 工具辅助分流结果
          */
         public static QuestionRoutingDecision toolAssisted(
+                AgentIntent intent,
                 Set<BusinessGroup> matchedGroups,
                 Set<String> allowedToolNames) {
             // 复制规则计算结果，防止调用方修改业务组或工具集合破坏本轮安全边界。
             return new QuestionRoutingDecision(
                     QuestionRoute.TOOL_ASSISTED,
+                    intent,
                     Set.copyOf(matchedGroups),
                     Set.copyOf(allowedToolNames));
         }

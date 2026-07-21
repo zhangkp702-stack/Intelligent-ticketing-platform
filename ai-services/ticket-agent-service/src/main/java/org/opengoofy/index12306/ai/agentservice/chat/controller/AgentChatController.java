@@ -17,6 +17,15 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.Histo
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.RecoverableActionView;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationHistoryService;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionRequest;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionResult;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionRequest;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionResult;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -49,6 +58,8 @@ public class AgentChatController {
     private final AgentChatService agentChatService;
     private final ConversationHistoryService conversationHistoryService;
     private final PurchaseActionService purchaseActionService;
+    private final PurchaseWorkflowService purchaseWorkflowService;
+    private final CancellationWorkflowService cancellationWorkflowService;
 
     /**
      * 创建智能体对话控制器。
@@ -56,14 +67,20 @@ public class AgentChatController {
      * @param agentChatService 对话编排服务
      * @param conversationHistoryService 会话历史查询服务
      * @param purchaseActionService 高风险操作恢复服务
+     * @param purchaseWorkflowService 购票工作流服务
+     * @param cancellationWorkflowService 取消订单工作流服务
      */
     public AgentChatController(
             AgentChatService agentChatService,
             ConversationHistoryService conversationHistoryService,
-            PurchaseActionService purchaseActionService) {
+            PurchaseActionService purchaseActionService,
+            PurchaseWorkflowService purchaseWorkflowService,
+            CancellationWorkflowService cancellationWorkflowService) {
         this.agentChatService = agentChatService;
         this.conversationHistoryService = conversationHistoryService;
         this.purchaseActionService = purchaseActionService;
+        this.purchaseWorkflowService = purchaseWorkflowService;
+        this.cancellationWorkflowService = cancellationWorkflowService;
     }
 
     /**
@@ -134,6 +151,102 @@ public class AgentChatController {
         return purchaseActionService.recoverLatestAction(userId, conversationId)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    /**
+     * 恢复会话中尚未提交的乘车人选择表单。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @return 等待选择的购票工作流；不存在时返回 204
+     */
+    @GetMapping("/conversations/{conversationId}/pending-workflow")
+    public ResponseEntity<WorkflowInteractionView> recoverPendingWorkflow(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId) {
+        // 候选列表从当前用户的持久化工作流恢复，不读取其他会话或账号的数据。
+        return purchaseWorkflowService.findPendingSelection(userId, conversationId)
+                .map(WorkflowInteractionView.class::cast)
+                .or(() -> cancellationWorkflowService.findPendingSelection(userId, conversationId)
+                        .map(WorkflowInteractionView.class::cast))
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    /**
+     * 提交购票工作流中的乘车人勾选结果。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @param workflowId 工作流标识
+     * @param request 用户勾选的乘车人标识
+     * @return 已校验的选择结果和下一阶段
+     */
+    @PostMapping("/conversations/{conversationId}/workflows/{workflowId}/passengers")
+    public PassengerSelectionResult selectWorkflowPassengers(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId,
+            @PathVariable String workflowId,
+            @RequestBody PassengerSelectionRequest request) {
+        // 先按会话恢复工作流，避免只凭 workflowId 跨会话提交选择。
+        PassengerSelectionView pending = purchaseWorkflowService
+                .findPendingSelection(userId, conversationId)
+                .filter(view -> view.workflowId().equals(workflowId))
+                .orElseThrow(() -> new AgentChatException(
+                        org.springframework.http.HttpStatus.CONFLICT,
+                        "WORKFLOW_NOT_SELECTABLE",
+                        "当前会话没有可提交的乘车人选择"));
+        try {
+            return purchaseWorkflowService.selectPassengers(userId, pending.workflowId(), request);
+        } catch (SecurityException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.FORBIDDEN,
+                    "INVALID_PASSENGER_SELECTION",
+                    "乘车人选择无效");
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKFLOW_STATE_CHANGED",
+                    exception.getMessage());
+        }
+    }
+
+    /**
+     * 提交取消订单工作流中的订单选择结果。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @param workflowId 工作流标识
+     * @param request 用户选择的订单号
+     * @return 已校验的订单和下一阶段
+     */
+    @PostMapping("/conversations/{conversationId}/workflows/{workflowId}/order")
+    public OrderSelectionResult selectWorkflowOrder(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId,
+            @PathVariable String workflowId,
+            @RequestBody OrderSelectionRequest request) {
+        // 先按当前会话恢复选择视图，禁止只凭工作流标识跨会话提交订单。
+        OrderSelectionView pending = cancellationWorkflowService
+                .findPendingSelection(userId, conversationId)
+                .filter(view -> view.workflowId().equals(workflowId))
+                .orElseThrow(() -> new AgentChatException(
+                        org.springframework.http.HttpStatus.CONFLICT,
+                        "WORKFLOW_NOT_SELECTABLE",
+                        "当前会话没有可提交的订单选择"));
+        try {
+            return cancellationWorkflowService.selectOrder(userId, pending.workflowId(), request);
+        } catch (SecurityException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.FORBIDDEN,
+                    "INVALID_ORDER_SELECTION",
+                    "订单选择无效");
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            throw new AgentChatException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "WORKFLOW_STATE_CHANGED",
+                    exception.getMessage());
+        }
     }
 
     /**

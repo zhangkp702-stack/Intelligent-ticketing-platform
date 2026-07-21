@@ -243,6 +243,40 @@ const fetchAgentPendingAction = async (conversationId) => {
   return data || null
 }
 
+const fetchAgentPendingWorkflow = async (conversationId) => {
+  const { data } = await http({
+    method: 'GET',
+    url: `/api/agent-service/conversations/${conversationId}/pending-workflow`
+  })
+  return data || null
+}
+
+const submitAgentWorkflowPassengers = async (
+  conversationId,
+  workflowId,
+  passengerIds
+) => {
+  const { data } = await http({
+    method: 'POST',
+    url: `/api/agent-service/conversations/${conversationId}/workflows/${workflowId}/passengers`,
+    data: { passengerIds }
+  })
+  return data
+}
+
+const submitAgentWorkflowOrder = async (
+  conversationId,
+  workflowId,
+  orderSn
+) => {
+  const { data } = await http({
+    method: 'POST',
+    url: `/api/agent-service/conversations/${conversationId}/workflows/${workflowId}/order`,
+    data: { orderSn }
+  })
+  return data
+}
+
 const fetchConfirmAgentAction = async (
   actionId,
   confirmationToken,
@@ -297,6 +331,9 @@ export {
   fetchAgentConversations,
   fetchAgentConversationMessages,
   fetchAgentPendingAction,
+  fetchAgentPendingWorkflow,
+  submitAgentWorkflowPassengers,
+  submitAgentWorkflowOrder,
   fetchConfirmAgentAction,
   fetchAgentActionStatus
 }

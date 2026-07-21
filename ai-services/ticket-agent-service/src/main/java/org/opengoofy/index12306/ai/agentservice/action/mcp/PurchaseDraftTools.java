@@ -10,6 +10,7 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.PurchasePayload;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -26,18 +27,22 @@ public class PurchaseDraftTools {
 
     private final PurchaseActionService purchaseActionService;
     private final ActionDraftCreationTracker actionDraftCreationTracker;
+    private final PurchaseWorkflowService purchaseWorkflowService;
 
     /**
      * 创建购票草案工具。
      *
      * @param purchaseActionService 购票确认状态机服务
      * @param actionDraftCreationTracker 本轮草案创建信号
+     * @param purchaseWorkflowService 购票工作流阶段服务
      */
     public PurchaseDraftTools(
             PurchaseActionService purchaseActionService,
-            ActionDraftCreationTracker actionDraftCreationTracker) {
+            ActionDraftCreationTracker actionDraftCreationTracker,
+            PurchaseWorkflowService purchaseWorkflowService) {
         this.purchaseActionService = purchaseActionService;
         this.actionDraftCreationTracker = actionDraftCreationTracker;
+        this.purchaseWorkflowService = purchaseWorkflowService;
     }
 
     /**
@@ -74,6 +79,19 @@ public class PurchaseDraftTools {
                                 passenger.seatClass() == null ? null : passenger.seatClass().code()))
                 .toList();
 
+        // 草案只能使用当前购票工作流已经确认的行程和乘车人，模型参数不能覆盖服务端状态。
+        purchaseWorkflowService.validateDraft(
+                context.userId(),
+                context.conversationId(),
+                trainId,
+                departure,
+                arrival,
+                departureDate,
+                normalizedPassengers.stream()
+                        .filter(java.util.Objects::nonNull)
+                        .map(PurchasePassenger::passengerId)
+                        .toList());
+
         // 本地工具只持久化草案，真实购票必须由独立确认接口继续执行。
         PurchaseDraftResult result = purchaseActionService.prepare(
                 context,
@@ -81,6 +99,8 @@ public class PurchaseDraftTools {
                         trainId, departure, arrival, departureDate, normalizedPassengers, chooseSeats));
         // 仅在数据库草案创建或复用成功后标记本轮，供对话完成阶段按需读取确认视图。
         actionDraftCreationTracker.markCreated(context.turnId());
+        // 草案已经持久化后再结束购票链路，真实下单仍必须等待独立确认接口。
+        purchaseWorkflowService.completeAfterDraft(context.userId(), context.conversationId());
         return result;
     }
 

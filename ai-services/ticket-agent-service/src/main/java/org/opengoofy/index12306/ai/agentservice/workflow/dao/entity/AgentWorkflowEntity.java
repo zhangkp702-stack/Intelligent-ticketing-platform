@@ -75,6 +75,17 @@ public class AgentWorkflowEntity extends AgentBaseEntity {
         touch(now);
     }
 
+    /**
+     * 将尚未完成的工作流标记为过期，并保留原有脱敏上下文供审计使用。
+     *
+     * @param now 过期时间
+     */
+    public void expire(Instant now) {
+        // 过期只终止后续推进，不删除已收集且通过服务端校验的业务上下文。
+        this.stage = WorkflowStage.EXPIRED;
+        touch(now);
+    }
+
     private AgentWorkflowEntity(Instant now, String userId, String conversationId, WorkflowType workflowType,
                                 WorkflowStage stage, String contextJson, Instant expiresAt) {
         super(now);

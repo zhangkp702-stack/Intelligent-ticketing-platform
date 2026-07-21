@@ -1,6 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.chat.routing;
 
 import org.junit.jupiter.api.Test;
+import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.BusinessGroup;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoute;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoutingDecision;
@@ -28,6 +29,7 @@ class QuestionToolRoutingServiceTests {
         QuestionRoutingDecision decision = service.route("你好，请介绍一下你自己");
 
         assertThat(decision.route()).isEqualTo(QuestionRoute.CHAT_ONLY);
+        assertThat(decision.intent()).isEqualTo(AgentIntent.GENERAL_CHAT);
         assertThat(decision.allowedToolNames()).isEmpty();
     }
 
@@ -40,6 +42,7 @@ class QuestionToolRoutingServiceTests {
         QuestionRoutingDecision decision = service.route("查询明天北京到上海的二等座余票");
 
         assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
+        assertThat(decision.intent()).isEqualTo(AgentIntent.TRAIN_QUERY);
         assertThat(decision.allowedToolNames())
                 .containsExactlyInAnyOrder("resolve_station", "query_tickets");
     }
@@ -53,6 +56,7 @@ class QuestionToolRoutingServiceTests {
         QuestionRoutingDecision decision = service.route("G9003 还有吗");
 
         assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
+        assertThat(decision.intent()).isEqualTo(AgentIntent.TRAIN_QUERY);
         assertThat(decision.allowedToolNames())
                 .containsExactlyInAnyOrder("resolve_station", "query_tickets");
     }
@@ -67,11 +71,26 @@ class QuestionToolRoutingServiceTests {
                 service.route("帮我购买明天北京到上海的二等座车票");
 
         assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
+        assertThat(decision.intent()).isEqualTo(AgentIntent.TICKET_PURCHASE);
         assertThat(decision.allowedToolNames()).containsExactlyInAnyOrder(
                 "resolve_station",
                 "query_tickets",
-                "list_my_passengers",
+                "resolve_purchase_passengers",
                 "prepare_ticket_purchase");
+    }
+
+    /**
+     * 验证取消订单请求只开放服务端订单定位和取消草案工具。
+     */
+    @Test
+    void cancellationQuestionUsesCancellationWorkflowTools() {
+        // 模型不能直接读取订单列表后猜测目标，必须经过服务端取消订单解析工具。
+        QuestionRoutingDecision decision = service.route("取消我明天 G9003 的未支付订单");
+
+        assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
+        assertThat(decision.intent()).isEqualTo(AgentIntent.ORDER_CANCELLATION);
+        assertThat(decision.allowedToolNames()).containsExactlyInAnyOrder(
+                "resolve_order_cancellation", "prepare_order_cancellation");
     }
 
     /**
@@ -83,6 +102,7 @@ class QuestionToolRoutingServiceTests {
         QuestionRoutingDecision decision = service.route("帮我退掉订单 123456");
 
         assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
+        assertThat(decision.intent()).isEqualTo(AgentIntent.TICKET_REFUND);
         assertThat(decision.allowedToolNames()).containsExactlyInAnyOrder(
                 "list_my_orders",
                 "get_my_order_detail",
@@ -103,7 +123,7 @@ class QuestionToolRoutingServiceTests {
         assertThat(decision.route()).isEqualTo(QuestionRoute.TOOL_ASSISTED);
         assertThat(decision.matchedGroups()).contains(BusinessGroup.PURCHASE);
         assertThat(decision.allowedToolNames()).contains(
-                "list_my_passengers", "prepare_ticket_purchase");
+                "resolve_purchase_passengers", "prepare_ticket_purchase");
     }
 
     /**

@@ -3,6 +3,7 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.ConversationStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
 
 import java.time.Instant;
 import java.util.List;
@@ -140,6 +141,7 @@ public final class AgentChatModels {
      * @param content 最终助手回答
      * @param reused 是否复用幂等请求的既有回答
      * @param action 可选的待确认操作视图
+     * @param workflow 可选的工作流交互视图
      */
     public record ChatResult(
             String requestId,
@@ -147,7 +149,8 @@ public final class AgentChatModels {
             String turnId,
             String content,
             boolean reused,
-            ActionConfirmationView action) {
+            ActionConfirmationView action,
+            WorkflowInteractionView workflow) {
     }
 
     /**
@@ -157,6 +160,7 @@ public final class AgentChatModels {
         META,
         DELTA,
         ACTION_REQUIRED,
+        WORKFLOW_REQUIRED,
         DONE,
         ERROR
     }
@@ -232,6 +236,7 @@ public final class AgentChatModels {
      * @param failureCategory 稳定失败分类
      * @param message 安全的用户提示
      * @param action 仅在 ACTION_REQUIRED 事件中返回的确认视图
+     * @param workflow 仅在 WORKFLOW_REQUIRED 事件中返回的工作流交互视图
      * @param performance 仅在新生成回答的 DONE 事件中返回的本轮性能快照
      */
     public record ChatEvent(
@@ -245,6 +250,7 @@ public final class AgentChatModels {
             String failureCategory,
             String message,
             ActionConfirmationView action,
+            WorkflowInteractionView workflow,
             ChatPerformance performance) {
 
         /**
@@ -259,7 +265,7 @@ public final class AgentChatModels {
                 boolean reused) {
             return new ChatEvent(
                     EventType.META, context.requestId(), context.conversationId(), context.turnId(),
-                    null, null, reused, null, null, null, null);
+                    null, null, reused, null, null, null, null, null);
         }
 
         /**
@@ -274,7 +280,7 @@ public final class AgentChatModels {
                 String delta) {
             return new ChatEvent(
                     EventType.DELTA, context.requestId(), context.conversationId(), context.turnId(),
-                    delta, null, false, null, null, null, null);
+                    delta, null, false, null, null, null, null, null);
         }
 
         /**
@@ -290,7 +296,26 @@ public final class AgentChatModels {
             // 确认令牌只通过服务端结构化事件返回，不写入模型回答正文。
             return new ChatEvent(
                     EventType.ACTION_REQUIRED, context.requestId(), context.conversationId(), context.turnId(),
-                    null, null, false, null, null, action, null);
+                    null, null, false, null, null, action, null, null);
+        }
+
+        /**
+         * 创建要求用户通过结构化表单补充工作流选择的事件。
+         *
+         * @param context 当前请求上下文
+         * @param workflow 工作流交互视图
+         * @return 工作流选择事件
+         */
+        public static ChatEvent workflowRequired(
+                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                WorkflowInteractionView workflow) {
+            // 候选项只包含当前账号的安全数据，用户选择通过独立接口写回数据库状态机。
+            return new ChatEvent(
+                    EventType.WORKFLOW_REQUIRED,
+                    context.requestId(),
+                    context.conversationId(),
+                    context.turnId(),
+                    null, null, false, null, null, null, workflow, null);
         }
 
         /**
@@ -326,7 +351,7 @@ public final class AgentChatModels {
             // 性能数据与最终正文在同一个终态事件返回，避免增加新的 SSE 事件顺序。
             return new ChatEvent(
                     EventType.DONE, context.requestId(), context.conversationId(), context.turnId(),
-                    null, content, reused, null, null, null, performance);
+                    null, content, reused, null, null, null, null, performance);
         }
 
         /**
@@ -340,7 +365,7 @@ public final class AgentChatModels {
         public static ChatEvent error(ChatCommand command, String category, String safeMessage) {
             return new ChatEvent(
                     EventType.ERROR, command.requestId(), command.conversationId(), null,
-                    null, null, false, category, safeMessage, null, null);
+                    null, null, false, category, safeMessage, null, null, null);
         }
     }
 

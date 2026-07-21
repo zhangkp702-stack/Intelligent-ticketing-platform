@@ -26,6 +26,9 @@ import org.opengoofy.index12306.ai.agentservice.conversation.service.Conversatio
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelHttpCallRound;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.RoutedChatModelService;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.WorkflowInteractionTracker;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -265,7 +268,7 @@ class AgentChatServiceTests {
     void answerModelReceivesOnlyWhitelistedTools() {
         ToolCallback stationTool = toolCallback("resolve_station");
         ToolCallback queryTool = toolCallback("query_tickets");
-        ToolCallback passengerTool = toolCallback("list_my_passengers");
+        ToolCallback passengerTool = toolCallback("resolve_purchase_passengers");
         ToolCallback draftTool = toolCallback("prepare_ticket_purchase");
         ToolCallback writeTool = toolCallback("execute_confirmed_ticket_purchase");
         ToolCallbackProvider provider = ToolCallbackProvider.from(
@@ -299,7 +302,7 @@ class AgentChatServiceTests {
                 .containsExactly(
                         "resolve_station",
                         "query_tickets",
-                        "list_my_passengers",
+                        "resolve_purchase_passengers",
                         "prepare_ticket_purchase");
     }
 
@@ -498,6 +501,9 @@ class AgentChatServiceTests {
         RoutedChatModelService model = mock(RoutedChatModelService.class);
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
         ActionDraftCreationTracker actionDraftCreationTracker = new ActionDraftCreationTracker();
+        PurchaseWorkflowService purchaseWorkflowService = mock(PurchaseWorkflowService.class);
+        CancellationWorkflowService cancellationWorkflowService = mock(CancellationWorkflowService.class);
+        WorkflowInteractionTracker workflowSelectionTracker = new WorkflowInteractionTracker();
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
         // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
         when(providers.orderedStream()).thenReturn(Arrays.stream(configuredProviders));
@@ -517,6 +523,9 @@ class AgentChatServiceTests {
                 model,
                 purchaseActionService,
                 actionDraftCreationTracker,
+                purchaseWorkflowService,
+                cancellationWorkflowService,
+                workflowSelectionTracker,
                 new McpToolContextFactory(),
                 providers,
                 Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC));
