@@ -16,7 +16,9 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.Event
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService;
+import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentToolRoutingService;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
@@ -194,6 +196,8 @@ class AgentChatServiceTests {
                 true))
                 .when(test.questionRewriteService())
                 .rewrite(eq(conversationHistory), any());
+        when(test.intentClassificationService().classify(any(), any(), any(), any()))
+                .thenReturn(AgentIntent.TRAIN_QUERY);
         ChatResponse modelResponse = response("G9003 还有余票");
         when(test.model().stream(any(), any(), any(), eq(true), any()))
                 .thenReturn(Flux.just(modelResponse));
@@ -286,6 +290,8 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
+        when(test.intentClassificationService().classify(any(), any(), any(), any()))
+                .thenReturn(AgentIntent.TICKET_PURCHASE);
         when(test.model().stream(any(), any(), any(), eq(true), any())).thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -357,6 +363,10 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
+
+        // 意图模型已识别为查票，后续缺少工具时应在回答模型调用前失败。
+        when(test.intentClassificationService().classify(any(), any(), any(), any()))
+                .thenReturn(AgentIntent.TRAIN_QUERY);
 
         StepVerifier.create(test.service().stream(command))
                 .expectErrorSatisfies(error -> assertThat(error)
@@ -499,6 +509,7 @@ class AgentChatServiceTests {
         ConversationMemoryService memory = mock(ConversationMemoryService.class);
         ConversationContextService contextService = mock(ConversationContextService.class);
         QuestionRewriteService questionRewriteService = mock(QuestionRewriteService.class);
+        IntentClassificationService intentClassificationService = mock(IntentClassificationService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
         ActionDraftCreationTracker actionDraftCreationTracker = new ActionDraftCreationTracker();
@@ -514,13 +525,16 @@ class AgentChatServiceTests {
             return QuestionRewriteResult.unchanged(
                     history.currentQuestion().content(), false);
         });
+        when(intentClassificationService.classify(any(), any(), any(), any()))
+                .thenReturn(AgentIntent.GENERAL_CHAT);
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AgentChatMetrics chatMetrics = new AgentChatMetrics(meterRegistry);
         AgentChatPipeline pipeline = new AgentChatPipeline(
                 memory,
                 contextService,
                 questionRewriteService,
-                new QuestionToolRoutingService(),
+                intentClassificationService,
+                new IntentToolRoutingService(),
                 chatMetrics,
                 model,
                 purchaseActionService,
@@ -538,7 +552,7 @@ class AgentChatServiceTests {
                 new AgentChatProperties(responseTimeout),
                 chatMetrics);
         return new TestContext(
-                service, memory, contextService, questionRewriteService, model,
+                service, memory, contextService, questionRewriteService, intentClassificationService, model,
                 purchaseActionService, actionDraftCreationTracker, meterRegistry);
     }
 
@@ -589,6 +603,7 @@ class AgentChatServiceTests {
      * @param memory 会话记忆替身
      * @param contextService 会话上下文替身
      * @param questionRewriteService 问题改写服务替身
+     * @param intentClassificationService 意图分类模型服务替身
      * @param model 回答模型替身
      * @param purchaseActionService 购票动作服务替身
      * @param actionDraftCreationTracker 本轮草案创建信号
@@ -599,6 +614,7 @@ class AgentChatServiceTests {
             ConversationMemoryService memory,
             ConversationContextService contextService,
             QuestionRewriteService questionRewriteService,
+            IntentClassificationService intentClassificationService,
             RoutedChatModelService model,
             PurchaseActionService purchaseActionService,
             ActionDraftCreationTracker actionDraftCreationTracker,

@@ -12,9 +12,11 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatP
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ModelCallPerformance;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoute;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.QuestionToolRoutingService.QuestionRoutingDecision;
+import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentToolRoutingService;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentToolRoutingService.IntentRoute;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentToolRoutingService.IntentRoutingDecision;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
@@ -136,7 +138,8 @@ public class AgentChatPipeline {
     private final ConversationMemoryService conversationMemoryService;
     private final ConversationContextService conversationContextService;
     private final QuestionRewriteService questionRewriteService;
-    private final QuestionToolRoutingService questionToolRoutingService;
+    private final IntentClassificationService intentClassificationService;
+    private final IntentToolRoutingService intentToolRoutingService;
     private final AgentChatMetrics chatMetrics;
     private final RoutedChatModelService routedChatModelService;
     private final PurchaseActionService purchaseActionService;
@@ -256,7 +259,8 @@ public class AgentChatPipeline {
      * @param conversationMemoryService 会话和轮次持久化服务
      * @param conversationContextService 会话摘要与最近消息加载服务
      * @param questionRewriteService 上下文相关问题改写服务
-     * @param questionToolRoutingService 普通问答与业务工具路径选择服务
+     * @param intentClassificationService 轻量模型意图分类服务
+     * @param intentToolRoutingService 意图到业务链路和工具集合的确定性映射服务
      * @param chatMetrics 分阶段对话指标记录器
      * @param routedChatModelService 多模型回答路由服务
      * @param purchaseActionService 购票草案确认服务
@@ -273,7 +277,8 @@ public class AgentChatPipeline {
             ConversationMemoryService conversationMemoryService,
             ConversationContextService conversationContextService,
             QuestionRewriteService questionRewriteService,
-            QuestionToolRoutingService questionToolRoutingService,
+            IntentClassificationService intentClassificationService,
+            IntentToolRoutingService intentToolRoutingService,
             AgentChatMetrics chatMetrics,
             RoutedChatModelService routedChatModelService,
             PurchaseActionService purchaseActionService,
@@ -288,7 +293,8 @@ public class AgentChatPipeline {
         this.conversationMemoryService = conversationMemoryService;
         this.conversationContextService = conversationContextService;
         this.questionRewriteService = questionRewriteService;
-        this.questionToolRoutingService = questionToolRoutingService;
+        this.intentClassificationService = intentClassificationService;
+        this.intentToolRoutingService = intentToolRoutingService;
         this.chatMetrics = chatMetrics;
         this.routedChatModelService = routedChatModelService;
         this.purchaseActionService = purchaseActionService;
@@ -347,13 +353,28 @@ public class AgentChatPipeline {
                     rewriteResult.modelInvoked(),
                     rewriteResult.rewritten());
 
-            // 使用本地规则选择普通回答或业务工具路径，不增加单独的意图识别模型调用。
+            // 先读取服务端工作流阶段，帮助轻量模型正确理解“继续”“这个”等省略表达。
+            String workflowPrompt = purchaseWorkflowService
+                    .activeWorkflowPrompt(context.userId(), context.conversationId())
+                    .or(() -> cancellationWorkflowService.activeWorkflowPrompt(
+                            context.userId(), context.conversationId()))
+                    .or(() -> refundWorkflowService.activeWorkflowPrompt(
+                            context.userId(), context.conversationId()))
+                    .orElse("");
+
+            // 轻量模型只负责生成受控意图，确定性映射层再选择对应业务链路和最小工具集。
             long routingStartedNanos = System.nanoTime();
-            QuestionRoutingDecision routingDecision =
-                    questionToolRoutingService.route(rewriteResult.effectiveQuestion(), conversationHistory);
+            ModelAttemptContext routingAttemptContext = new ModelAttemptContext(
+                    context.requestId(), context.conversationId(), context.turnId());
+            AgentIntent intent = intentClassificationService.classify(
+                    rewriteResult.effectiveQuestion(),
+                    conversationHistory,
+                    workflowPrompt,
+                    routingAttemptContext);
+            IntentRoutingDecision routingDecision = intentToolRoutingService.route(intent);
             ResolvedTools resolvedTools = resolveToolCallbacks(routingDecision);
             long routingDurationMs = (System.nanoTime() - routingStartedNanos) / 1_000_000L;
-            String toolAvailability = routingDecision.route() == QuestionRoute.CHAT_ONLY
+            String toolAvailability = routingDecision.route() == IntentRoute.CHAT_ONLY
                     ? "NOT_REQUIRED"
                     : resolvedTools.missingToolNames().isEmpty() ? "AVAILABLE" : "MISSING";
             performanceTrace.routingDurationMs = routingDurationMs;
@@ -376,11 +397,12 @@ public class AgentChatPipeline {
                             .map(group -> group.name())
                             .collect(Collectors.toUnmodifiableSet()));
             LOGGER.info(
-                    "Agent问题分流完成，requestId={}, conversationId={}, turnId={}, route={}, groups={}, "
+                    "Agent问题分流完成，requestId={}, conversationId={}, turnId={}, intent={}, route={}, groups={}, "
                             + "tools={}, rewriteModelInvoked={}, rewritten={}, durationMs={}",
                     context.requestId(),
                     context.conversationId(),
                     context.turnId(),
+                    routingDecision.intent(),
                     routingDecision.route(),
                     routingDecision.matchedGroups(),
                     resolvedTools.callbacks().stream()
@@ -391,13 +413,6 @@ public class AgentChatPipeline {
                     routingDurationMs);
             ensureRequiredToolsAvailable(context, routingDecision, resolvedTools);
             List<ToolCallback> callbacks = resolvedTools.callbacks();
-            String workflowPrompt = purchaseWorkflowService
-                    .activeWorkflowPrompt(context.userId(), context.conversationId())
-                    .or(() -> cancellationWorkflowService.activeWorkflowPrompt(
-                            context.userId(), context.conversationId()))
-                    .or(() -> refundWorkflowService.activeWorkflowPrompt(
-                            context.userId(), context.conversationId()))
-                    .orElse("");
 
             // 将系统规则、会话上下文和本轮安全工具组装为模型提示。
             Prompt prompt = buildPrompt(
@@ -737,8 +752,8 @@ public class AgentChatPipeline {
      * @param routingDecision 当前问题选择的执行路径和允许工具名称
      * @return 实际注册的安全工具和缺失工具名称
      */
-    private ResolvedTools resolveToolCallbacks(QuestionRoutingDecision routingDecision) {
-        if (routingDecision.route() == QuestionRoute.CHAT_ONLY) {
+    private ResolvedTools resolveToolCallbacks(IntentRoutingDecision routingDecision) {
+        if (routingDecision.route() == IntentRoute.CHAT_ONLY) {
             // 普通问答不遍历工具提供器，也不向模型发送 MCP 工具定义。
             return new ResolvedTools(List.of(), Set.of());
         }
@@ -780,7 +795,7 @@ public class AgentChatPipeline {
      */
     private void ensureRequiredToolsAvailable(
             AgentRequestContext context,
-            QuestionRoutingDecision routingDecision,
+            IntentRoutingDecision routingDecision,
             ResolvedTools resolvedTools) {
         if (resolvedTools.missingToolNames().isEmpty()) {
             return;

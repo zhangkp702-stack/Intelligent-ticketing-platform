@@ -50,6 +50,8 @@ class TicketAgentServiceApplicationTests {
         // 检查回答链和摘要链的首选模型，防止枚举键或模型 ID 绑定错误。
         assertThat(modelProperties.routes().get(ModelRole.ANSWER_TOOL))
                 .startsWith("bailian-answer-primary", "siliconflow-answer-secondary");
+        assertThat(modelProperties.routes().get(ModelRole.INTENT_CLASSIFICATION))
+                .startsWith("bailian-flash", "siliconflow-summary-primary");
         assertThat(modelProperties.routes().get(ModelRole.MEMORY_SUMMARY))
                 .startsWith("siliconflow-summary-primary", "bailian-flash");
         assertThat(modelProperties.candidates().get("bailian-answer-primary").model())
