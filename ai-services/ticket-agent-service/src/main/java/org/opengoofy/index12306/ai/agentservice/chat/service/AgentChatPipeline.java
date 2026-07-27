@@ -79,6 +79,7 @@ public class AgentChatPipeline {
             "resolve_station",
             "query_tickets",
             "query_train_stops",
+            "list_my_passengers",
             "resolve_purchase_passengers",
             "resolve_order_cancellation",
             "resolve_ticket_refund",

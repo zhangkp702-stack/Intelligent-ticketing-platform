@@ -18,6 +18,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -93,10 +94,10 @@ public class PurchaseWorkflowService {
                     "当前账号没有可用乘车人，请先在常用信息管理中添加乘车人");
         }
 
-        // 只对真实姓名做精确匹配，绝不使用证件号、手机号或相似度猜测身份。
+        // 双方使用相同规范化键精确匹配，绝不使用证件号、手机号或相似度猜测身份。
         Map<String, List<PassengerOption>> optionsByName = safeOptions.stream()
                 .filter(option -> StringUtils.hasText(option.realName()))
-                .collect(Collectors.groupingBy(PassengerOption::realName));
+                .collect(Collectors.groupingBy(option -> normalizeName(option.realName())));
         List<PassengerOption> resolved = new ArrayList<>();
         List<String> unmatchedNames = new ArrayList<>();
         for (String name : normalizedNames) {
@@ -375,12 +376,33 @@ public class PurchaseWorkflowService {
         if (passengerNames == null) {
             return List.of();
         }
+        // 姓名规范化后再去重，避免全角字符或不可见空白制造重复乘车人。
         return passengerNames.stream()
                 .filter(StringUtils::hasText)
-                .map(String::trim)
+                .map(this::normalizeName)
+                .filter(StringUtils::hasText)
                 .distinct()
                 .limit(MAX_PASSENGERS)
                 .toList();
+    }
+
+    /**
+     * 使用 Unicode NFKC 规范化姓名并移除所有空白字符。
+     *
+     * @param name 原始姓名
+     * @return 用于精确匹配的稳定姓名键
+     */
+    private String normalizeName(String name) {
+        if (!StringUtils.hasText(name)) {
+            return "";
+        }
+        // 兼容全角字符、全角空格和不可见空白，同时保留姓名中的其他可见字符。
+        String normalized = Normalizer.normalize(name, Normalizer.Form.NFKC);
+        StringBuilder result = new StringBuilder(normalized.length());
+        normalized.codePoints()
+                .filter(codePoint -> !Character.isWhitespace(codePoint) && !Character.isSpaceChar(codePoint))
+                .forEach(result::appendCodePoint);
+        return result.toString();
     }
 
     /**

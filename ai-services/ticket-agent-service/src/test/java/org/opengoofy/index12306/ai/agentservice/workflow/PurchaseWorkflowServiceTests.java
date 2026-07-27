@@ -118,6 +118,31 @@ class PurchaseWorkflowServiceTests {
     }
 
     /**
+     * 验证姓名规范化仍保持精确身份匹配，不会因全角空格产生假阴性。
+     */
+    @Test
+    void normalizesPassengerNameBeforeExactMatch() {
+        AgentRequestContext requestContext = requestContext();
+        List<PassengerOption> options = List.of(
+                new PassengerOption("passenger-1", "万重山", "31***********1234", 0, 1));
+
+        // 用户输入包含全角空格，规范化后仍应唯一命中同名已核验乘车人。
+        PassengerResolutionResult result = purchaseWorkflowService.resolvePassengers(
+                requestContext,
+                "train-1",
+                "北京南",
+                "上海虹桥",
+                "2026-07-22",
+                List.of("万　重山"),
+                PurchaseSeatClass.SECOND_CLASS,
+                options);
+
+        assertThat(result.status()).isEqualTo(PassengerResolutionStatus.RESOLVED);
+        assertThat(result.resolvedPassengers()).extracting("passengerId")
+                .containsExactly("passenger-1");
+    }
+
+    /**
      * 创建相互隔离的测试请求上下文。
      *
      * @return 带唯一用户、会话和轮次标识的请求上下文

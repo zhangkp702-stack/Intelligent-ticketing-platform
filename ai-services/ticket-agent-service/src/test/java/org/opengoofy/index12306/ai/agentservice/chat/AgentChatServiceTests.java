@@ -314,6 +314,44 @@ class AgentChatServiceTests {
     }
 
     /**
+     * 验证乘车人查询分流要求的只读工具能够通过回答模型最终白名单。
+     */
+    @Test
+    void passengerQueryReceivesPassengerTool() {
+        ToolCallback passengerTool = toolCallback("list_my_passengers");
+        ToolCallbackProvider provider = ToolCallbackProvider.from(passengerTool);
+        TestContext test = context(Duration.ofSeconds(60), provider);
+        ChatCommand command = new ChatCommand(
+                "request-passenger", "request-passenger", "user-1", "tester",
+                "conversation-1", "查询有没有万重山这个乘车人");
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
+        ChatResponse modelResponse = response("已查询当前账号乘车人");
+
+        // 模拟乘车人查询意图，确保分流工具不会被流水线的最终白名单再次移除。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, conversationHistory);
+        when(test.intentClassificationService().classify(any(), any(), any(), any()))
+                .thenReturn(AgentIntent.PASSENGER_QUERY);
+        when(test.model().stream(any(), any(), any(), eq(true), any())).thenReturn(Flux.just(modelResponse));
+
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .expectNextMatches(event -> event.type() == EventType.DONE)
+                .verifyComplete();
+
+        // 捕获最终模型选项，确认乘车人查询工具已实际注册且没有缺失工具。
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true), any());
+        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
+        assertThat(options.getToolCallbacks())
+                .extracting(callback -> callback.getToolDefinition().name())
+                .containsExactly("list_my_passengers");
+    }
+
+    /**
      * 验证普通问答即使存在工具提供器也不会向回答模型注册 MCP 工具。
      */
     @Test
