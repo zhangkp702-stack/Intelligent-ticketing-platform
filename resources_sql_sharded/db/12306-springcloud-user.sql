@@ -840,6 +840,7 @@ CREATE TABLE `t_passenger_0`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -858,6 +859,7 @@ CREATE TABLE `t_passenger_1`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -876,6 +878,7 @@ CREATE TABLE `t_passenger_10`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -894,6 +897,7 @@ CREATE TABLE `t_passenger_11`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -912,6 +916,7 @@ CREATE TABLE `t_passenger_12`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -930,6 +935,7 @@ CREATE TABLE `t_passenger_13`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -948,6 +954,7 @@ CREATE TABLE `t_passenger_14`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -966,6 +973,7 @@ CREATE TABLE `t_passenger_15`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=1683029597561061377 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -984,6 +992,7 @@ CREATE TABLE `t_passenger_2`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -1002,6 +1011,7 @@ CREATE TABLE `t_passenger_3`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -1020,6 +1030,7 @@ CREATE TABLE `t_passenger_4`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -1038,6 +1049,7 @@ CREATE TABLE `t_passenger_5`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -1056,6 +1068,7 @@ CREATE TABLE `t_passenger_6`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -1074,6 +1087,7 @@ CREATE TABLE `t_passenger_7`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -1092,6 +1106,7 @@ CREATE TABLE `t_passenger_8`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
@@ -1110,6 +1125,7 @@ CREATE TABLE `t_passenger_9`
     `update_time`   datetime                                DEFAULT NULL COMMENT '修改时间',
     `del_flag`      tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
+    KEY             `idx_username` (`username`) USING BTREE,
     KEY             `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人表';
 
