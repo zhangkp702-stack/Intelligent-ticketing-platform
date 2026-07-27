@@ -150,6 +150,31 @@ class PurchaseWorkflowServiceTests {
     }
 
     /**
+     * 验证历史乘车人的核验状态为 0 时仍能按姓名进入既有购票流程。
+     */
+    @Test
+    void acceptsLegacyPassengerWithZeroVerifyStatus() {
+        AgentRequestContext requestContext = requestContext();
+        List<PassengerOption> options = List.of(
+                new PassengerOption("passenger-1", "万重山", "31***********1234", 0, 0));
+
+        // 当前种子数据使用 verifyStatus=0，Agent 不得在查询阶段把真实乘车人过滤掉。
+        PassengerResolutionResult result = purchaseWorkflowService.resolvePassengers(
+                requestContext,
+                "train-1",
+                "北京南",
+                "上海虹桥",
+                "2026-07-22",
+                List.of("万重山"),
+                PurchaseSeatClass.SECOND_CLASS,
+                options);
+
+        assertThat(result.status()).isEqualTo(PassengerResolutionStatus.RESOLVED);
+        assertThat(result.resolvedPassengers()).extracting("passengerId")
+                .containsExactly("passenger-1");
+    }
+
+    /**
      * 创建相互隔离的测试请求上下文。
      *
      * @return 带唯一用户、会话和轮次标识的请求上下文
