@@ -69,6 +69,12 @@ public class PassengerServiceImpl implements PassengerService {
     private final PassengerMapper passengerMapper;
     private final DistributedCache distributedCache;
 
+    /**
+     * 查询指定用户的全部乘车人，并使用空列表表达正常的无数据结果。
+     *
+     * @param username 当前登录用户名
+     * @return 当前用户的乘车人列表；没有记录时返回空列表
+     */
     @Override
     public List<PassengerRespDTO> listPassengerQueryByUsername(String username) {
         try {
@@ -87,9 +93,10 @@ public class PassengerServiceImpl implements PassengerService {
             }
             List<PassengerDO> passengerDOList = passengerMapper.selectList(queryWrapper);
             log.info("[乘车人查询] username={} count={}", username, CollUtil.size(passengerDOList));
-            return CollUtil.isNotEmpty(passengerDOList)
-                    ? passengerDOList.stream().map(this::convertToPassengerResp).collect(Collectors.toList())
-                    : null;
+            // 空查询属于正常业务结果，返回空数组供上层稳定区分“没有乘车人”和“查询失败”。
+            return passengerDOList.stream()
+                    .map(this::convertToPassengerResp)
+                    .collect(Collectors.toList());
         } catch (Exception ex) {
             log.error("[乘车人查询] username={} 查询失败", username, ex);
             throw ex;
