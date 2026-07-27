@@ -44,7 +44,6 @@ index12306:
       read-timeout: 20s
       station-result-limit: 10
       ticket-result-limit: 20
-      passenger-result-limit: 30
       order-page-size-limit: 20
 
 management:

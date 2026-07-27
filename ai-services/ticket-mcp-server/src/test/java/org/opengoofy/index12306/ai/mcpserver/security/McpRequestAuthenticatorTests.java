@@ -78,7 +78,7 @@ class McpRequestAuthenticatorTests {
         URI local = URI.create("http://127.0.0.1:1");
         return new TicketMcpProperties(
                 SECRET, Duration.ofMinutes(2), local, local, local,
-                Duration.ofSeconds(1), Duration.ofSeconds(1), 10, 20, 30, 20);
+                Duration.ofSeconds(1), Duration.ofSeconds(1), 10, 20, 20);
     }
 
     /**

@@ -203,9 +203,7 @@ public class TicketBusinessClient {
         JsonNode data = requireData(root);
         List<PassengerView> result = new ArrayList<>();
         for (JsonNode item : iterable(data)) {
-            if (result.size() >= properties.passengerResultLimit()) {
-                break;
-            }
+            // 乘车人归属和姓名匹配要求完整账号列表，不能静默截断后误报乘车人不存在。
             result.add(new PassengerView(
                     text(item, "id"),
                     text(item, "realName"),

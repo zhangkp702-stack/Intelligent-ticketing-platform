@@ -18,7 +18,6 @@ import java.time.Duration;
  * @param readTimeout 下游响应读取超时
  * @param stationResultLimit 站点解析最大结果数
  * @param ticketResultLimit 车次查询最大结果数
- * @param passengerResultLimit 乘车人最大结果数
  * @param orderPageSizeLimit 本人订单单页最大结果数
  */
 @ConfigurationProperties(prefix = "index12306.agent.mcp")
@@ -32,6 +31,5 @@ public record TicketMcpProperties(
         @DefaultValue("20s") Duration readTimeout,
         @DefaultValue("10") int stationResultLimit,
         @DefaultValue("20") int ticketResultLimit,
-        @DefaultValue("30") int passengerResultLimit,
         @DefaultValue("20") int orderPageSizeLimit) {
 }
