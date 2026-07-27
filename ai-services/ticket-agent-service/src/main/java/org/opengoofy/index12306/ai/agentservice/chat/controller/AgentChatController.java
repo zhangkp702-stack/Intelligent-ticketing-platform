@@ -360,7 +360,7 @@ public class AgentChatController {
     @PostMapping("/chat")
     public Mono<ChatResult> chat(
             @RequestHeader(USER_ID_HEADER) String userId,
-            @RequestHeader(value = USERNAME_HEADER, required = false) String username,
+            @RequestHeader(USERNAME_HEADER) String username,
             @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
             @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ChatRequest request) {
@@ -383,7 +383,7 @@ public class AgentChatController {
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
             @RequestHeader(USER_ID_HEADER) String userId,
-            @RequestHeader(value = USERNAME_HEADER, required = false) String username,
+            @RequestHeader(USERNAME_HEADER) String username,
             @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
             @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody ChatRequest request,

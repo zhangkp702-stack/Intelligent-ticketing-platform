@@ -67,7 +67,8 @@ public class SignedMcpMetadataConverter implements ToolContextToMcpMetaConverter
         Map<String, Object> context = toolContext == null ? Map.of() : toolContext.getContext();
         String requestId = required(context, McpToolContextFactory.REQUEST_ID);
         String userId = required(context, McpToolContextFactory.USER_ID);
-        String username = optional(context, McpToolContextFactory.USERNAME);
+        // 用户名与用户 ID 一起构成下游数据归属，签名前必须完整存在。
+        String username = required(context, McpToolContextFactory.USERNAME);
         String conversationId = required(context, McpToolContextFactory.CONVERSATION_ID);
         String turnId = required(context, McpToolContextFactory.TURN_ID);
         String actionId = optional(context, McpToolContextFactory.ACTION_ID);

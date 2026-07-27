@@ -25,6 +25,8 @@ public record AgentRequestContext(
         // 业务身份和幂等字段必须显式存在，避免异步线程读取隐式线程状态。
         Assert.hasText(requestId, "请求标识不能为空");
         Assert.hasText(userId, "用户标识不能为空");
+        // 用户名是下游既有用户、订单和乘车人服务的归属字段，缺失时不能继续执行查询。
+        Assert.hasText(username, "用户名不能为空");
         Assert.hasText(conversationId, "会话标识不能为空");
         Assert.hasText(turnId, "轮次标识不能为空");
     }

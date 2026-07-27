@@ -67,7 +67,8 @@ public class McpRequestAuthenticator {
         // 提取签名覆盖的全部字段，任何必需字段缺失都直接拒绝调用。
         String requestId = required(meta, "requestId");
         String userId = required(meta, "userId");
-        String username = optional(meta, "username");
+        // 用户名是转发到既有业务服务的归属条件，缺失时拒绝工具调用而非匿名查询。
+        String username = required(meta, "username");
         String conversationId = required(meta, "conversationId");
         String turnId = required(meta, "turnId");
         String actionId = optional(meta, "actionId");

@@ -51,7 +51,7 @@ public class AgentActionController {
     @PostMapping("/{actionId}/confirm")
     public ActionStatusView confirm(
             @RequestHeader(USER_ID_HEADER) String userId,
-            @RequestHeader(value = USERNAME_HEADER, required = false) String username,
+            @RequestHeader(USERNAME_HEADER) String username,
             @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
             @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String actionId,

@@ -31,7 +31,7 @@ public class McpToolContextFactory {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put(REQUEST_ID, context.requestId());
         result.put(USER_ID, context.userId());
-        result.put(USERNAME, valueOrEmpty(context.username()));
+        result.put(USERNAME, context.username());
         result.put(CONVERSATION_ID, context.conversationId());
         result.put(TURN_ID, context.turnId());
         return Map.copyOf(result);
@@ -56,14 +56,4 @@ public class McpToolContextFactory {
         return Map.copyOf(result);
     }
 
-    /**
-     * 将允许为空的上下文字段规范为稳定空字符串。
-     *
-     * @param value 原始字段值
-     * @return 原值或空字符串
-     */
-    private String valueOrEmpty(String value) {
-        // 签名两端对缺失可选字段使用同一空值表示。
-        return value == null ? "" : value;
-    }
 }
