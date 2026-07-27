@@ -17,6 +17,7 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * 将只读 MCP 工具包装为带持久化审计的 Spring AI 工具回调集合。
@@ -42,19 +43,36 @@ public class TicketMcpToolProviderConfiguration {
             ToolContextToMcpMetaConverter metadataConverter,
             ToolCallAuditService auditService,
             ObjectMapper objectMapper) {
-        // Spring AI 可能按传输配置创建多组客户端，先合并后统一发现工具。
-        List<McpSyncClient> clients = clientLists.stream().flatMap(List::stream).toList();
-        SyncMcpToolCallbackProvider delegate = SyncMcpToolCallbackProvider.builder()
-                .mcpClients(clients)
-                .toolFilter(toolFilter)
-                .toolNamePrefixGenerator(McpToolNamePrefixGenerator.noPrefix())
-                .toolContextToMcpMetaConverter(metadataConverter)
-                .build();
+        // MCP 客户端 Bean 在容器启动后才完成初始化，客户端集合和工具清单都必须在实际使用时读取。
+        return auditedProvider(
+                () -> {
+                    List<McpSyncClient> clients = clientLists.stream().flatMap(List::stream).toList();
+                    return SyncMcpToolCallbackProvider.builder()
+                            .mcpClients(clients)
+                            .toolFilter(toolFilter)
+                            .toolNamePrefixGenerator(McpToolNamePrefixGenerator.noPrefix())
+                            .toolContextToMcpMetaConverter(metadataConverter)
+                            .build();
+                },
+                auditService,
+                objectMapper);
+    }
 
-        // 模型只能获得经过审计包装后的工具回调，原始回调不注册到容器。
-        ToolCallback[] callbacks = Arrays.stream(delegate.getToolCallbacks())
+    /**
+     * 创建按调用时工具清单动态添加审计包装的提供器。
+     *
+     * @param delegateSupplier 原始 MCP 工具提供器工厂
+     * @param auditService 工具调用审计服务
+     * @param objectMapper JSON 解析器
+     * @return 不缓存启动阶段工具清单的审计工具提供器
+     */
+    static ToolCallbackProvider auditedProvider(
+            Supplier<ToolCallbackProvider> delegateSupplier,
+            ToolCallAuditService auditService,
+            ObjectMapper objectMapper) {
+        // 每次重新取得 MCP 客户端及其最新工具清单，使延迟初始化后的工具能够进入回答流水线。
+        return () -> Arrays.stream(delegateSupplier.get().getToolCallbacks())
                 .map(callback -> new AuditedToolCallback(callback, auditService, objectMapper))
                 .toArray(ToolCallback[]::new);
-        return ToolCallbackProvider.from(callbacks);
     }
 }
