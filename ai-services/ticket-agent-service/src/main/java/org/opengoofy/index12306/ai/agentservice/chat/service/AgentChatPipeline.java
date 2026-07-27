@@ -4,6 +4,8 @@ import org.opengoofy.index12306.ai.agentservice.chat.exception.AgentChatExceptio
 
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionDraftCreationTracker;
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ActionConfirmationView;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.PurchasePassenger;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.PurchasePayload;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
@@ -30,6 +32,7 @@ import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelH
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.exception.ModelRoutingException;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.RoutedChatModelService;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.WorkflowInteractionTracker;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
@@ -425,8 +428,10 @@ public class AgentChatPipeline {
                     context, prompt, callbacks, answer, performanceTrace);
 
             // 模型结束后读取数据库草案状态，生成权威正文并持久化轮次终态。
+            boolean purchaseDraftAllowed = callbacks.stream()
+                    .anyMatch(callback -> PURCHASE_DRAFT_TOOL.equals(callback.getToolDefinition().name()));
             Flux<ChatEvent> completionEvents = completeAnswer(
-                    context, answer, terminal, performanceTrace);
+                    context, answer, terminal, performanceTrace, purchaseDraftAllowed);
 
             // 统一按元数据、模型增量、操作确认和完成事件的顺序输出。
             return assembleEventStream(context, answerEvents, completionEvents, terminal);
@@ -585,19 +590,26 @@ public class AgentChatPipeline {
      * @param answer 已累计的模型正文
      * @param terminal 是否已经持久化终态
      * @param performanceTrace 本轮性能数据容器
+     * @param purchaseDraftAllowed 本轮是否属于允许创建购票草案的业务路径
      * @return 待确认操作和完成事件
      */
     private Flux<ChatEvent> completeAnswer(
             AgentRequestContext context,
             StringBuilder answer,
             AtomicBoolean terminal,
-            RequestPerformanceTrace performanceTrace) {
+            RequestPerformanceTrace performanceTrace,
+            boolean purchaseDraftAllowed) {
         // 完成阶段在订阅时执行，确保它严格发生在所有模型增量之后。
         return Mono.fromCallable(() -> {
             long completionStartedNanos = System.nanoTime();
             try {
                 // 数据库草案状态和轮次终态必须在同一个完成阶段指标内收口。
-                ActionConfirmationView action = actionDraftCreationTracker.consumeCreated(context.turnId())
+                boolean draftCreated = actionDraftCreationTracker.consumeCreated(context.turnId());
+                if (!draftCreated && purchaseDraftAllowed) {
+                    // 模型漏调草案工具时，只使用已经过服务端校验的工作流上下文补建待确认草案。
+                    draftCreated = createReadyPurchaseDraft(context);
+                }
+                ActionConfirmationView action = draftCreated
                         ? purchaseActionService.confirmationForTurn(context.userId(), context.turnId()).orElse(null)
                         : null;
                 WorkflowInteractionView workflow = workflowSelectionTracker.consume(context.turnId());
@@ -626,6 +638,49 @@ public class AgentChatPipeline {
                     context, completed.content(), false, performanceTrace.snapshot()));
             return Flux.fromIterable(events);
         });
+    }
+
+    /**
+     * 使用服务端已确认的购票工作流创建待确认草案，避免模型只输出提示文字却没有确认按钮。
+     *
+     * @param context 当前请求上下文
+     * @return 是否成功找到就绪工作流并创建草案
+     */
+    private boolean createReadyPurchaseDraft(AgentRequestContext context) {
+        PurchaseWorkflowContext workflowContext = purchaseWorkflowService
+                .findReadyDraftContext(context.userId(), context.conversationId())
+                .orElse(null);
+        if (workflowContext == null) {
+            return false;
+        }
+
+        // 再次按当前数据库状态校验行程和乘车人，避免读取上下文后工作流被并发替换。
+        purchaseWorkflowService.validateDraft(
+                context.userId(),
+                context.conversationId(),
+                workflowContext.trainId(),
+                workflowContext.departure(),
+                workflowContext.arrival(),
+                workflowContext.departureDate(),
+                workflowContext.selectedPassengerIds());
+
+        // 所有乘车人使用工作流中已经确认的同一席别，草案仅等待前端独立确认，不会创建订单。
+        List<PurchasePassenger> passengers = workflowContext.selectedPassengerIds().stream()
+                .map(passengerId -> new PurchasePassenger(passengerId, workflowContext.seatType()))
+                .toList();
+        purchaseActionService.prepare(
+                context,
+                new PurchasePayload(
+                        workflowContext.trainId(),
+                        workflowContext.departure(),
+                        workflowContext.arrival(),
+                        workflowContext.departureDate(),
+                        passengers,
+                        workflowContext.chooseSeats()));
+
+        // 草案持久化成功后完成工作流，随后由统一完成阶段读取确认令牌并下发按钮事件。
+        purchaseWorkflowService.completeAfterDraft(context.userId(), context.conversationId());
+        return true;
     }
 
     /**

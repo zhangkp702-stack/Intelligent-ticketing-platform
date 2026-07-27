@@ -9,8 +9,10 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionDraftCreationTracker;
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ActionConfirmationView;
+import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.PurchasePayload;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
+import org.opengoofy.index12306.ai.agentservice.action.enums.PurchaseSeatClass;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
@@ -28,6 +30,7 @@ import org.opengoofy.index12306.ai.agentservice.conversation.service.Conversatio
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelHttpCallRound;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.RoutedChatModelService;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.WorkflowInteractionTracker;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
@@ -264,6 +267,86 @@ class AgentChatServiceTests {
         assertThat(completionCaptor.getValue().content()).contains("尚未创建订单");
         verify(test.purchaseActionService()).confirmationForTurn(command.userId(), "turn-1");
         assertThat(test.actionDraftCreationTracker().consumeCreated("turn-1")).isFalse();
+    }
+
+    /**
+     * 验证购票信息已经由服务端确认时，即使模型漏调草案工具也会返回前端确认按钮事件。
+     */
+    @Test
+    void readyPurchaseWorkflowCreatesDraftAndEmitsConfirmationAction() {
+        ToolCallbackProvider provider = ToolCallbackProvider.from(
+                toolCallback("resolve_station"),
+                toolCallback("query_tickets"),
+                toolCallback("resolve_purchase_passengers"),
+                toolCallback("prepare_ticket_purchase"));
+        TestContext test = context(Duration.ofSeconds(60), provider);
+        ChatCommand command = new ChatCommand(
+                "request-purchase", "request-purchase", "user-1", "tester",
+                "conversation-1", "帮万重山购买 G9001 次列车一等座");
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
+        PurchaseWorkflowContext readyContext = new PurchaseWorkflowContext(
+                "train-1",
+                "北京南",
+                "上海虹桥",
+                "2026-07-22",
+                List.of("万重山"),
+                List.of(),
+                List.of("passenger-1"),
+                PurchaseSeatClass.FIRST_CLASS.code(),
+                List.of());
+        ActionConfirmationView action = new ActionConfirmationView(
+                "action-1", "TICKET_PURCHASE", AgentActionStatus.AWAITING_CONFIRMATION,
+                "购买 G9001 次列车", Instant.parse("2026-07-16T00:10:00Z"), "confirmation-token");
+
+        // 模拟乘车人与席别已经写入工作流，但回答模型只输出了“请点击确认”的错误文字。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, conversationHistory);
+        when(test.intentClassificationService().classify(any(), any(), any(), any()))
+                .thenReturn(AgentIntent.TICKET_PURCHASE);
+        ChatResponse incorrectModelResponse = response("购票草案已生成，请点击确认下单");
+        when(test.model().stream(any(), any(), any(), eq(true), any()))
+                .thenReturn(Flux.just(incorrectModelResponse));
+        when(test.purchaseWorkflowService().findReadyDraftContext(
+                command.userId(), command.conversationId()))
+                .thenReturn(Optional.of(readyContext));
+        when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
+                .thenReturn(Optional.of(action));
+
+        // 完成阶段必须补建真实草案并下发 ACTION_REQUIRED，前端据此渲染确认按钮。
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .assertNext(event -> {
+                    assertThat(event.type()).isEqualTo(EventType.ACTION_REQUIRED);
+                    assertThat(event.action()).isEqualTo(action);
+                })
+                .assertNext(event -> {
+                    assertThat(event.type()).isEqualTo(EventType.DONE);
+                    assertThat(event.content()).contains("点击“确认下单”按钮");
+                    assertThat(event.content()).contains("尚未创建订单");
+                })
+                .verifyComplete();
+
+        // 兜底草案只能使用服务端工作流中的行程、乘车人标识和席别。
+        ArgumentCaptor<PurchasePayload> payloadCaptor = ArgumentCaptor.forClass(PurchasePayload.class);
+        verify(test.purchaseActionService()).prepare(any(), payloadCaptor.capture());
+        assertThat(payloadCaptor.getValue().trainId()).isEqualTo("train-1");
+        assertThat(payloadCaptor.getValue().passengers())
+                .extracting("passengerId", "seatType")
+                .containsExactly(org.assertj.core.groups.Tuple.tuple(
+                        "passenger-1", PurchaseSeatClass.FIRST_CLASS.code()));
+        verify(test.purchaseWorkflowService()).validateDraft(
+                command.userId(),
+                command.conversationId(),
+                "train-1",
+                "北京南",
+                "上海虹桥",
+                "2026-07-22",
+                List.of("passenger-1"));
+        verify(test.purchaseWorkflowService()).completeAfterDraft(
+                command.userId(), command.conversationId());
     }
 
     /**
@@ -591,7 +674,7 @@ class AgentChatServiceTests {
                 chatMetrics);
         return new TestContext(
                 service, memory, contextService, questionRewriteService, intentClassificationService, model,
-                purchaseActionService, actionDraftCreationTracker, meterRegistry);
+                purchaseActionService, actionDraftCreationTracker, purchaseWorkflowService, meterRegistry);
     }
 
     /**
@@ -645,6 +728,7 @@ class AgentChatServiceTests {
      * @param model 回答模型替身
      * @param purchaseActionService 购票动作服务替身
      * @param actionDraftCreationTracker 本轮草案创建信号
+     * @param purchaseWorkflowService 购票工作流服务替身
      * @param meterRegistry 指标注册表
      */
     private record TestContext(
@@ -656,6 +740,7 @@ class AgentChatServiceTests {
             RoutedChatModelService model,
             PurchaseActionService purchaseActionService,
             ActionDraftCreationTracker actionDraftCreationTracker,
+            PurchaseWorkflowService purchaseWorkflowService,
             SimpleMeterRegistry meterRegistry) {
     }
 }

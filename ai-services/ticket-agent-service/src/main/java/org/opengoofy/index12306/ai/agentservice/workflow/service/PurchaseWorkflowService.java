@@ -214,6 +214,28 @@ public class PurchaseWorkflowService {
     }
 
     /**
+     * 读取已经完成行程、乘车人和席别校验且可以创建草案的购票上下文。
+     *
+     * @param userId 当前用户标识
+     * @param conversationId 所属会话标识
+     * @return 可安全创建待确认草案的服务端上下文
+     */
+    public Optional<PurchaseWorkflowContext> findReadyDraftContext(String userId, String conversationId) {
+        // 只有服务端明确推进到 CREATING_DRAFT 的购票工作流才允许进入确定性草案兜底。
+        return workflowService.findActive(userId, conversationId)
+                .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
+                .filter(workflow -> workflow.getStage() == WorkflowStage.CREATING_DRAFT)
+                .map(workflow -> readContext(workflow.getContextJson()))
+                .filter(context -> StringUtils.hasText(context.trainId())
+                        && StringUtils.hasText(context.departure())
+                        && StringUtils.hasText(context.arrival())
+                        && StringUtils.hasText(context.departureDate())
+                        && context.selectedPassengerIds() != null
+                        && !context.selectedPassengerIds().isEmpty()
+                        && context.seatType() != null);
+    }
+
+    /**
      * 生成供回答模型继续购票的服务端工作流提示。
      *
      * @param userId 当前用户标识

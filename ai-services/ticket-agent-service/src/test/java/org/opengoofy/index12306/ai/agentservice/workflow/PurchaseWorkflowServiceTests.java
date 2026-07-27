@@ -70,6 +70,13 @@ class PurchaseWorkflowServiceTests {
                 .containsExactly("passenger-1");
         assertThat(workflowRepository.findById(result.workflowId()).orElseThrow().getStage())
                 .isEqualTo(WorkflowStage.CREATING_DRAFT);
+        assertThat(purchaseWorkflowService.findReadyDraftContext(
+                requestContext.userId(), requestContext.conversationId()))
+                .get()
+                .extracting("selectedPassengerIds", "seatType")
+                .containsExactly(
+                        List.of("passenger-1"),
+                        PurchaseSeatClass.SECOND_CLASS.code());
 
         // 完全一致的草案允许继续，替换乘车人或行程必须在服务端被拒绝。
         purchaseWorkflowService.validateDraft(
