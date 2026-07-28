@@ -7,12 +7,9 @@ import org.opengoofy.index12306.ai.agentservice.chat.service.AgentChatPipeline;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.opengoofy.index12306.ai.agentservice.action.service.ActionDraftCreationTracker;
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ActionConfirmationView;
-import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.PurchasePayload;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
-import org.opengoofy.index12306.ai.agentservice.action.enums.PurchaseSeatClass;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
@@ -20,6 +17,9 @@ import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteServ
 import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
 import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.CancellationIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.IntentClassificationResult;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.RefundIntentData;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentToolRoutingService;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
@@ -30,11 +30,13 @@ import org.opengoofy.index12306.ai.agentservice.conversation.service.Conversatio
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelHttpCallRound;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.RoutedChatModelService;
-import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
-import org.opengoofy.index12306.ai.agentservice.workflow.service.WorkflowInteractionTracker;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseChainService;
+import org.opengoofy.index12306.ai.agentservice.workflow.service.TicketOperationChainService;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWorkflowService;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.RefundWorkflowService;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -60,6 +62,7 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
@@ -199,8 +202,8 @@ class AgentChatServiceTests {
                 true))
                 .when(test.questionRewriteService())
                 .rewrite(eq(conversationHistory), any());
-        when(test.intentClassificationService().classify(any(), any(), any(), any()))
-                .thenReturn(AgentIntent.TRAIN_QUERY);
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(classification(AgentIntent.TRAIN_QUERY));
         ChatResponse modelResponse = response("G9003 还有余票");
         when(test.model().stream(any(), any(), any(), eq(true), any()))
                 .thenReturn(Flux.just(modelResponse));
@@ -211,7 +214,12 @@ class AgentChatServiceTests {
                 .expectNextMatches(event -> event.type() == EventType.DONE)
                 .verifyComplete();
 
-        // Prompt 最后一条用户消息应为独立问题，原始省略问句不重复进入回答模型输入。
+        // 意图识别和回答模型都必须使用补全后的独立问题，避免再次丢失上文车次信息。
+        verify(test.intentClassificationService()).classifyWithActionData(
+                eq("明天北京到上海的第二趟车 G9003 还有票吗"),
+                eq(conversationHistory),
+                any(),
+                any());
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true), any());
         assertThat(promptCaptor.getValue().getInstructions().get(
@@ -222,30 +230,30 @@ class AgentChatServiceTests {
     }
 
     /**
-     * 验证购票草案真实落库后由服务端收口最终正文，模型不能把待确认草案描述为已下单。
+     * 验证固定购票链创建草案后直接读取数据库确认视图，不依赖进程内执行信号。
      */
     @Test
-    void persistedPurchaseDraftOverridesModelSuccessClaim() {
+    void fixedPurchaseChainUsesPersistedDraftForAuthoritativeResult() {
         TestContext test = context();
-        ChatCommand command = command();
-        ConversationHistoryContext conversationHistory = history(
-                command.conversationId(), command.message(), List.of());
+        ChatCommand command = new ChatCommand(
+                "request-purchase", "request-purchase", "user-1", "tester",
+                "conversation-1", "帮万重山购买 G9001 次列车一等座");
         ActionConfirmationView action = new ActionConfirmationView(
                 "action-1", "TICKET_PURCHASE", AgentActionStatus.AWAITING_CONFIRMATION,
                 "购买 G9004 次列车", Instant.parse("2026-07-16T00:10:00Z"), "confirmation-token");
-        ChatResponse incorrectModelResponse = response("订单已提交成功，请前往支付");
 
-        // 模拟模型错误声称已提交订单，但本轮数据库中实际只有待确认购票草案。
+        // 固定链返回草案结果，数据库中保存对应待确认操作。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
-        stubHistory(test, command, conversationHistory);
-        when(test.model().stream(any(), any(), any(), eq(false), any()))
-                .thenReturn(Flux.just(incorrectModelResponse));
+        stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(classification(AgentIntent.TICKET_PURCHASE));
+        when(test.purchaseChainService().execute(any(), any())).thenReturn(
+                new PurchaseChainService.PurchaseChainResult("已生成购票草案"));
         when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
                 .thenReturn(Optional.of(action));
-        test.actionDraftCreationTracker().markCreated("turn-1");
 
-        // 最终事件和持久化正文必须以数据库状态为准，同时保留结构化待确认动作。
+        // 最终正文和确认按钮必须来自数据库状态，购票链不能调用回答模型。
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
                 .expectNextMatches(event -> event.type() == EventType.DELTA)
@@ -257,7 +265,6 @@ class AgentChatServiceTests {
                     assertThat(event.type()).isEqualTo(EventType.DONE);
                     assertThat(event.content()).contains("点击“确认下单”按钮");
                     assertThat(event.content()).contains("尚未创建订单");
-                    assertThat(event.content()).doesNotContain("订单已提交成功");
                 })
                 .verifyComplete();
 
@@ -266,116 +273,62 @@ class AgentChatServiceTests {
         verify(test.memory()).completeTurn(completionCaptor.capture());
         assertThat(completionCaptor.getValue().content()).contains("尚未创建订单");
         verify(test.purchaseActionService()).confirmationForTurn(command.userId(), "turn-1");
-        assertThat(test.actionDraftCreationTracker().consumeCreated("turn-1")).isFalse();
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
     }
 
     /**
-     * 验证购票信息已经由服务端确认时，即使模型漏调草案工具也会返回前端确认按钮事件。
+     * 验证服务端已经查到乘车人时，模型不能用相反的自然语言覆盖真实查询结果。
      */
     @Test
-    void readyPurchaseWorkflowCreatesDraftAndEmitsConfirmationAction() {
-        ToolCallbackProvider provider = ToolCallbackProvider.from(
-                toolCallback("resolve_station"),
-                toolCallback("query_tickets"),
-                toolCallback("resolve_purchase_passengers"),
-                toolCallback("prepare_ticket_purchase"));
-        TestContext test = context(Duration.ofSeconds(60), provider);
+    void verifiedPassengersOverrideModelAbsenceClaim() {
+        TestContext test = context();
         ChatCommand command = new ChatCommand(
-                "request-purchase", "request-purchase", "user-1", "tester",
-                "conversation-1", "帮万重山购买 G9001 次列车一等座");
-        ConversationHistoryContext conversationHistory = history(
-                command.conversationId(), command.message(), List.of());
-        PurchaseWorkflowContext readyContext = new PurchaseWorkflowContext(
-                "train-1",
-                "北京南",
-                "上海虹桥",
-                "2026-07-22",
-                List.of("万重山"),
-                List.of(),
-                List.of("passenger-1"),
-                PurchaseSeatClass.FIRST_CLASS.code(),
-                List.of());
-        ActionConfirmationView action = new ActionConfirmationView(
-                "action-1", "TICKET_PURCHASE", AgentActionStatus.AWAITING_CONFIRMATION,
-                "购买 G9001 次列车", Instant.parse("2026-07-16T00:10:00Z"), "confirmation-token");
+                "request-verified-passenger", "request-verified-passenger", "user-1", "tester",
+                "conversation-1", "帮万重山买明天早上七点的票");
 
-        // 模拟乘车人与席别已经写入工作流，但回答模型只输出了“请点击确认”的错误文字。
+        // 模拟工具已经返回两名有效乘车人，但模型仍错误生成空乘车人结论。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
-        stubHistory(test, command, conversationHistory);
-        when(test.intentClassificationService().classify(any(), any(), any(), any()))
-                .thenReturn(AgentIntent.TICKET_PURCHASE);
-        ChatResponse incorrectModelResponse = response("购票草案已生成，请点击确认下单");
+        stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(classification(AgentIntent.TICKET_PURCHASE));
+        ChatResponse incorrectModelResponse = response("系统提示当前账号没有可用乘车人");
         when(test.model().stream(any(), any(), any(), eq(true), any()))
                 .thenReturn(Flux.just(incorrectModelResponse));
-        when(test.purchaseWorkflowService().findReadyDraftContext(
-                command.userId(), command.conversationId()))
-                .thenReturn(Optional.of(readyContext));
-        when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
-                .thenReturn(Optional.of(action));
-
-        // 完成阶段必须补建真实草案并下发 ACTION_REQUIRED，前端据此渲染确认按钮。
+        // 购票意图不再调用回答模型；字段不足由确定性链路直接返回。
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
                 .expectNextMatches(event -> event.type() == EventType.DELTA)
                 .assertNext(event -> {
-                    assertThat(event.type()).isEqualTo(EventType.ACTION_REQUIRED);
-                    assertThat(event.action()).isEqualTo(action);
-                })
-                .assertNext(event -> {
                     assertThat(event.type()).isEqualTo(EventType.DONE);
-                    assertThat(event.content()).contains("点击“确认下单”按钮");
-                    assertThat(event.content()).contains("尚未创建订单");
+                    assertThat(event.content()).contains("购票信息不完整");
+                    assertThat(event.content()).doesNotContain("没有可用乘车人");
                 })
                 .verifyComplete();
-
-        // 兜底草案只能使用服务端工作流中的行程、乘车人标识和席别。
-        ArgumentCaptor<PurchasePayload> payloadCaptor = ArgumentCaptor.forClass(PurchasePayload.class);
-        verify(test.purchaseActionService()).prepare(any(), payloadCaptor.capture());
-        assertThat(payloadCaptor.getValue().trainId()).isEqualTo("train-1");
-        assertThat(payloadCaptor.getValue().passengers())
-                .extracting("passengerId", "seatType")
-                .containsExactly(org.assertj.core.groups.Tuple.tuple(
-                        "passenger-1", PurchaseSeatClass.FIRST_CLASS.code()));
-        verify(test.purchaseWorkflowService()).validateDraft(
-                command.userId(),
-                command.conversationId(),
-                "train-1",
-                "北京南",
-                "上海虹桥",
-                "2026-07-22",
-                List.of("passenger-1"));
-        verify(test.purchaseWorkflowService()).completeAfterDraft(
-                command.userId(), command.conversationId());
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
     }
 
     /**
-     * 验证回答模型只获得普通查询和草案工具，真实购票写工具即使被错误注册也会被编排层拒绝。
+     * 验证取消订单意图直接进入固定代码链，不会调用回答模型选择工具。
      */
     @Test
-    void answerModelReceivesOnlyWhitelistedTools() {
-        ToolCallback stationTool = toolCallback("resolve_station");
-        ToolCallback queryTool = toolCallback("query_tickets");
-        ToolCallback passengerTool = toolCallback("resolve_purchase_passengers");
-        ToolCallback draftTool = toolCallback("prepare_ticket_purchase");
-        ToolCallback writeTool = toolCallback("execute_confirmed_ticket_purchase");
-        ToolCallbackProvider provider = ToolCallbackProvider.from(
-                stationTool, queryTool, passengerTool, draftTool, writeTool);
-        TestContext test = context(Duration.ofSeconds(60), provider);
+    void cancellationIntentUsesFixedCodeChain() {
+        TestContext test = context();
         ChatCommand command = new ChatCommand(
-                "request-purchase", "request-purchase", "user-1", "tester",
-                "conversation-1", "帮我购买明天北京到上海的二等座车票");
-        ConversationHistoryContext conversationHistory = history(
-                command.conversationId(), command.message(), List.of());
-        ChatResponse modelResponse = response("可以直接回答，也可以按需查询实时数据");
+                "request-cancel", "request-cancel", "user-1", "tester",
+                "conversation-1", "取消明天 G9001 的订单");
+        CancellationIntentData cancellationRequest =
+                new CancellationIntentData(null, "G9001", "2026-07-28");
 
-        // 模拟一次购票业务问答，模型本身不产生任何工具调用。
+        // 意图模型只输出取消字段，后续订单定位和草案创建由代码链完成。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
-        stubHistory(test, command, conversationHistory);
-        when(test.intentClassificationService().classify(any(), any(), any(), any()))
-                .thenReturn(AgentIntent.TICKET_PURCHASE);
-        when(test.model().stream(any(), any(), any(), eq(true), any())).thenReturn(Flux.just(modelResponse));
+        stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(new IntentClassificationResult(
+                        AgentIntent.ORDER_CANCELLATION, null, cancellationRequest, null));
+        when(test.ticketOperationChainService().executeCancellation(any(), eq(cancellationRequest)))
+                .thenReturn(new TicketOperationChainService.OperationChainResult("取消订单草案已生成。"));
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
@@ -383,17 +336,114 @@ class AgentChatServiceTests {
                 .expectNextMatches(event -> event.type() == EventType.DONE)
                 .verifyComplete();
 
-        // 捕获最终提示选项，确认查询和草案工具保留，而真实写工具不进入模型上下文。
-        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true), any());
-        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
-        assertThat(options.getToolCallbacks())
-                .extracting(callback -> callback.getToolDefinition().name())
-                .containsExactly(
-                        "resolve_station",
-                        "query_tickets",
-                        "resolve_purchase_passengers",
-                        "prepare_ticket_purchase");
+        verify(test.ticketOperationChainService()).executeCancellation(any(), eq(cancellationRequest));
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
+    }
+
+    /**
+     * 验证固定取消链完成后会从数据库服务恢复待选择订单，并发送工作流事件。
+     */
+    @Test
+    void cancellationChainRestoresPendingWorkflowFromDatabase() {
+        TestContext test = context();
+        ChatCommand command = new ChatCommand(
+                "request-cancel-workflow", "request-cancel-workflow", "user-1", "tester",
+                "conversation-1", "取消明天的订单");
+        CancellationIntentData cancellationRequest =
+                new CancellationIntentData(null, null, "2026-07-28");
+        OrderSelectionView workflow = new OrderSelectionView(
+                "workflow-1", WorkflowStage.SELECTING_ORDER, "请选择需要取消的订单", List.of());
+
+        // 固定链先建立数据库工作流，完成阶段随后从对应服务恢复同一待选择状态。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(new IntentClassificationResult(
+                        AgentIntent.ORDER_CANCELLATION, null, cancellationRequest, null));
+        when(test.ticketOperationChainService().executeCancellation(any(), eq(cancellationRequest)))
+                .thenReturn(new TicketOperationChainService.OperationChainResult("等待用户选择订单。"));
+        when(test.cancellationWorkflowService().findPendingSelection("user-1", "conversation-1"))
+                .thenReturn(Optional.of(workflow));
+
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .assertNext(event -> {
+                    assertThat(event.type()).isEqualTo(EventType.WORKFLOW_REQUIRED);
+                    assertThat(event.workflow()).isSameAs(workflow);
+                })
+                .assertNext(event -> {
+                    assertThat(event.type()).isEqualTo(EventType.DONE);
+                    assertThat(event.content()).contains(workflow.prompt());
+                })
+                .verifyComplete();
+
+        verify(test.cancellationWorkflowService())
+                .findPendingSelection("user-1", "conversation-1");
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
+    }
+
+    /**
+     * 验证退票意图直接进入固定代码链，不会调用回答模型补充业务流程。
+     */
+    @Test
+    void refundIntentUsesFixedCodeChain() {
+        TestContext test = context();
+        ChatCommand command = new ChatCommand(
+                "request-refund", "request-refund", "user-1", "tester",
+                "conversation-1", "给万重山退掉明天 G9001 的票");
+        RefundIntentData refundRequest =
+                new RefundIntentData(null, "G9001", "2026-07-28", List.of("万重山"));
+
+        // 意图模型提供订单定位和乘车人字段，退票查询、预览及草案顺序由代码固定。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(new IntentClassificationResult(
+                        AgentIntent.TICKET_REFUND, null, null, refundRequest));
+        when(test.ticketOperationChainService().executeRefund(any(), eq(refundRequest)))
+                .thenReturn(new TicketOperationChainService.OperationChainResult("退票草案已生成。"));
+
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .expectNextMatches(event -> event.type() == EventType.DONE)
+                .verifyComplete();
+
+        verify(test.ticketOperationChainService()).executeRefund(any(), eq(refundRequest));
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
+    }
+
+    /**
+     * 验证固定购票链不会读取或校验回答模型工具提供器。
+     */
+    @Test
+    void purchaseCodeChainDoesNotResolveModelTools() {
+        ToolCallbackProvider provider = mock(ToolCallbackProvider.class);
+        TestContext test = context(Duration.ofSeconds(60), provider);
+        ChatCommand command = new ChatCommand(
+                "request-purchase", "request-purchase", "user-1", "tester",
+                "conversation-1", "帮我购买明天北京到上海的二等座车票");
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
+        // 模拟一次购票业务问答，固定链在工具提供器解析之前直接执行。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, conversationHistory);
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(classification(AgentIntent.TICKET_PURCHASE));
+
+        StepVerifier.create(test.service().stream(command))
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .expectNextMatches(event -> event.type() == EventType.DONE)
+                .verifyComplete();
+
+        // 固定链既不调用回答模型，也不读取回答模型工具提供器。
+        verify(provider, never()).getToolCallbacks();
+        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
     }
 
     /**
@@ -402,7 +452,8 @@ class AgentChatServiceTests {
     @Test
     void passengerQueryReceivesPassengerTool() {
         ToolCallback passengerTool = toolCallback("list_my_passengers");
-        ToolCallbackProvider provider = ToolCallbackProvider.from(passengerTool);
+        ToolCallback passengerLookupTool = toolCallback("find_my_passengers_by_name");
+        ToolCallbackProvider provider = ToolCallbackProvider.from(passengerTool, passengerLookupTool);
         TestContext test = context(Duration.ofSeconds(60), provider);
         ChatCommand command = new ChatCommand(
                 "request-passenger", "request-passenger", "user-1", "tester",
@@ -415,8 +466,8 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        when(test.intentClassificationService().classify(any(), any(), any(), any()))
-                .thenReturn(AgentIntent.PASSENGER_QUERY);
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(classification(AgentIntent.PASSENGER_QUERY));
         when(test.model().stream(any(), any(), any(), eq(true), any())).thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -431,7 +482,7 @@ class AgentChatServiceTests {
         OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
         assertThat(options.getToolCallbacks())
                 .extracting(callback -> callback.getToolDefinition().name())
-                .containsExactly("list_my_passengers");
+                .containsExactlyInAnyOrder("list_my_passengers", "find_my_passengers_by_name");
     }
 
     /**
@@ -486,8 +537,8 @@ class AgentChatServiceTests {
         stubHistory(test, command, conversationHistory);
 
         // 意图模型已识别为查票，后续缺少工具时应在回答模型调用前失败。
-        when(test.intentClassificationService().classify(any(), any(), any(), any()))
-                .thenReturn(AgentIntent.TRAIN_QUERY);
+        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(classification(AgentIntent.TRAIN_QUERY));
 
         StepVerifier.create(test.service().stream(command))
                 .expectErrorSatisfies(error -> assertThat(error)
@@ -548,7 +599,6 @@ class AgentChatServiceTests {
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
         when(test.model().stream(any(), any(), any(), eq(false), any())).thenReturn(Flux.never());
-        test.actionDraftCreationTracker().markCreated("turn-1");
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
@@ -556,7 +606,6 @@ class AgentChatServiceTests {
                         .isInstanceOf(AgentChatException.class))
                 .verify(Duration.ofSeconds(1));
         verify(test.memory()).cancelTurn(command.userId(), "turn-1");
-        assertThat(test.actionDraftCreationTracker().consumeCreated("turn-1")).isFalse();
     }
 
     /**
@@ -633,11 +682,11 @@ class AgentChatServiceTests {
         IntentClassificationService intentClassificationService = mock(IntentClassificationService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
-        ActionDraftCreationTracker actionDraftCreationTracker = new ActionDraftCreationTracker();
         PurchaseWorkflowService purchaseWorkflowService = mock(PurchaseWorkflowService.class);
         CancellationWorkflowService cancellationWorkflowService = mock(CancellationWorkflowService.class);
         RefundWorkflowService refundWorkflowService = mock(RefundWorkflowService.class);
-        WorkflowInteractionTracker workflowSelectionTracker = new WorkflowInteractionTracker();
+        PurchaseChainService purchaseChainService = mock(PurchaseChainService.class);
+        TicketOperationChainService ticketOperationChainService = mock(TicketOperationChainService.class);
         ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
         // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
         when(providers.orderedStream()).thenReturn(Arrays.stream(configuredProviders));
@@ -646,8 +695,15 @@ class AgentChatServiceTests {
             return QuestionRewriteResult.unchanged(
                     history.currentQuestion().content(), false);
         });
-        when(intentClassificationService.classify(any(), any(), any(), any()))
-                .thenReturn(AgentIntent.GENERAL_CHAT);
+        when(intentClassificationService.classifyWithActionData(any(), any(), any(), any()))
+                .thenReturn(classification(AgentIntent.GENERAL_CHAT));
+        // 默认让购票测试落入确定性代码链路，普通问答仍覆盖原有模型路径。
+        when(purchaseChainService.execute(any(), any())).thenReturn(
+                new PurchaseChainService.PurchaseChainResult("购票信息不完整：缺少乘车人。"));
+        when(ticketOperationChainService.executeCancellation(any(), any())).thenReturn(
+                new TicketOperationChainService.OperationChainResult("请选择需要取消的订单。"));
+        when(ticketOperationChainService.executeRefund(any(), any())).thenReturn(
+                new TicketOperationChainService.OperationChainResult("请选择需要退票的订单。"));
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AgentChatMetrics chatMetrics = new AgentChatMetrics(meterRegistry);
         AgentChatPipeline pipeline = new AgentChatPipeline(
@@ -659,11 +715,11 @@ class AgentChatServiceTests {
                 chatMetrics,
                 model,
                 purchaseActionService,
-                actionDraftCreationTracker,
                 purchaseWorkflowService,
                 cancellationWorkflowService,
                 refundWorkflowService,
-                workflowSelectionTracker,
+                purchaseChainService,
+                ticketOperationChainService,
                 new McpToolContextFactory(),
                 providers,
                 Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC));
@@ -674,7 +730,8 @@ class AgentChatServiceTests {
                 chatMetrics);
         return new TestContext(
                 service, memory, contextService, questionRewriteService, intentClassificationService, model,
-                purchaseActionService, actionDraftCreationTracker, purchaseWorkflowService, meterRegistry);
+                purchaseActionService, purchaseWorkflowService,
+                cancellationWorkflowService, purchaseChainService, ticketOperationChainService, meterRegistry);
     }
 
     /**
@@ -690,6 +747,16 @@ class AgentChatServiceTests {
         when(definition.name()).thenReturn(name);
         when(callback.getToolDefinition()).thenReturn(definition);
         return callback;
+    }
+
+    /**
+     * 为编排测试构造不携带购票字段的受控意图识别结果。
+     *
+     * @param intent 测试需要的业务意图
+     * @return 与生产分类接口一致的结构化结果
+     */
+    private IntentClassificationResult classification(AgentIntent intent) {
+        return new IntentClassificationResult(intent, null, null, null);
     }
 
     /**
@@ -727,7 +794,6 @@ class AgentChatServiceTests {
      * @param intentClassificationService 意图分类模型服务替身
      * @param model 回答模型替身
      * @param purchaseActionService 购票动作服务替身
-     * @param actionDraftCreationTracker 本轮草案创建信号
      * @param purchaseWorkflowService 购票工作流服务替身
      * @param meterRegistry 指标注册表
      */
@@ -739,8 +805,10 @@ class AgentChatServiceTests {
             IntentClassificationService intentClassificationService,
             RoutedChatModelService model,
             PurchaseActionService purchaseActionService,
-            ActionDraftCreationTracker actionDraftCreationTracker,
             PurchaseWorkflowService purchaseWorkflowService,
+            CancellationWorkflowService cancellationWorkflowService,
+            PurchaseChainService purchaseChainService,
+            TicketOperationChainService ticketOperationChainService,
             SimpleMeterRegistry meterRegistry) {
     }
 }

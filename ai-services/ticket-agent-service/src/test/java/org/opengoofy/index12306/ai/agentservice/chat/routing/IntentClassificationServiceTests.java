@@ -3,7 +3,10 @@ package org.opengoofy.index12306.ai.agentservice.chat.routing;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.CancellationIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.IntentClassificationResult;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.IntentModelOutput;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.RefundIntentData;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
 import org.opengoofy.index12306.ai.agentservice.infra.enums.ModelRole;
@@ -64,6 +67,71 @@ class IntentClassificationServiceTests {
                 promptCaptor.getValue().getInstructions().size() - 1))
                 .isInstanceOfSatisfying(UserMessage.class, message ->
                         assertThat(message.getText()).isEqualTo("买下午一点的一等座"));
+    }
+
+    /**
+     * 验证退票意图和模型从最近上下文提取的订单字段会一起交给固定代码链。
+     */
+    @Test
+    void refundRequestReturnsStructuredActionData() {
+        StructuredModelInvoker invoker = mock(StructuredModelInvoker.class);
+        IntentClassificationService service = new IntentClassificationService(invoker);
+        RefundIntentData refundRequest = new RefundIntentData(
+                null, "G9001", "2026-07-28", List.of("万重山"));
+        when(invoker.call(eq(ModelRole.INTENT_CLASSIFICATION), any(), any(), eq(IntentModelOutput.class), any()))
+                .thenReturn(new ModelCallResult<>(
+                        new IntentModelOutput("ticket_refund", null, null, refundRequest),
+                        "bailian-flash",
+                        "bailian",
+                        "qwen3.5-flash-2026-02-23",
+                        0,
+                        Duration.ofMillis(30),
+                        "model-call-2"));
+
+        // 分类模型一次返回意图和字段，退票代码链不再请求回答模型补充或选择工具。
+        IntentClassificationResult result = service.classifyWithActionData(
+                "给万重山退掉刚才 G9001 的票",
+                history("给万重山退掉刚才 G9001 的票"),
+                "",
+                attemptContext());
+
+        assertThat(result.intent()).isEqualTo(AgentIntent.TICKET_REFUND);
+        assertThat(result.refundRequest()).isEqualTo(refundRequest);
+        assertThat(result.purchaseRequest()).isNull();
+        assertThat(result.cancellationRequest()).isNull();
+    }
+
+    /**
+     * 验证指定乘车人的“取消”表达即使被模型识别为整单取消，也会由代码校正为部分退票。
+     */
+    @Test
+    void passengerSpecificCancellationIsNormalizedToRefund() {
+        StructuredModelInvoker invoker = mock(StructuredModelInvoker.class);
+        IntentClassificationService service = new IntentClassificationService(invoker);
+        CancellationIntentData cancellationRequest = new CancellationIntentData(
+                null, "G9001", "2026-07-28", List.of("万重山"));
+        when(invoker.call(eq(ModelRole.INTENT_CLASSIFICATION), any(), any(), eq(IntentModelOutput.class), any()))
+                .thenReturn(new ModelCallResult<>(
+                        new IntentModelOutput(
+                                "order_cancellation", null, cancellationRequest, null),
+                        "bailian-flash",
+                        "bailian",
+                        "qwen3.5-flash-2026-02-23",
+                        0,
+                        Duration.ofMillis(30),
+                        "model-call-3"));
+
+        // 姓名仍由模型从自然语言和上下文提取，代码只负责执行不可变的业务分流规则。
+        IntentClassificationResult result = service.classifyWithActionData(
+                "把万重山的票取消掉",
+                history("把万重山的票取消掉"),
+                "",
+                attemptContext());
+
+        assertThat(result.intent()).isEqualTo(AgentIntent.TICKET_REFUND);
+        assertThat(result.cancellationRequest()).isNull();
+        assertThat(result.refundRequest()).isEqualTo(
+                new RefundIntentData(null, "G9001", "2026-07-28", List.of("万重山")));
     }
 
     /**

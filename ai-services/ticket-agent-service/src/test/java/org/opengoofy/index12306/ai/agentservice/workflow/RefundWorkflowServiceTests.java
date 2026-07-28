@@ -76,6 +76,26 @@ class RefundWorkflowServiceTests {
     }
 
     /**
+     * 验证退票范围可以匹配订单中的其他乘车人，而不是只匹配订单列表展示的第一名乘车人。
+     */
+    @Test
+    void resolvesNonPrimaryPassengerFromOrderTickets() {
+        AgentRequestContext requestContext = requestContext();
+
+        // 订单摘要展示万重山，但完整车票详情中的李明也必须能够被服务端精确选中。
+        RefundResolutionResult orderResult = refundWorkflowService.resolveOrder(
+                requestContext, "order-1", null, null, List.of("李明"), orders());
+        RefundResolutionResult ticketResult = refundWorkflowService.resolveTickets(
+                requestContext, orderResult.workflowId(), orders().get(0), tickets());
+
+        assertThat(ticketResult.status()).isEqualTo(RefundResolutionStatus.RESOLVED);
+        assertThat(ticketResult.refundType()).isZero();
+        assertThat(ticketResult.selectedTickets())
+                .extracting(RefundableTicketOption::orderItemId)
+                .containsExactly("item-2");
+    }
+
+    /**
      * 验证缺少订单和乘车人时依次返回订单单选及车票多选表单。
      */
     @Test

@@ -28,20 +28,16 @@ class IntentToolRoutingServiceTests {
     }
 
     /**
-     * 验证购票意图进入完整购票草稿链路，但不暴露真实下单工具。
+     * 验证购票意图进入固定代码链，并且不携带回答模型工具。
      */
     @Test
     void purchaseIntentUsesPurchaseChain() {
-        // 购票链路负责查询车票、解析乘车人并生成待确认草稿。
+        // 购票链路自行查询车票、解析乘车人并生成待确认草稿。
         IntentRoutingDecision decision = service.route(AgentIntent.TICKET_PURCHASE);
 
-        assertThat(decision.route()).isEqualTo(IntentRoute.TOOL_ASSISTED);
+        assertThat(decision.route()).isEqualTo(IntentRoute.CODE_CHAIN);
         assertThat(decision.matchedGroups()).containsExactly(BusinessGroup.PURCHASE);
-        assertThat(decision.allowedToolNames()).containsExactlyInAnyOrder(
-                "resolve_station",
-                "query_tickets",
-                "resolve_purchase_passengers",
-                "prepare_ticket_purchase");
+        assertThat(decision.allowedToolNames()).isEmpty();
     }
 
     /**
@@ -49,13 +45,15 @@ class IntentToolRoutingServiceTests {
      */
     @Test
     void businessIntentsUseIndependentChains() {
-        // 三类核心业务意图必须映射到各自的最小工具边界。
+        // 查询保留只读工具，交易意图只映射固定代码链，不再携带回答模型工具。
         assertThat(service.route(AgentIntent.TRAIN_QUERY).allowedToolNames())
                 .containsExactlyInAnyOrder("resolve_station", "query_tickets");
-        assertThat(service.route(AgentIntent.ORDER_CANCELLATION).allowedToolNames())
-                .containsExactlyInAnyOrder("resolve_order_cancellation", "prepare_order_cancellation");
-        assertThat(service.route(AgentIntent.TICKET_REFUND).allowedToolNames())
-                .containsExactlyInAnyOrder("resolve_ticket_refund", "prepare_ticket_refund");
+        IntentRoutingDecision cancellation = service.route(AgentIntent.ORDER_CANCELLATION);
+        assertThat(cancellation.route()).isEqualTo(IntentRoute.CODE_CHAIN);
+        assertThat(cancellation.allowedToolNames()).isEmpty();
+        IntentRoutingDecision refund = service.route(AgentIntent.TICKET_REFUND);
+        assertThat(refund.route()).isEqualTo(IntentRoute.CODE_CHAIN);
+        assertThat(refund.allowedToolNames()).isEmpty();
     }
 
     /**

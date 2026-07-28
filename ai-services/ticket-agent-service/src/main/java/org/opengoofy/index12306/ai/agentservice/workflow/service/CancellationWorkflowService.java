@@ -29,22 +29,18 @@ import java.util.stream.Collectors;
 public class CancellationWorkflowService {
 
     private final AgentWorkflowService workflowService;
-    private final WorkflowInteractionTracker interactionTracker;
     private final ObjectMapper objectMapper;
 
     /**
      * 创建取消订单工作流阶段服务。
      *
      * @param workflowService 通用工作流生命周期服务
-     * @param interactionTracker 本轮结构化交互跟踪器
      * @param objectMapper 工作流上下文 JSON 转换器
      */
     public CancellationWorkflowService(
             AgentWorkflowService workflowService,
-            WorkflowInteractionTracker interactionTracker,
             ObjectMapper objectMapper) {
         this.workflowService = workflowService;
-        this.interactionTracker = interactionTracker;
         this.objectMapper = objectMapper;
     }
 
@@ -111,16 +107,7 @@ public class CancellationWorkflowService {
                     "已唯一定位本人可取消订单，可以继续生成取消草案");
         }
 
-        // 条件未命中时展示全部可取消订单，避免用户被困在错误的模型抽取结果中。
-        List<CancellableOrderOption> selectionOrders = matches.isEmpty() ? cancellableOrders : matches;
-        OrderSelectionView selection = new OrderSelectionView(
-                workflow.getId(),
-                workflow.getStage(),
-                matches.isEmpty() && (orderSn != null || trainNumber != null || ridingDate != null)
-                        ? "没有唯一匹配到你描述的订单，请从可取消订单中选择"
-                        : "请选择需要取消的订单",
-                selectionOrders);
-        interactionTracker.markRequired(requestContext.turnId(), selection);
+        // 候选订单已经写入数据库，完成阶段会按当前工作流重建本人订单选择表单。
         return new OrderResolutionResult(
                 OrderResolutionStatus.SELECTION_REQUIRED,
                 workflow.getId(),
@@ -206,6 +193,22 @@ public class CancellationWorkflowService {
                         + "，stage=" + workflow.getStage().name() + "，context=" + workflow.getContextJson()
                         + "。stage=CREATING_DRAFT 时必须使用 selectedOrderSn 创建取消草案；"
                         + "stage=SELECTING_ORDER 时必须等待用户提交订单选择表单。");
+    }
+
+    /**
+     * 读取已经由服务端唯一定位或前端选定、可以直接创建取消草案的订单号。
+     *
+     * @param userId 当前用户标识
+     * @param conversationId 所属会话标识
+     * @return 当前取消工作流已经确认的本人订单号
+     */
+    public Optional<String> findReadyDraftOrderSn(String userId, String conversationId) {
+        // 固定代码链只接受持久化工作流中已经推进到草案阶段的订单号。
+        return workflowService.findActive(userId, conversationId)
+                .filter(workflow -> workflow.getWorkflowType() == WorkflowType.ORDER_CANCELLATION)
+                .filter(workflow -> workflow.getStage() == WorkflowStage.CREATING_DRAFT)
+                .map(workflow -> readContext(workflow.getContextJson()).selectedOrderSn())
+                .filter(StringUtils::hasText);
     }
 
     /**

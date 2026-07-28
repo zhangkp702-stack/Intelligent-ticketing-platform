@@ -13,8 +13,6 @@ import org.opengoofy.index12306.ai.agentservice.workflow.service.RefundWorkflowS
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -68,14 +66,10 @@ public class RefundTicketTools {
      * @param toolContext Spring AI 工具上下文
      * @return 服务端退票解析结果
      */
-    @Tool(
-            name = "resolve_ticket_refund",
-            description = "查询当前账号的可退订单和车票，按订单、车次、日期及乘车人姓名定位退票范围。存在歧义时返回结构化选择状态。")
     public RefundResolutionResult resolveTicketRefund(
-            @ToolParam(required = false, description = "用户明确提供的订单号") String orderSn,
-            @ToolParam(required = false, description = "用户明确提供的车次号，例如 G9003") String trainNumber,
-            @ToolParam(required = false, description = "用户明确提供的乘车日期，格式 yyyy-MM-dd") String ridingDate,
-            @ToolParam(required = false, description = "用户明确要求退票的乘车人姓名；未提供时传空列表")
+            String orderSn,
+            String trainNumber,
+            String ridingDate,
             List<String> passengerNames,
             ToolContext toolContext) {
         AgentRequestContext requestContext = requestContext(toolContext);

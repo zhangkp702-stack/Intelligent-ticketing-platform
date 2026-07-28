@@ -13,14 +13,10 @@ public class IntentToolRoutingService {
 
     private static final Set<String> TRAIN_QUERY_TOOLS = Set.of("resolve_station", "query_tickets");
     private static final Set<String> TRAIN_STOP_TOOLS = Set.of("query_train_stops");
-    private static final Set<String> PASSENGER_TOOLS = Set.of("list_my_passengers");
+    private static final Set<String> PASSENGER_TOOLS = Set.of(
+            "list_my_passengers", "find_my_passengers_by_name");
     private static final Set<String> ORDER_QUERY_TOOLS = Set.of("list_my_orders", "get_my_order_detail");
     private static final Set<String> PAYMENT_TOOLS = Set.of("list_my_orders", "get_my_order_detail", "query_pay_status");
-    private static final Set<String> PURCHASE_TOOLS = Set.of(
-            "resolve_station", "query_tickets", "resolve_purchase_passengers", "prepare_ticket_purchase");
-    private static final Set<String> CANCELLATION_TOOLS = Set.of(
-            "resolve_order_cancellation", "prepare_order_cancellation");
-    private static final Set<String> REFUND_TOOLS = Set.of("resolve_ticket_refund", "prepare_ticket_refund");
 
     /**
      * 根据小模型给出的受控意图选择唯一业务链路。
@@ -45,10 +41,24 @@ public class IntentToolRoutingService {
                     intent,
                     Set.of(BusinessGroup.ORDER_QUERY, BusinessGroup.PAYMENT),
                     PAYMENT_TOOLS);
-            case TICKET_PURCHASE -> toolAssisted(intent, BusinessGroup.PURCHASE, PURCHASE_TOOLS);
-            case ORDER_CANCELLATION -> toolAssisted(intent, BusinessGroup.CANCELLATION, CANCELLATION_TOOLS);
-            case TICKET_REFUND -> toolAssisted(intent, BusinessGroup.REFUND, REFUND_TOOLS);
+            case TICKET_PURCHASE -> codeChain(intent, BusinessGroup.PURCHASE);
+            case ORDER_CANCELLATION -> codeChain(intent, BusinessGroup.CANCELLATION);
+            case TICKET_REFUND -> codeChain(intent, BusinessGroup.REFUND);
         };
+    }
+
+    /**
+     * 创建由代码固定执行顺序的交易业务链路。
+     *
+     * @param intent 当前交易意图
+     * @param group 对应业务组
+     * @return 不向回答模型开放工具选择权的代码链路
+     */
+    private IntentRoutingDecision codeChain(
+            AgentIntent intent,
+            BusinessGroup group) {
+        // 固定链自行校验实际依赖，不再借用回答模型工具集合做前置检查。
+        return new IntentRoutingDecision(IntentRoute.CODE_CHAIN, intent, Set.of(group), Set.of());
     }
 
     /**
@@ -63,16 +73,17 @@ public class IntentToolRoutingService {
             AgentIntent intent,
             BusinessGroup group,
             Set<String> toolNames) {
-        // 每个写操作意图只开放自身草稿链路，真实写操作仍由确认接口隔离执行。
+        // 只读业务意图只向回答模型开放当前业务组所需的最小工具集合。
         return new IntentRoutingDecision(IntentRoute.TOOL_ASSISTED, intent, Set.of(group), Set.copyOf(toolNames));
     }
 
     /**
-     * 回答模型可进入的两种执行路径。
+     * 区分纯模型回答、只读工具辅助和固定代码链三种执行路径。
      */
     public enum IntentRoute {
         CHAT_ONLY,
-        TOOL_ASSISTED
+        TOOL_ASSISTED,
+        CODE_CHAIN
     }
 
     /**
@@ -92,10 +103,10 @@ public class IntentToolRoutingService {
     /**
      * 意图模型分类后的确定性链路选择结果。
      *
-     * @param route 普通问答或工具辅助路径
+     * @param route 普通问答、工具辅助或固定代码链路径
      * @param intent 分类模型识别的业务意图
      * @param matchedGroups 当前选择的业务链路组
-     * @param allowedToolNames 本轮允许注册给回答模型的工具名称
+     * @param allowedToolNames 本轮允许回答模型使用的只读工具名称
      */
     public record IntentRoutingDecision(
             IntentRoute route,

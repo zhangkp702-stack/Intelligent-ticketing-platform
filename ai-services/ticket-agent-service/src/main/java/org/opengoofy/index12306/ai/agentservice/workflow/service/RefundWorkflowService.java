@@ -37,22 +37,18 @@ import java.util.stream.Collectors;
 public class RefundWorkflowService {
 
     private final AgentWorkflowService workflowService;
-    private final WorkflowInteractionTracker interactionTracker;
     private final ObjectMapper objectMapper;
 
     /**
      * 创建退票工作流服务。
      *
      * @param workflowService 通用工作流生命周期服务
-     * @param interactionTracker 本轮结构化交互跟踪器
      * @param objectMapper 工作流上下文转换器
      */
     public RefundWorkflowService(
             AgentWorkflowService workflowService,
-            WorkflowInteractionTracker interactionTracker,
             ObjectMapper objectMapper) {
         this.workflowService = workflowService;
-        this.interactionTracker = interactionTracker;
         this.objectMapper = objectMapper;
     }
 
@@ -120,15 +116,7 @@ public class RefundWorkflowService {
                     "已定位可退订单，继续解析该订单的可退车票");
         }
 
-        // 条件未命中时展示全部可退订单，让用户显式决定目标。
-        List<RefundableOrderOption> selectionOrders = matches.isEmpty() ? refundableOrders : matches;
-        RefundOrderSelectionView selection = new RefundOrderSelectionView(
-                workflow.getId(), workflow.getStage(),
-                matches.isEmpty() && (orderSn != null || trainNumber != null || ridingDate != null)
-                        ? "没有唯一匹配到你描述的订单，请从可退订单中选择"
-                        : "请选择需要退票的订单",
-                selectionOrders);
-        interactionTracker.markRequired(requestContext.turnId(), selection);
+        // 候选订单已经写入数据库，完成阶段会按当前工作流重建退票订单选择表单。
         return result(RefundResolutionStatus.ORDER_SELECTION_REQUIRED, workflow.getId(), null, List.of(), null,
                 "需要用户在本人可退订单列表中完成选择");
     }
@@ -195,13 +183,7 @@ public class RefundWorkflowService {
             workflowService.updateContext(
                     requestContext.userId(), workflowId, WorkflowStage.SELECTING_REFUND_TICKETS,
                     writeContext(updatedContext));
-            RefundTicketSelectionView selection = new RefundTicketSelectionView(
-                    workflowId, WorkflowStage.SELECTING_REFUND_TICKETS,
-                    context.requestedPassengerNames().isEmpty()
-                            ? "请选择需要退票的乘车人车票"
-                            : "乘车人姓名未能唯一匹配，请选择需要退票的车票",
-                    context.selectedOrderSn(), refundableTickets);
-            interactionTracker.markRequired(requestContext.turnId(), selection);
+            // 可退车票已经写入数据库，完成阶段会重建只包含当前订单车票的选择表单。
             return result(RefundResolutionStatus.TICKET_SELECTION_REQUIRED, workflowId, order, List.of(), null,
                     "需要用户在可退车票列表中完成选择");
         }
@@ -318,8 +300,23 @@ public class RefundWorkflowService {
                 .map(workflow -> "当前退票工作流由服务端维护，workflowId=" + workflow.getId()
                         + "，stage=" + workflow.getStage().name() + "，context=" + workflow.getContextJson()
                         + "。SELECTING_REFUND_ORDER 时等待用户选择；SELECTING_REFUND_TICKETS 且 ticketOptions 为空时，"
-                        + "必须使用 selectedOrderSn 再次调用 resolve_ticket_refund；ticketOptions 非空时等待用户选择。"
+                        + "固定退票链必须使用 selectedOrderSn 重新解析退票范围；ticketOptions 非空时等待用户选择。"
                         + "CREATING_DRAFT 时只能使用已保存的 orderSn、refundType 和 selectedOrderItemIds 创建草案。");
+    }
+
+    /**
+     * 读取已经由服务端确定退票范围、可以直接创建退票草案的工作流上下文。
+     *
+     * @param userId 当前用户标识
+     * @param conversationId 所属会话标识
+     * @return 包含订单号、退款类型和车票范围的可信退票上下文
+     */
+    public Optional<RefundWorkflowContext> findReadyDraftContext(String userId, String conversationId) {
+        // 前端选择结果已经持久化时，固定代码链直接消费该范围，不再交给回答模型解释。
+        return workflowService.findActive(userId, conversationId)
+                .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
+                .filter(workflow -> workflow.getStage() == WorkflowStage.CREATING_DRAFT)
+                .map(workflow -> readContext(workflow.getContextJson()));
     }
 
     /**

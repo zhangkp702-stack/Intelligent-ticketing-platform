@@ -37,22 +37,18 @@ public class PurchaseWorkflowService {
     private static final int MAX_PASSENGERS = 5;
 
     private final AgentWorkflowService workflowService;
-    private final WorkflowInteractionTracker selectionTracker;
     private final ObjectMapper objectMapper;
 
     /**
      * 创建购票工作流阶段服务。
      *
      * @param workflowService 通用工作流生命周期服务
-     * @param selectionTracker 本轮选择事件跟踪器
      * @param objectMapper 工作流上下文 JSON 转换器
      */
     public PurchaseWorkflowService(
             AgentWorkflowService workflowService,
-            WorkflowInteractionTracker selectionTracker,
             ObjectMapper objectMapper) {
         this.workflowService = workflowService;
-        this.selectionTracker = selectionTracker;
         this.objectMapper = objectMapper;
     }
 
@@ -126,9 +122,7 @@ public class PurchaseWorkflowService {
         AgentWorkflowEntity workflow = createOrUpdateWorkflow(requestContext, workflowContext, selectionRequired);
 
         if (selectionRequired) {
-            // 候选项只包含脱敏字段，结构化事件由前端渲染为勾选表单。
-            PassengerSelectionView selection = toSelectionView(workflow, workflowContext, unmatchedNames);
-            selectionTracker.markRequired(requestContext.turnId(), selection);
+            // 候选项已经写入数据库，完成阶段会从权威工作流重建脱敏选择表单。
             return new PassengerResolutionResult(
                     PassengerResolutionStatus.SELECTION_REQUIRED,
                     workflow.getId(),

@@ -11,8 +11,6 @@ import org.opengoofy.index12306.ai.agentservice.workflow.service.CancellationWor
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -64,13 +62,10 @@ public class CancellationOrderTools {
      * @param toolContext Spring AI 工具上下文
      * @return 服务端订单定位结果
      */
-    @Tool(
-            name = "resolve_order_cancellation",
-            description = "为取消订单查询当前账号的本人订单并定位可取消目标。未唯一定位时返回结构化订单选择状态。")
     public OrderResolutionResult resolveOrderCancellation(
-            @ToolParam(required = false, description = "用户明确提供的订单号") String orderSn,
-            @ToolParam(required = false, description = "用户明确提供的车次号，例如 G9003") String trainNumber,
-            @ToolParam(required = false, description = "用户明确提供的乘车日期，格式 yyyy-MM-dd") String ridingDate,
+            String orderSn,
+            String trainNumber,
+            String ridingDate,
             ToolContext toolContext) {
         AgentRequestContext requestContext = requestContext(toolContext);
 

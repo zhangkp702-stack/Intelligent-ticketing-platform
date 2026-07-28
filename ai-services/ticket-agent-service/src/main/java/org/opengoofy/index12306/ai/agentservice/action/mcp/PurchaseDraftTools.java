@@ -1,7 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.action.mcp;
 
 import org.opengoofy.index12306.ai.agentservice.action.enums.PurchaseSeatClass;
-import org.opengoofy.index12306.ai.agentservice.action.service.ActionDraftCreationTracker;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 
 
@@ -12,36 +11,30 @@ import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * 允许模型生成购票草案但绝不直接创建订单的本地 Spring AI 工具。
+ * 供固定购票链生成待确认草案的内部组件，绝不直接创建订单。
  */
 @Component
 public class PurchaseDraftTools {
 
     private final PurchaseActionService purchaseActionService;
-    private final ActionDraftCreationTracker actionDraftCreationTracker;
     private final PurchaseWorkflowService purchaseWorkflowService;
 
     /**
      * 创建购票草案工具。
      *
      * @param purchaseActionService 购票确认状态机服务
-     * @param actionDraftCreationTracker 本轮草案创建信号
      * @param purchaseWorkflowService 购票工作流阶段服务
      */
     public PurchaseDraftTools(
             PurchaseActionService purchaseActionService,
-            ActionDraftCreationTracker actionDraftCreationTracker,
             PurchaseWorkflowService purchaseWorkflowService) {
         this.purchaseActionService = purchaseActionService;
-        this.actionDraftCreationTracker = actionDraftCreationTracker;
         this.purchaseWorkflowService = purchaseWorkflowService;
     }
 
@@ -57,17 +50,13 @@ public class PurchaseDraftTools {
      * @param toolContext 服务端注入的用户和轮次上下文
      * @return 不含确认令牌的草案摘要
      */
-    @Tool(
-            name = "prepare_ticket_purchase",
-            description = "仅生成待用户确认的购票草案，不会创建订单。只有车次、区间、乘车人和席别都已明确时才能调用。")
     public PurchaseDraftResult prepareTicketPurchase(
-            @ToolParam(description = "query_tickets 返回的 trainId") String trainId,
-            @ToolParam(description = "出发站完整名称") String departure,
-            @ToolParam(description = "到达站完整名称") String arrival,
-            @ToolParam(description = "query_tickets 使用的乘车日期，严格使用 yyyy-MM-dd 格式") String departureDate,
-            @ToolParam(description = "乘车人 ID 与语义席别列表；seatClass 必须使用枚举名称，例如 FIRST_CLASS 表示一等座")
+            String trainId,
+            String departure,
+            String arrival,
+            String departureDate,
             List<PassengerDraftInput> passengers,
-            @ToolParam(required = false, description = "可选座位偏好，如 3A、3B") List<String> chooseSeats,
+            List<String> chooseSeats,
             ToolContext toolContext) {
         AgentRequestContext context = requestContext(toolContext);
         // 保留空条目交给统一草案校验处理，避免本地工具抛出无分类的空指针异常。
@@ -97,8 +86,6 @@ public class PurchaseDraftTools {
                 context,
                 new PurchasePayload(
                         trainId, departure, arrival, departureDate, normalizedPassengers, chooseSeats));
-        // 仅在数据库草案创建或复用成功后标记本轮，供对话完成阶段按需读取确认视图。
-        actionDraftCreationTracker.markCreated(context.turnId());
         // 草案已经持久化后再结束购票链路，真实下单仍必须等待独立确认接口。
         purchaseWorkflowService.completeAfterDraft(context.userId(), context.conversationId());
         return result;
@@ -134,7 +121,7 @@ public class PurchaseDraftTools {
     }
 
     /**
-     * @param passengerId list_my_passengers 返回的乘车人 ID
+     * @param passengerId 固定购票链定向查询并匹配后返回的乘车人 ID
      * @param seatClass 语义化席别，由服务端转换为票务编码
      */
     public record PassengerDraftInput(String passengerId, PurchaseSeatClass seatClass) {
