@@ -22,6 +22,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -293,11 +294,23 @@ public class TicketOperationActionService {
      * @return 确认摘要
      */
     private String summary(RefundPayload payload) {
+        // 退款金额在服务间统一使用分，确认摘要转换为元后再展示给用户。
         String scope = payload.type() == 0
                 ? "部分退票 " + payload.orderItemIds().size() + " 张"
                 : "全部退票 " + payload.orderItemIds().size() + " 张";
         return "订单 " + payload.orderSn() + "，" + scope
-                + "，预计退款金额 " + payload.expectedRefundAmount();
+                + "，预计退款金额 " + formatAmount(payload.expectedRefundAmount());
+    }
+
+    /**
+     * 将以分为单位的整数金额转换为面向用户的元金额。
+     *
+     * @param amountInCents 以分为单位的金额
+     * @return 保留两位小数并带元单位的金额
+     */
+    private String formatAmount(Integer amountInCents) {
+        // 使用十进制定点数避免浮点转换造成金额精度偏差。
+        return BigDecimal.valueOf(amountInCents, 2).toPlainString() + " 元";
     }
 
     /**

@@ -260,6 +260,7 @@ class PurchaseActionPersistenceTests {
         ActionConfirmationView confirmation = purchaseActionService
                 .confirmationForTurn(fixture.userId(), fixture.turnId())
                 .orElseThrow();
+        assertThat(confirmation.summary()).contains("预计退款金额 50.00 元");
         ConfirmPurchaseCommand command = new ConfirmPurchaseCommand(
                 unique("confirm"), unique("idempotency"), fixture.userId(), "alice",
                 confirmation.actionId(), confirmation.confirmationToken());
