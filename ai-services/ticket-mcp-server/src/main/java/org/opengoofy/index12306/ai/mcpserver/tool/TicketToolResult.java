@@ -213,6 +213,14 @@ public final class TicketToolResult {
             Boolean canPay,
             Boolean canRefund,
             String reason) {
+
+        /**
+         * 规范化订单操作预览结果，保证可选原因符合 MCP 字符串输出契约。
+         */
+        public OrderOperationPreview {
+            // 操作可执行时下游不会返回失败原因，MCP 边界统一用空字符串表达。
+            reason = reason == null ? "" : reason;
+        }
     }
 
     /**
@@ -230,6 +238,14 @@ public final class TicketToolResult {
             Integer refundAmount,
             List<RefundableTicketView> items,
             String reason) {
+
+        /**
+         * 规范化退票预览结果，保证可选原因符合 MCP 字符串输出契约。
+         */
+        public RefundPreview {
+            // 允许退票时下游不会返回失败原因，MCP 边界统一用空字符串表达。
+            reason = reason == null ? "" : reason;
+        }
     }
 
     /**

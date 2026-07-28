@@ -97,7 +97,7 @@ public class AuditedToolCallback implements ToolCallback {
         LOGGER.info("Agent开始调用MCP工具，tool={}, requestId={}, turnId={}", toolName, requestId, turnId);
         try {
             // 原始回调会将工具上下文转换为签名 MCP 元数据并调用远端工具。
-            String result = delegate.call(toolInput, toolContext);
+            String result = unwrapTextContent(delegate.call(toolInput, toolContext));
             Integer responseItemCount = countItems(result);
             LOGGER.info("Agent调用MCP工具成功，tool={}, requestId={}, turnId={}, durationMs={}, itemCount={}",
                     toolName, requestId, turnId,
@@ -112,6 +112,26 @@ public class AuditedToolCallback implements ToolCallback {
             record(toolInput, toolContext, ToolCallOutcome.FAILURE, started, classify(ex), null,
                     ex.getClass().getName());
             throw ex;
+        }
+    }
+
+    /**
+     * 解包 Spring AI MCP 客户端返回的单个文本内容块，向业务链路提供工具的真实 JSON 结果。
+     *
+     * @param result MCP 客户端序列化后的内容块数组
+     * @return 文本内容块中的业务结果；非标准内容块响应保持原样
+     */
+    private String unwrapTextContent(String result) {
+        // MCP 客户端将 CallToolResult.content 序列化为数组，工具方法的 JSON 位于唯一 text 内容块中。
+        try {
+            JsonNode content = objectMapper.readTree(result);
+            if (content.isArray() && content.size() == 1 && content.get(0).path("text").isTextual()) {
+                return content.get(0).path("text").asText();
+            }
+            return result;
+        } catch (Exception ignored) {
+            // 非 JSON 文本由原有调用方继续处理，审计包装器不改变其成功或失败语义。
+            return result;
         }
     }
 
