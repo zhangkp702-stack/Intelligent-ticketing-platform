@@ -79,7 +79,8 @@ public class RefundServiceImpl implements RefundService {
         }
 
         // 相同请求已经落库时直接返回原结果，避免再次增加账户余额。
-        List<RefundDO> existingRefunds = findRefunds(requestParam.getRequestId());
+        List<RefundDO> existingRefunds = findRefunds(
+                requestParam.getRequestId(), requestParam.getOrderSn());
         if (!existingRefunds.isEmpty()) {
             return buildRefundResult(requestParam, existingRefunds);
         }
@@ -93,7 +94,7 @@ public class RefundServiceImpl implements RefundService {
             throw new ServiceException("支付单不存在");
         }
         // 等待行锁期间相同请求可能已经完成，获得锁后再次读取并复用原退款结果。
-        existingRefunds = findRefunds(requestParam.getRequestId());
+        existingRefunds = findRefunds(requestParam.getRequestId(), requestParam.getOrderSn());
         if (!existingRefunds.isEmpty()) {
             return buildRefundResult(requestParam, existingRefunds);
         }
@@ -128,7 +129,8 @@ public class RefundServiceImpl implements RefundService {
             throw new ServiceException("修改支付单退款结果失败");
         }
         LambdaUpdateWrapper<RefundDO> refundUpdateWrapper = Wrappers.lambdaUpdate(RefundDO.class)
-                .eq(RefundDO::getRefundRequestId, requestParam.getRequestId());
+                .eq(RefundDO::getRefundRequestId, requestParam.getRequestId())
+                .eq(RefundDO::getOrderSn, requestParam.getOrderSn());
         RefundDO refundDO = new RefundDO();
         refundDO.setTradeNo(refundTradeNo);
         refundDO.setStatus(refundStatus);
@@ -198,12 +200,14 @@ public class RefundServiceImpl implements RefundService {
      * 查询同一幂等请求已经创建的退款记录。
      *
      * @param requestId 退款请求标识
+     * @param orderSn 用于定位退款分库的订单号
      * @return 已存在退款记录
      */
-    private List<RefundDO> findRefunds(String requestId) {
-        // 唯一索引和查询条件共同保证同一请求不会重复插入相同乘车人退款明细。
+    private List<RefundDO> findRefunds(String requestId, String orderSn) {
+        // 订单号提供分库路由，退款请求标识保证同一请求不会重复处理。
         LambdaQueryWrapper<RefundDO> queryWrapper = Wrappers.lambdaQuery(RefundDO.class)
-                .eq(RefundDO::getRefundRequestId, requestId);
+                .eq(RefundDO::getRefundRequestId, requestId)
+                .eq(RefundDO::getOrderSn, orderSn);
         return refundMapper.selectList(queryWrapper);
     }
 

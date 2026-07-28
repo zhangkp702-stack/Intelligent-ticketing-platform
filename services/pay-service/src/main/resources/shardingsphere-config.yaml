@@ -26,6 +26,12 @@ rules:
           complex:
             shardingColumns: order_sn,pay_sn
             shardingAlgorithmName: pay_table_complex_mod
+      t_refund:
+        actualDataNodes: ds_${0..1}.t_refund
+        databaseStrategy:
+          complex:
+            shardingColumns: order_sn,pay_sn
+            shardingAlgorithmName: pay_database_complex_mod
     shardingAlgorithms:
       pay_database_complex_mod:
         type: CLASS_BASED

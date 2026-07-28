@@ -422,6 +422,8 @@ CREATE DATABASE IF NOT EXISTS `12306_pay_1` DEFAULT CHARACTER SET utf8mb4 COLLAT
 USE
 12306_pay_1;
 
+CREATE TABLE `t_refund` LIKE `12306_pay_0`.`t_refund`;
+
 CREATE TABLE `t_pay_16`
 (
     `id`               bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
