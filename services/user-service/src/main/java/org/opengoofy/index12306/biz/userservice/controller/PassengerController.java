@@ -56,6 +56,20 @@ public class PassengerController {
     }
 
     /**
+     * 根据用户提供的姓名精确查询当前账号下的乘车人。
+     *
+     * @param realName 用户明确提供的乘车人姓名
+     * @return 当前账号下同名乘车人列表
+     */
+    @GetMapping("/api/user-service/passenger/query/name")
+    public Result<List<PassengerRespDTO>> listPassengerQueryByRealName(
+            @RequestParam("realName") String realName) {
+        // 用户归属只从登录上下文取得，避免调用方借助姓名查询其他账号的乘车人。
+        return Results.success(passengerService.listPassengerQueryByUsernameAndRealName(
+                UserContext.getUsername(), realName));
+    }
+
+    /**
      * 根据乘车人 ID 集合查询乘车人列表
      */
     @GetMapping("/api/user-service/inner/passenger/actual/query/ids")

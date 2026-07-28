@@ -39,6 +39,15 @@ public interface PassengerService {
     List<PassengerRespDTO> listPassengerQueryByUsername(String username);
 
     /**
+     * 根据当前用户名和乘车人姓名精确查询乘车人。
+     *
+     * @param username 当前登录用户名
+     * @param realName 用户明确提供的乘车人姓名
+     * @return 当前用户下同名乘车人列表，没有匹配记录时返回空列表
+     */
+    List<PassengerRespDTO> listPassengerQueryByUsernameAndRealName(String username, String realName);
+
+    /**
      * 根据乘车人 ID 集合查询乘车人列表
      *
      * @param username 用户名

@@ -29,6 +29,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -53,5 +54,28 @@ class PassengerServiceImplTests {
         when(passengerMapper.selectList(any())).thenReturn(List.<PassengerDO>of());
 
         assertThat(service.listPassengerQueryByUsername("alice")).isEmpty();
+    }
+
+    /**
+     * 验证定向查询返回数据库按当前用户名和姓名筛选出的乘车人。
+     */
+    @Test
+    void queriesPassengerByCurrentUsernameAndExactRealName() {
+        PassengerServiceImpl service = new PassengerServiceImpl(passengerMapper, distributedCache);
+        PassengerDO passenger = PassengerDO.builder()
+                .id(1L)
+                .username("alice")
+                .realName("万重山")
+                .build();
+        when(passengerMapper.selectList(any())).thenReturn(List.of(passenger));
+
+        // 查询结果直接转换为脱敏响应，不再获取全部乘车人后进行内存过滤。
+        assertThat(service.listPassengerQueryByUsernameAndRealName("alice", "万重山"))
+                .singleElement()
+                .satisfies(result -> {
+                    assertThat(result.getId()).isEqualTo("1");
+                    assertThat(result.getRealName()).isEqualTo("万重山");
+                });
+        verify(passengerMapper).selectList(any());
     }
 }

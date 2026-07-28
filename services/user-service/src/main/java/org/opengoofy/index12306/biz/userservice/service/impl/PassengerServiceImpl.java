@@ -103,6 +103,27 @@ public class PassengerServiceImpl implements PassengerService {
         }
     }
 
+    /**
+     * 使用当前用户名和用户提供的真实姓名精确查询乘车人，避免购票链路加载全部常用乘车人。
+     *
+     * @param username 当前登录用户名
+     * @param realName 用户明确提供的乘车人姓名
+     * @return 当前用户下同名乘车人列表，没有匹配记录时返回空列表
+     */
+    @Override
+    public List<PassengerRespDTO> listPassengerQueryByUsernameAndRealName(String username, String realName) {
+        // 数据库查询同时约束账号归属和姓名，不能先查询全量数据再在上层过滤。
+        LambdaQueryWrapper<PassengerDO> queryWrapper = Wrappers.lambdaQuery(PassengerDO.class)
+                .eq(PassengerDO::getUsername, username)
+                .eq(PassengerDO::getRealName, realName);
+        List<PassengerDO> passengerDOList = passengerMapper.selectList(queryWrapper);
+
+        // 保留同名记录供购票工作流处理歧义，正常空查询统一返回空列表。
+        return passengerDOList.stream()
+                .map(this::convertToPassengerResp)
+                .collect(Collectors.toList());
+    }
+
     private String getActualUserPassengerListStr(String username) {
         return distributedCache.safeGet(
                 USER_PASSENGER_LIST + username,
