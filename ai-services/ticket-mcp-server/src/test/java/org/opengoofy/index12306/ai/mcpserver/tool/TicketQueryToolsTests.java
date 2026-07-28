@@ -52,6 +52,7 @@ class TicketQueryToolsTests {
                 "query_tickets",
                 "query_train_stops",
                 "list_my_passengers",
+                "find_my_passengers_by_name",
                 "list_my_orders",
                 "get_my_order_detail",
                 "preview_order_cancellation",
@@ -84,6 +85,27 @@ class TicketQueryToolsTests {
         assertThat(method.getParameterTypes()).containsExactly(McpMeta.class);
         assertThat(tools.listMyPassengers(meta)).containsExactly(passenger);
         verify(businessClient).listPassengers(identity);
+    }
+
+    /**
+     * 验证按姓名查询工具把用户提供的姓名交给当前登录账号范围内的定向查询。
+     */
+    @Test
+    void namedPassengerToolUsesAuthenticatedIdentityAndExactName() {
+        McpRequestAuthenticator authenticator = mock(McpRequestAuthenticator.class);
+        TicketBusinessClient businessClient = mock(TicketBusinessClient.class);
+        McpMeta meta = new McpMeta(java.util.Map.of());
+        McpCallerIdentity identity = new McpCallerIdentity(
+                "request-a", "user-a", "alice", "conversation-a", "turn-a", "", "");
+        PassengerView passenger = new PassengerView(
+                "passenger-a", "万重山", 0, "1***********1", 0, "138****0000", 1);
+        when(authenticator.authenticate(meta)).thenReturn(identity);
+        when(businessClient.findPassengersByName("万重山", identity)).thenReturn(List.of(passenger));
+        TicketQueryTools tools = new TicketQueryTools(authenticator, businessClient, new ObjectMapper());
+
+        // 工具只清理姓名首尾空格，账号归属始终来自已认证的签名元数据。
+        assertThat(tools.findMyPassengersByName(" 万重山 ", meta)).containsExactly(passenger);
+        verify(businessClient).findPassengersByName("万重山", identity);
     }
 
     /**

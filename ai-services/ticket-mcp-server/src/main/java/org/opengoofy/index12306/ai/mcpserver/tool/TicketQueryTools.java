@@ -201,6 +201,38 @@ public class TicketQueryTools {
     }
 
     /**
+     * 按用户明确提供的姓名精确查询当前账号下的乘车人。
+     *
+     * @param realName 用户在购票请求中提供的乘车人姓名
+     * @param meta Agent 签名的 MCP 元数据
+     * @return 当前账号下同名的脱敏乘车人列表
+     */
+    @McpTool(
+            name = "find_my_passengers_by_name",
+            description = "按姓名精确查询当前登录用户的乘车人，仅返回同名匹配记录和脱敏字段。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "按姓名查询我的乘车人",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false))
+    public List<PassengerView> findMyPassengersByName(
+            @McpToolParam(description = "用户在购票请求中明确提供的乘车人姓名") String realName,
+            McpMeta meta) {
+        // 姓名仅允许使用乘车人业务支持的长度，空值不能触发下游查询。
+        Assert.hasText(realName, "realName must not be blank");
+        String normalizedName = realName.trim();
+        Assert.isTrue(normalizedName.length() >= 2 && normalizedName.length() <= 16,
+                "realName length must be between 2 and 16");
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("find_my_passengers_by_name", "findMyPassengersByName", identity);
+
+        // 用户身份只取自签名元数据，业务客户端在该账号范围内执行精确姓名查询。
+        return businessClient.findPassengersByName(normalizedName, identity);
+    }
+
+    /**
      * 分页查询当前登录用户自己的历史订单。
      *
      * @param current 当前页，从 1 开始

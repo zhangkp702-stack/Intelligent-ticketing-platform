@@ -217,6 +217,41 @@ public class TicketBusinessClient {
     }
 
     /**
+     * 按用户提供的姓名精确查询当前账号下的乘车人，仅返回脱敏字段。
+     *
+     * @param realName 用户在购票请求中明确提供的乘车人姓名
+     * @param identity 已验证的调用者身份
+     * @return 当前账号下同名乘车人列表
+     */
+    public List<PassengerView> findPassengersByName(
+            String realName,
+            McpCallerIdentity identity) {
+        // 账号归属由签名身份请求头确定，姓名只作为当前账号内的精确查询条件。
+        JsonNode root = userClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/api/user-service/passenger/query/name")
+                        .queryParam("realName", realName)
+                        .build())
+                .headers(headers -> addIdentity(headers, identity))
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireData(root);
+
+        // 下游结果只转换为 MCP 白名单字段，不向智能体暴露真实证件号和手机号。
+        List<PassengerView> result = new ArrayList<>();
+        for (JsonNode item : iterable(data)) {
+            result.add(new PassengerView(
+                    text(item, "id"),
+                    text(item, "realName"),
+                    integer(item, "idType"),
+                    text(item, "idCard"),
+                    integer(item, "discountType"),
+                    text(item, "phone"),
+                    integer(item, "verifyStatus")));
+        }
+        return List.copyOf(result);
+    }
+
+    /**
      * 分页查询当前用户的订单，页大小由服务端上限再次约束。
      *
      * @param current 当前页

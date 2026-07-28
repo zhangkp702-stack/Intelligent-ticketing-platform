@@ -22,6 +22,7 @@ public class AgentMcpConfiguration {
             "query_tickets",
             "query_train_stops",
             "list_my_passengers",
+            "find_my_passengers_by_name",
             "list_my_orders",
             "get_my_order_detail",
             "preview_order_cancellation",
