@@ -50,8 +50,6 @@ import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderPassengerDe
 import org.opengoofy.index12306.biz.orderservice.mq.event.DelayCloseOrderEvent;
 import org.opengoofy.index12306.biz.orderservice.mq.event.PayResultCallbackOrderEvent;
 import org.opengoofy.index12306.biz.orderservice.mq.produce.DelayCloseOrderSendProduce;
-import org.opengoofy.index12306.biz.orderservice.remote.UserRemoteService;
-import org.opengoofy.index12306.biz.orderservice.remote.dto.UserQueryActualRespDTO;
 import org.opengoofy.index12306.biz.orderservice.service.OrderItemService;
 import org.opengoofy.index12306.biz.orderservice.service.OrderPassengerRelationService;
 import org.opengoofy.index12306.biz.orderservice.service.OrderService;
@@ -60,7 +58,6 @@ import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
-import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.database.toolkit.PageUtil;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.redisson.api.RLock;
@@ -91,7 +88,6 @@ public class OrderServiceImpl implements OrderService {
     private final OrderPassengerRelationService orderPassengerRelationService;
     private final RedissonClient redissonClient;
     private final DelayCloseOrderSendProduce delayCloseOrderSendProduce;
-    private final UserRemoteService userRemoteService;
 
     /**
      * 根据订单号查询内部订单详情，不执行终端用户归属校验。
@@ -399,24 +395,31 @@ public class OrderServiceImpl implements OrderService {
         }
     }
 
+    /**
+     * 分页查询当前认证账号购买的订单，并补充首张车票摘要和服务端计算的可操作状态。
+     *
+     * @param requestParam 分页参数
+     * @return 当前账号拥有的订单分页
+     */
     @Override
     public PageResponse<TicketOrderDetailSelfRespDTO> pageSelfTicketOrder(TicketOrderSelfPageQueryReqDTO requestParam) {
-        Result<UserQueryActualRespDTO> userActualResp = userRemoteService.queryActualUserByUsername(UserContext.getUsername());
-        LambdaQueryWrapper<OrderItemPassengerDO> queryWrapper = Wrappers.lambdaQuery(OrderItemPassengerDO.class)
-                .eq(OrderItemPassengerDO::getIdCard, userActualResp.getData().getIdCard())
-                .orderByDesc(OrderItemPassengerDO::getCreateTime);
-        IPage<OrderItemPassengerDO> orderItemPassengerPage = orderPassengerRelationService.page(PageUtil.convert(requestParam), queryWrapper);
-        return PageUtil.convert(orderItemPassengerPage, each -> {
-            LambdaQueryWrapper<OrderDO> orderQueryWrapper = Wrappers.lambdaQuery(OrderDO.class)
-                    .eq(OrderDO::getOrderSn, each.getOrderSn());
-            OrderDO orderDO = orderMapper.selectOne(orderQueryWrapper);
+        // MCP 的“我的订单”按下单账号归属查询，不能按实名认证身份证误筛为“本人乘车订单”。
+        LambdaQueryWrapper<OrderDO> queryWrapper = Wrappers.lambdaQuery(OrderDO.class)
+                .eq(OrderDO::getUserId, UserContext.getUserId())
+                .orderByDesc(OrderDO::getOrderTime);
+        IPage<OrderDO> orderPage = orderMapper.selectPage(PageUtil.convert(requestParam), queryWrapper);
+        return PageUtil.convert(orderPage, orderDO -> {
+            // 列表只展示一张非敏感车票摘要，完整退票范围继续由订单详情和退票预览接口确定。
             LambdaQueryWrapper<OrderItemDO> orderItemQueryWrapper = Wrappers.lambdaQuery(OrderItemDO.class)
-                    .eq(OrderItemDO::getOrderSn, each.getOrderSn())
-                    .eq(OrderItemDO::getIdCard, each.getIdCard());
-            OrderItemDO orderItemDO = orderItemMapper.selectOne(orderItemQueryWrapper);
+                    .eq(OrderItemDO::getOrderSn, orderDO.getOrderSn());
+            List<OrderItemDO> orderItems = orderItemMapper.selectList(orderItemQueryWrapper);
+            OrderItemDO firstOrderItem = orderItems.stream().findFirst().orElse(null);
             TicketOrderDetailSelfRespDTO actualResult = BeanUtil.convert(orderDO, TicketOrderDetailSelfRespDTO.class);
-            BeanUtil.convertIgnoreNullAndBlank(orderItemDO, actualResult);
-            // 本人订单列表补充订单号、状态和服务端计算的可操作项，供后续安全详情查询使用。
+            if (firstOrderItem != null) {
+                BeanUtil.convertIgnoreNullAndBlank(firstOrderItem, actualResult);
+            }
+
+            // 可操作状态只依据订单状态和发车时间计算，回答模型不能自行推断。
             boolean beforeDeparture = isBeforeDeparture(orderDO);
             actualResult.setCanCancel(Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus()));
             actualResult.setCanPay(Objects.equals(orderDO.getStatus(), OrderStatusEnum.PENDING_PAYMENT.getStatus()));

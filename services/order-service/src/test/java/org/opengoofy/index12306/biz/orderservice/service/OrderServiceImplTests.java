@@ -17,6 +17,7 @@
 
 package org.opengoofy.index12306.biz.orderservice.service;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -25,13 +26,16 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.opengoofy.index12306.biz.orderservice.common.enums.OrderStatusEnum;
 import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderDO;
+import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderItemDO;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderItemMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderMapper;
+import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQueryReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespDTO;
+import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.mq.produce.DelayCloseOrderSendProduce;
-import org.opengoofy.index12306.biz.orderservice.remote.UserRemoteService;
 import org.opengoofy.index12306.biz.orderservice.service.impl.OrderServiceImpl;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
+import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 import org.redisson.api.RedissonClient;
@@ -70,9 +74,6 @@ class OrderServiceImplTests {
 
     @Mock
     private DelayCloseOrderSendProduce delayCloseOrderSendProduce;
-
-    @Mock
-    private UserRemoteService userRemoteService;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -117,6 +118,36 @@ class OrderServiceImplTests {
         assertThatThrownBy(() -> orderService.querySelfTicketOrderByOrderSn("order-1"))
                 .isInstanceOf(ClientException.class)
                 .hasMessageContaining("订单不存在或无权访问");
+    }
+
+    /**
+     * 验证当前账号购买的订单即使乘车人是其他联系人，也会出现在可退订单列表中。
+     */
+    @Test
+    void purchaserCanListRefundableOrderForAnotherPassenger() {
+        UserContext.setUser(UserInfoDTO.builder().userId("1001").username("alice").build());
+        OrderDO paidOrder = order("1001", OrderStatusEnum.ALREADY_PAID.getStatus());
+        Page<OrderDO> orderPage = new Page<>(1, 20);
+        orderPage.setRecords(List.of(paidOrder));
+        orderPage.setTotal(1);
+        when(orderMapper.selectPage(any(), any())).thenReturn(orderPage);
+        when(orderItemMapper.selectList(any())).thenReturn(List.of(
+                OrderItemDO.builder()
+                        .orderSn("order-1")
+                        .realName("万重山")
+                        .seatType(2)
+                        .amount(55300)
+                        .build()));
+
+        // 订单归属使用购买账号，乘车人姓名只作为列表摘要，不能改变订单是否可见。
+        PageResponse<TicketOrderDetailSelfRespDTO> result = orderService.pageSelfTicketOrder(
+                new TicketOrderSelfPageQueryReqDTO());
+
+        assertThat(result.getRecords()).singleElement().satisfies(order -> {
+            assertThat(order.getOrderSn()).isEqualTo("order-1");
+            assertThat(order.getRealName()).isEqualTo("万重山");
+            assertThat(order.getCanRefund()).isTrue();
+        });
     }
 
     /**
