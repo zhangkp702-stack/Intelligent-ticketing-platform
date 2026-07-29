@@ -232,7 +232,7 @@ class TicketQueryToolsTests {
         McpMeta meta = new McpMeta(java.util.Map.of());
         List<String> itemIds = List.of("item-1");
 
-        // 退款请求 ID 不参与草案指纹，退款范围和金额使用 Agent 记录字段顺序。
+        // actionId 同时作为退款请求 ID，但不参与草案指纹；退款范围和金额使用 Agent 记录字段顺序。
         LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
         payload.put("orderSn", "order-3001");
         payload.put("type", 0);
@@ -245,21 +245,21 @@ class TicketQueryToolsTests {
                 "request-a", "user-a", "alice", "conversation-a", "turn-a",
                 "action-3", hash);
         ConfirmedRefundResult result = new ConfirmedRefundResult(
-                "refund-1", "order-3001", 0, 5000, 1);
+                "action-3", "order-3001", 0, 5000, 1);
         when(authenticator.authenticate(meta)).thenReturn(identity);
         when(businessClient.refundTicket(
-                "refund-1", "order-3001", 0, itemIds, identity)).thenReturn(result);
+                "action-3", "order-3001", 0, itemIds, identity)).thenReturn(result);
         TicketQueryTools tools = new TicketQueryTools(authenticator, businessClient, objectMapper);
 
         // 完整匹配时执行退款，预计金额变化时在业务调用前拒绝。
         assertThat(tools.executeConfirmedTicketRefund(
-                "action-3", "refund-1", "order-3001", 0, itemIds, 5000, meta))
+                "action-3", "action-3", "order-3001", 0, itemIds, 5000, meta))
                 .isEqualTo(result);
         assertThatThrownBy(() -> tools.executeConfirmedTicketRefund(
-                "action-3", "refund-1", "order-3001", 0, itemIds, 4500, meta))
+                "action-3", "action-3", "order-3001", 0, itemIds, 4500, meta))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("confirmed draft");
         verify(businessClient).refundTicket(
-                "refund-1", "order-3001", 0, itemIds, identity);
+                "action-3", "order-3001", 0, itemIds, identity);
     }
 }

@@ -512,11 +512,13 @@ public class TicketBusinessClient {
     public ConfirmedCancellationResult cancelOrder(
             String orderSn,
             McpCallerIdentity identity) {
-        // 票务服务会再次校验订单归属和当前可取消状态，再执行座位及订单回滚。
+        // actionId 作为 operationId 传给票务服务，重复调用不会再次释放订单和座位资源。
         JsonNode root = ticketClient.post()
                 .uri("/api/ticket-service/ticket/cancel")
                 .headers(headers -> addIdentity(headers, identity))
-                .body(Map.of("orderSn", orderSn))
+                .body(Map.of(
+                        "operationId", identity.actionId(),
+                        "orderSn", orderSn))
                 .retrieve()
                 .body(JsonNode.class);
         requireSuccess(root);
@@ -539,9 +541,13 @@ public class TicketBusinessClient {
             Integer type,
             List<String> orderItemIds,
             McpCallerIdentity identity) {
-        // 请求标识复用确认请求 ID，网络结果不确定时客户端不得换标识自动重试。
+        if (!identity.actionId().equals(requestId)) {
+            throw new IllegalArgumentException("refund requestId must match confirmed actionId");
+        }
+        // actionId 同时作为票务操作标识和支付退款请求标识，形成跨服务稳定幂等键。
         Map<String, Object> request = Map.of(
-                "requestId", requestId,
+                "operationId", identity.actionId(),
+                "requestId", identity.actionId(),
                 "orderSn", orderSn,
                 "type", type,
                 "subOrderRecordIdReqList", orderItemIds);

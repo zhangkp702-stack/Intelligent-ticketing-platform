@@ -415,7 +415,7 @@ public class TicketQueryTools {
                     title = "执行已确认购票",
                     readOnlyHint = false,
                     destructiveHint = true,
-                    idempotentHint = false,
+                    idempotentHint = true,
                     openWorldHint = false))
     public ConfirmedPurchaseResult executeConfirmedPurchase(
             @McpToolParam(description = "已消费确认令牌的草案 ID") String actionId,
@@ -507,7 +507,7 @@ public class TicketQueryTools {
                     title = "执行已确认取消",
                     readOnlyHint = false,
                     destructiveHint = true,
-                    idempotentHint = false,
+                    idempotentHint = true,
                     openWorldHint = false))
     public ConfirmedCancellationResult executeConfirmedOrderCancellation(
             @McpToolParam(description = "已消费确认令牌的草案 ID") String actionId,
@@ -551,7 +551,7 @@ public class TicketQueryTools {
                     title = "执行已确认退票",
                     readOnlyHint = false,
                     destructiveHint = true,
-                    idempotentHint = false,
+                    idempotentHint = true,
                     openWorldHint = false))
     public ConfirmedRefundResult executeConfirmedTicketRefund(
             @McpToolParam(description = "已消费确认令牌的草案 ID") String actionId,
@@ -585,6 +585,7 @@ public class TicketQueryTools {
 
         // 幂等请求标识不参与草案指纹，其他退款范围和金额必须与确认快照完全一致。
         Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
+        Assert.isTrue(actionId.equals(requestId.trim()), "requestId must match confirmed actionId");
         RefundPayloadProof payload = new RefundPayloadProof(
                 orderSn.trim(), type, normalizedIds, expectedRefundAmount);
         Assert.isTrue(fingerprint(payload).equals(identity.payloadHash()),

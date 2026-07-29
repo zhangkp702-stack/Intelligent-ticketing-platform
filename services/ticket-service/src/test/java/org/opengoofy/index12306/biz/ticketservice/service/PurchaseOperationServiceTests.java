@@ -59,7 +59,9 @@ class PurchaseOperationServiceTests {
         // 每个用例使用独立 Mock，避免操作认领状态在测试之间泄漏。
         ticketService = mock(TicketService.class);
         transactionService = mock(BusinessOperationTransactionService.class);
-        purchaseOperationService = new PurchaseOperationService(ticketService, transactionService);
+        purchaseOperationService = new PurchaseOperationService(
+                ticketService,
+                new BusinessOperationCoordinator(transactionService));
         UserContext.setUser(UserInfoDTO.builder()
                 .userId("user-1")
                 .username("alice")

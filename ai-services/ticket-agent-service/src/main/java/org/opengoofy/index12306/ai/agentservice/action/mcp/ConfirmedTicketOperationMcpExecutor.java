@@ -109,11 +109,11 @@ public class ConfirmedTicketOperationMcpExecutor implements ConfirmedTicketOpera
      */
     private String buildToolInput(ClaimedAction action) {
         try {
-            // 草案必须是 JSON 对象，退款请求标识只用于业务幂等而不参与草案指纹。
+            // 草案必须是 JSON 对象，actionId 同时作为跨服务退款幂等键且不参与草案指纹。
             ObjectNode input = (ObjectNode) objectMapper.readTree(action.payloadJson());
             input.put("actionId", action.actionId());
             if (action.actionType() == AgentActionType.TICKET_REFUND) {
-                input.put("requestId", action.requestId());
+                input.put("requestId", action.actionId());
             }
             return objectMapper.writeValueAsString(input);
         } catch (JsonProcessingException | ClassCastException ex) {

@@ -3,8 +3,10 @@ package org.opengoofy.index12306.ai.mcpserver.client;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.mcpserver.config.TicketMcpProperties;
 import org.opengoofy.index12306.ai.mcpserver.security.McpCallerIdentity;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedCancellationResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefundResult;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.test.json.JsonCompareMode;
@@ -79,6 +81,73 @@ class TicketBusinessClientTests {
         assertThat(result.orderSn()).isEqualTo("order-1");
         assertThat(result.tickets()).isEmpty();
         userServer.verify();
+        ticketServer.verify();
+    }
+
+    /**
+     * 验证确认取消把 actionId 作为 operationId 发送到票务服务。
+     */
+    @Test
+    void confirmedCancellationSendsPersistentOperationId() {
+        TicketBusinessClient client = new TicketBusinessClient(RestClient.builder(), properties());
+        RestClient.Builder ticketBuilder = RestClient.builder().baseUrl("http://ticket.test");
+        MockRestServiceServer ticketServer = MockRestServiceServer.bindTo(ticketBuilder).build();
+        ReflectionTestUtils.setField(client, "ticketClient", ticketBuilder.build());
+        ticketServer.expect(requestTo("http://ticket.test/api/ticket-service/ticket/cancel"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json(
+                        """
+                                {"operationId":"action-1","orderSn":"order-1"}
+                                """,
+                        JsonCompareMode.LENIENT))
+                .andRespond(withSuccess(
+                        """
+                                {"code":"0"}
+                                """,
+                        MediaType.APPLICATION_JSON));
+        McpCallerIdentity identity = new McpCallerIdentity(
+                "request-1", "user-1", "alice", "conversation-1", "turn-1", "action-1", "payload-hash");
+
+        // 取消成功结果只返回订单号和稳定布尔状态。
+        ConfirmedCancellationResult result = client.cancelOrder("order-1", identity);
+
+        assertThat(result.orderSn()).isEqualTo("order-1");
+        assertThat(result.cancelled()).isTrue();
+        ticketServer.verify();
+    }
+
+    /**
+     * 验证确认退票使用同一个 actionId 贯通票务操作和支付退款幂等键。
+     */
+    @Test
+    void confirmedRefundUsesActionIdAcrossBothIdempotencyFields() {
+        TicketBusinessClient client = new TicketBusinessClient(RestClient.builder(), properties());
+        RestClient.Builder ticketBuilder = RestClient.builder().baseUrl("http://ticket.test");
+        MockRestServiceServer ticketServer = MockRestServiceServer.bindTo(ticketBuilder).build();
+        ReflectionTestUtils.setField(client, "ticketClient", ticketBuilder.build());
+        ticketServer.expect(requestTo("http://ticket.test/api/ticket-service/ticket/refund"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json(
+                        """
+                                {"operationId":"action-1","requestId":"action-1","orderSn":"order-1",
+                                "type":0,"subOrderRecordIdReqList":["item-1"]}
+                                """,
+                        JsonCompareMode.LENIENT))
+                .andRespond(withSuccess(
+                        """
+                                {"code":"0","data":{"requestId":"action-1","orderSn":"order-1",
+                                "type":0,"refundAmount":100,"status":1}}
+                                """,
+                        MediaType.APPLICATION_JSON));
+        McpCallerIdentity identity = new McpCallerIdentity(
+                "request-1", "user-1", "alice", "conversation-1", "turn-1", "action-1", "payload-hash");
+
+        // 退款结果只保留稳定业务字段，不暴露支付渠道内部交易凭证。
+        ConfirmedRefundResult result = client.refundTicket(
+                "action-1", "order-1", 0, List.of("item-1"), identity);
+
+        assertThat(result.requestId()).isEqualTo("action-1");
+        assertThat(result.refundAmount()).isEqualTo(100);
         ticketServer.verify();
     }
 

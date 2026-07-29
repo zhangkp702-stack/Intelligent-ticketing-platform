@@ -30,6 +30,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.PurchaseOperationService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketService;
+import org.opengoofy.index12306.biz.ticketservice.service.TicketOperationService;
 import org.opengoofy.index12306.framework.starter.captcha.annotation.RiskGuard;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.ratelimiter.annotation.RateLimiter;
@@ -51,6 +52,7 @@ public class TicketController {
 
     private final TicketService ticketService;
     private final PurchaseOperationService purchaseOperationService;
+    private final TicketOperationService ticketOperationService;
 
     /**
      * 根据条件查询车票
@@ -87,11 +89,15 @@ public class TicketController {
     }
 
     /**
-     * 取消车票订单
+     * 取消车票订单；Agent 请求携带操作标识时提供持久化幂等保护。
+     *
+     * @param requestParam 订单号以及可选的 Agent 操作标识
+     * @return 无业务响应正文
      */
     @PostMapping("/api/ticket-service/ticket/cancel")
     public Result<Void> cancelTicketOrder(@RequestBody CancelTicketOrderReqDTO requestParam) {
-        ticketService.cancelTicketOrder(requestParam);
+        // Agent 请求先认领操作标识，普通客户端仍沿用原有取消订单行为。
+        ticketOperationService.cancelTicketOrder(requestParam);
         return Results.success();
     }
 
@@ -117,11 +123,15 @@ public class TicketController {
     }
 
     /**
-     * 公共退款接口
+     * 执行车票退款；Agent 请求携带操作标识时提供跨票务和支付服务的幂等保护。
+     *
+     * @param requestParam 退票范围、退款请求标识以及可选的 Agent 操作标识
+     * @return 新建退款，或同一操作标识已经成功时保存的原退款结果
      */
     @PostMapping("/api/ticket-service/ticket/refund")
     public Result<RefundTicketRespDTO> commonTicketRefund(@RequestBody RefundTicketReqDTO requestParam) {
-        return Results.success(ticketService.commonTicketRefund(requestParam));
+        // Agent 请求统一使用 operationId 认领票务操作并作为下游退款幂等键。
+        return Results.success(ticketOperationService.refundTicket(requestParam));
     }
 
     /**

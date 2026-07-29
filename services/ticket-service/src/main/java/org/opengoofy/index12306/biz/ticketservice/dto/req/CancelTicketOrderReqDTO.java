@@ -31,7 +31,22 @@ import lombok.NoArgsConstructor;
 public class CancelTicketOrderReqDTO {
 
     /**
+     * Agent 已确认操作标识；普通取消请求可以不传。
+     */
+    private String operationId;
+
+    /**
      * 订单号
      */
     private String orderSn;
+
+    /**
+     * 保留延迟关单等既有调用方使用的订单号构造方式。
+     *
+     * @param orderSn 订单号
+     */
+    public CancelTicketOrderReqDTO(String orderSn) {
+        // 非 Agent 内部调用不生成操作标识，保持原有关闭订单语义。
+        this.orderSn = orderSn;
+    }
 }
