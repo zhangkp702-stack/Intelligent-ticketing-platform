@@ -4,6 +4,7 @@ import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedPurchaseExec
 import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedTicketOperationExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.TicketOperationPreviewExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
+import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseDraftRevalidationService;
 import org.opengoofy.index12306.ai.agentservice.action.service.TicketOperationActionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +18,7 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.TicketOperationAction
 import org.opengoofy.index12306.ai.agentservice.action.dto.TicketOperationActionModels.RefundableTicket;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
+import org.opengoofy.index12306.ai.agentservice.chat.exception.AgentChatException;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,7 +26,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.ai.tool.execution.ToolExecutionException;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
@@ -34,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -65,13 +70,16 @@ class PurchaseActionPersistenceTests {
     @Autowired
     private TicketOperationPreviewExecutor previewExecutor;
 
+    @Autowired
+    private PurchaseDraftRevalidationService purchaseDraftRevalidationService;
+
     /**
      * 清理共享 Spring 测试上下文中的执行器调用记录。
      */
     @BeforeEach
     void resetExecutor() {
         // 每个测试独立断言真实购票执行次数，避免上下文缓存造成相互影响。
-        reset(executor, ticketOperationExecutor, previewExecutor);
+        reset(executor, ticketOperationExecutor, previewExecutor, purchaseDraftRevalidationService);
     }
 
     /**
@@ -99,6 +107,8 @@ class PurchaseActionPersistenceTests {
         assertThat(first.orderSn()).isEqualTo("order-1001");
         assertThat(retried).isEqualTo(first);
         verify(executor, times(1)).execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("alice"));
+        verify(purchaseDraftRevalidationService, times(1)).revalidate(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
     /**
@@ -118,6 +128,37 @@ class PurchaseActionPersistenceTests {
                 confirmation.actionId(), "invalid-token");
         assertThatThrownBy(() -> purchaseActionService.confirm(command))
                 .hasMessageContaining("确认令牌无效");
+        assertThat(purchaseActionService.getStatus(fixture.userId(), confirmation.actionId()).status())
+                .isEqualTo(AgentActionStatus.AWAITING_CONFIRMATION);
+        verifyNoInteractions(executor);
+        verifyNoInteractions(purchaseDraftRevalidationService);
+    }
+
+    /**
+     * 验证确认前余票发生变化时不消费令牌，也不调用真实购票执行器。
+     */
+    @Test
+    void changedPurchaseInventoryDoesNotConsumeConfirmation() {
+        Fixture fixture = createRunningTurn();
+        purchaseActionService.prepare(fixture.context(), payload());
+        ActionConfirmationView confirmation = purchaseActionService
+                .confirmationForTurn(fixture.userId(), fixture.turnId())
+                .orElseThrow();
+        doThrow(new AgentChatException(
+                HttpStatus.CONFLICT,
+                "PURCHASE_DRAFT_STALE",
+                "车次或余票状态已经变化，请重新查询并生成购票草案"))
+                .when(purchaseDraftRevalidationService)
+                .revalidate(
+                        org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+        ConfirmPurchaseCommand command = new ConfirmPurchaseCommand(
+                unique("confirm"), unique("idempotency"), fixture.userId(), "alice",
+                confirmation.actionId(), confirmation.confirmationToken());
+
+        // 重新核验失败发生在数据库领取执行权之前，原草案仍保持等待确认。
+        assertThatThrownBy(() -> purchaseActionService.confirm(command))
+                .hasMessageContaining("余票状态已经变化");
         assertThat(purchaseActionService.getStatus(fixture.userId(), confirmation.actionId()).status())
                 .isEqualTo(AgentActionStatus.AWAITING_CONFIRMATION);
         verifyNoInteractions(executor);
@@ -349,6 +390,18 @@ class PurchaseActionPersistenceTests {
         TicketOperationPreviewExecutor ticketOperationPreviewExecutor() {
             // 每个测试显式声明业务预览结果，避免连接真实 MCP 服务。
             return mock(TicketOperationPreviewExecutor.class);
+        }
+
+        /**
+         * 创建不会访问真实余票服务的购票确认前核验替身。
+         *
+         * @return 优先注入测试上下文的核验服务
+         */
+        @Bean
+        @Primary
+        PurchaseDraftRevalidationService testPurchaseDraftRevalidationService() {
+            // 具体余票核验规则由独立单元测试覆盖，持久化测试只验证调用时机和状态机。
+            return mock(PurchaseDraftRevalidationService.class);
         }
     }
 

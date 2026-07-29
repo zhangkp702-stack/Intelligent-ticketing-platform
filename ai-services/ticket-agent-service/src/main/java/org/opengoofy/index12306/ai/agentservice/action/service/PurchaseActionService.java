@@ -60,6 +60,7 @@ public class PurchaseActionService {
     private final ObjectProvider<ConfirmedPurchaseExecutor> executorProvider;
     private final ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider;
     private final TicketOperationActionService ticketOperationActionService;
+    private final PurchaseDraftRevalidationService purchaseDraftRevalidationService;
     private final AgentActionProperties properties;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -72,6 +73,7 @@ public class PurchaseActionService {
      * @param executorProvider 专用 MCP 写执行器
      * @param ticketOperationExecutorProvider 取消和退票专用 MCP 写执行器
      * @param ticketOperationActionService 取消和退票草案服务
+     * @param purchaseDraftRevalidationService 购票确认前最新余票核验服务
      * @param properties 操作确认配置
      * @param objectMapper JSON 序列化器
      * @param clock 统一时钟
@@ -82,6 +84,7 @@ public class PurchaseActionService {
             ObjectProvider<ConfirmedPurchaseExecutor> executorProvider,
             ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider,
             TicketOperationActionService ticketOperationActionService,
+            PurchaseDraftRevalidationService purchaseDraftRevalidationService,
             AgentActionProperties properties,
             ObjectMapper objectMapper,
             Clock clock) {
@@ -90,6 +93,7 @@ public class PurchaseActionService {
         this.executorProvider = executorProvider;
         this.ticketOperationExecutorProvider = ticketOperationExecutorProvider;
         this.ticketOperationActionService = ticketOperationActionService;
+        this.purchaseDraftRevalidationService = purchaseDraftRevalidationService;
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -157,6 +161,16 @@ public class PurchaseActionService {
         if (current.getStatus() != AgentActionStatus.AWAITING_CONFIRMATION) {
             throw conflict("ACTION_NOT_CONFIRMABLE", "操作已经确认、终止或正在执行");
         }
+        if (!tokenService.matches(current, command.confirmationToken())) {
+            // 外部只读重检之前先校验令牌，避免伪造确认触发额外的用户态业务查询。
+            throw new AgentChatException(
+                    HttpStatus.FORBIDDEN,
+                    "INVALID_CONFIRMATION",
+                    "操作确认令牌无效");
+        }
+        AgentRequestContext context = new AgentRequestContext(
+                command.requestId(), command.userId(), command.username(),
+                current.getConversationId(), current.getTurnId());
         ConfirmedPurchaseExecutor purchaseExecutor = null;
         ConfirmedTicketOperationExecutor ticketOperationExecutor = null;
         if (current.getActionType() == AgentActionType.TICKET_PURCHASE) {
@@ -165,11 +179,11 @@ public class PurchaseActionService {
             if (purchaseExecutor == null) {
                 throw writeMcpUnavailable("购票执行服务暂时不可用，请稍后重新生成草案");
             }
+            // 购票确认前重新查询同一车次和席别余票，过期快照不能领取真实下单执行权。
+            purchaseDraftRevalidationService.revalidate(
+                    readPayload(current.getPayloadJson()), context);
         } else {
             // 取消和退票在消费令牌前重新预览，避免执行用户未确认的新状态或新金额。
-            AgentRequestContext context = new AgentRequestContext(
-                    command.requestId(), command.userId(), command.username(),
-                    current.getConversationId(), current.getTurnId());
             ticketOperationActionService.revalidate(current, context);
             ticketOperationExecutor = ticketOperationExecutorProvider.getIfAvailable();
             if (ticketOperationExecutor == null) {

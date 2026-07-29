@@ -4,20 +4,22 @@
 
 本阶段在阶段六对话闭环上增加真实购票能力，但回答模型不能直接下单。完整链路为：
 
-1. 模型调用本地 `prepare_ticket_purchase` 工具生成购票草案。
-2. Agent 将草案写入独立数据库，并通过 JSON 或 SSE 返回结构化确认信息。
-3. 用户调用确认接口提交一次性确认令牌。
-4. Agent 在数据库事务内锁定草案、校验令牌、过期时间和幂等键，并领取唯一执行权。
-5. 专用执行器调用不向回答模型暴露的 `execute_confirmed_ticket_purchase` MCP 工具。
-6. MCP 服务再次校验 HMAC 身份、操作标识和参数指纹，再调用现有票务购票接口。
-7. Agent 保存脱敏结果；网络或超时导致结果无法确定时标记为 `UNKNOWN`，禁止自动重试。
+1. 规划模型只输出 `TICKET_PURCHASE` 意图和业务槽位，不接收任何工具定义。
+2. 服务端固定购票链查询车次、匹配乘车人并直接调用内部 `PurchaseDraftTools` 生成草案。
+3. Agent 将草案写入独立数据库，并通过 JSON 或 SSE 返回结构化确认信息。
+4. 用户调用确认接口提交一次性确认令牌。
+5. Agent 先重新查询同车次、同席别最新余票，再在数据库事务内锁定草案、校验令牌、过期时间和幂等键，并领取唯一执行权。
+6. 专用执行器调用不向任何模型暴露的 `execute_confirmed_ticket_purchase` MCP 工具。
+7. MCP 服务再次校验 HMAC 身份、操作标识和参数指纹，再调用现有票务购票接口。
+8. Agent 保存脱敏结果；网络或超时导致结果无法确定时标记为 `UNKNOWN`，禁止自动重试。
 
 退票、取消订单和支付尚未在本阶段开放。它们后续可以复用操作草案、确认令牌和执行审计状态机。
 
 ## 2. 安全边界
 
-- `prepare_ticket_purchase` 是模型可见工具，只写 Agent 数据库，不访问购票接口。
-- `execute_confirmed_ticket_purchase` 只存在于专用 MCP 执行器，不加入回答模型的 `ToolCallbackProvider`。
+- `PurchaseDraftTools` 是固定购票链直接调用的内部 Java 组件，不注册为模型工具，只写 Agent 数据库。
+- `execute_confirmed_ticket_purchase` 只存在于专用 MCP 执行器，不加入规划模型或汇总模型。
+- 查票、车次选择和乘车人匹配均由服务端固定链完成，模型不能选择工具或直接构造内部标识。
 - 用户身份只来自网关注入的 `userId` 和 `username` 请求头。
 - 确认令牌使用 HMAC-SHA256，覆盖用户、会话、主题、轮次、操作、参数指纹和有效期。
 - MCP 签名新增 `actionId` 和 `payloadHash`，防止确认后替换车次、站点、乘车人或席别。
@@ -116,7 +118,7 @@ userId: 当前用户标识
 1. 执行 V3 数据库迁移或让 Agent 服务通过 Flyway 自动迁移。
 2. 配置 Agent 与 MCP 共用的内部签名密钥，以及 Agent 确认密钥。
 3. 先启动票务、用户、订单等原有业务服务。
-4. 启动 `ticket-mcp-server`，确认日志显示注册 6 个工具。
+4. 启动 `ticket-mcp-server`，确认只读固定链工具和专用确认执行工具均已注册。
 5. 启动启用了 MCP 客户端的 `ticket-agent-service`。
 6. 通过查询乘车人、查询余票、生成草案、确认购票、查询订单的顺序执行联调。
 
