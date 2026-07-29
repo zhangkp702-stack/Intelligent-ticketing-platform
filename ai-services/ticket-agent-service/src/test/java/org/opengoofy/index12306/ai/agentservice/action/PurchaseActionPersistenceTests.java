@@ -1,5 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.action;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedPurchaseExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedTicketOperationExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.TicketOperationPreviewExecutor;
@@ -73,6 +75,9 @@ class PurchaseActionPersistenceTests {
     @Autowired
     private PurchaseDraftRevalidationService purchaseDraftRevalidationService;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     /**
      * 清理共享 Spring 测试上下文中的执行器调用记录。
      */
@@ -88,6 +93,8 @@ class PurchaseActionPersistenceTests {
     @Test
     void confirmedPurchaseExecutesOnceAndReusesStoredResult() {
         Fixture fixture = createRunningTurn();
+        double executionsBefore = counterValue(
+                "agent.action.executions", "TICKET_PURCHASE", "outcome", "SUCCEEDED");
         when(executor.execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("alice")))
                 .thenReturn("{\"orderSn\":\"order-1001\",\"tickets\":[]}");
 
@@ -106,6 +113,9 @@ class PurchaseActionPersistenceTests {
         assertThat(first.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
         assertThat(first.orderSn()).isEqualTo("order-1001");
         assertThat(retried).isEqualTo(first);
+        assertThat(counterValue(
+                "agent.action.executions", "TICKET_PURCHASE", "outcome", "SUCCEEDED"))
+                .isEqualTo(executionsBefore + 1);
         verify(executor, times(1)).execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("alice"));
         verify(purchaseDraftRevalidationService, times(1)).revalidate(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
@@ -140,6 +150,11 @@ class PurchaseActionPersistenceTests {
     @Test
     void changedPurchaseInventoryDoesNotConsumeConfirmation() {
         Fixture fixture = createRunningTurn();
+        double rejectionsBefore = counterValue(
+                "agent.action.confirmation.rejections",
+                "TICKET_PURCHASE",
+                "reason",
+                "PREVIEW_CHANGED");
         purchaseActionService.prepare(fixture.context(), payload());
         ActionConfirmationView confirmation = purchaseActionService
                 .confirmationForTurn(fixture.userId(), fixture.turnId())
@@ -161,6 +176,12 @@ class PurchaseActionPersistenceTests {
                 .hasMessageContaining("余票状态已经变化");
         assertThat(purchaseActionService.getStatus(fixture.userId(), confirmation.actionId()).status())
                 .isEqualTo(AgentActionStatus.AWAITING_CONFIRMATION);
+        assertThat(counterValue(
+                "agent.action.confirmation.rejections",
+                "TICKET_PURCHASE",
+                "reason",
+                "PREVIEW_CHANGED"))
+                .isEqualTo(rejectionsBefore + 1);
         verifyNoInteractions(executor);
     }
 
@@ -197,6 +218,8 @@ class PurchaseActionPersistenceTests {
     @Test
     void purchaseTimeoutRemainsUnknown() {
         Fixture fixture = createRunningTurn();
+        double unknownBefore = counterValue(
+                "agent.action.executions", "TICKET_PURCHASE", "outcome", "UNKNOWN");
         when(executor.execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("alice")))
                 .thenThrow(new IllegalStateException("Ticket service read timed out"));
 
@@ -214,6 +237,9 @@ class PurchaseActionPersistenceTests {
         ActionStatusView status = purchaseActionService.getStatus(fixture.userId(), confirmation.actionId());
         assertThat(status.status()).isEqualTo(AgentActionStatus.UNKNOWN);
         assertThat(status.failureCategory()).isEqualTo("PURCHASE_RESULT_UNKNOWN");
+        assertThat(counterValue(
+                "agent.action.executions", "TICKET_PURCHASE", "outcome", "UNKNOWN"))
+                .isEqualTo(unknownBefore + 1);
     }
 
     /**
@@ -351,6 +377,27 @@ class PurchaseActionPersistenceTests {
     private String unique(String prefix) {
         // UUID 去除分隔符后可直接用于请求标识和幂等键。
         return prefix + "-" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /**
+     * 读取指定操作类型和终态标签的当前计数。
+     *
+     * @param metricName 指标名称
+     * @param actionType 操作类型
+     * @param outcomeTag 结果标签名称
+     * @param outcomeValue 结果标签值
+     * @return 指标尚未创建时返回 0，否则返回当前累计值
+     */
+    private double counterValue(
+            String metricName,
+            String actionType,
+            String outcomeTag,
+            String outcomeValue) {
+        // 测试先读取基线再执行操作，避免共享 Spring 上下文中的其他用例影响增量断言。
+        Counter counter = meterRegistry.find(metricName)
+                .tags("actionType", actionType, outcomeTag, outcomeValue)
+                .counter();
+        return counter == null ? 0 : counter.count();
     }
 
     /**

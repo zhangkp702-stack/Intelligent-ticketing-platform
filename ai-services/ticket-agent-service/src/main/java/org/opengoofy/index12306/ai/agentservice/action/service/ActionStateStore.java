@@ -34,6 +34,7 @@ public class ActionStateStore {
     private final ConversationRepository conversationRepository;
     private final TurnRepository turnRepository;
     private final ConfirmationTokenService tokenService;
+    private final AgentActionMetrics actionMetrics;
     private final Clock clock;
 
     /**
@@ -44,6 +45,7 @@ public class ActionStateStore {
      * @param conversationRepository 会话仓储
      * @param turnRepository 轮次仓储
      * @param tokenService 确认令牌校验服务
+     * @param actionMetrics 高风险操作指标记录器
      * @param clock 统一时钟
      */
     public ActionStateStore(
@@ -52,12 +54,14 @@ public class ActionStateStore {
             ConversationRepository conversationRepository,
             TurnRepository turnRepository,
             ConfirmationTokenService tokenService,
+            AgentActionMetrics actionMetrics,
             Clock clock) {
         this.actionRepository = actionRepository;
         this.executionRepository = executionRepository;
         this.conversationRepository = conversationRepository;
         this.turnRepository = turnRepository;
         this.tokenService = tokenService;
+        this.actionMetrics = actionMetrics;
         this.clock = clock;
     }
 
@@ -142,10 +146,7 @@ public class ActionStateStore {
         assertOwner(action, userId);
 
         // 待确认草案超过截止时间后立即转为 EXPIRED，旧令牌随后无法再消费。
-        if (action.getStatus() == AgentActionStatus.AWAITING_CONFIRMATION
-                && !clock.instant().isBefore(action.getConfirmationExpiresAt())) {
-            action.expire(clock.instant());
-        }
+        expireIfNecessary(action, clock.instant());
         return Optional.of(action);
     }
 
@@ -174,10 +175,7 @@ public class ActionStateStore {
             return Optional.empty();
         }
         assertOwner(action, userId);
-        if (action.getStatus() == AgentActionStatus.AWAITING_CONFIRMATION
-                && !clock.instant().isBefore(action.getConfirmationExpiresAt())) {
-            action.expire(clock.instant());
-        }
+        expireIfNecessary(action, clock.instant());
         return Optional.of(action);
     }
 
@@ -191,7 +189,7 @@ public class ActionStateStore {
      * @param idempotencyKey 确认幂等键
      * @return 已领取执行权的不可变快照
      */
-    @Transactional
+    @Transactional(noRollbackFor = ActionConfirmationExpiredException.class)
     public ClaimedAction claim(
             String userId,
             String actionId,
@@ -208,8 +206,9 @@ public class ActionStateStore {
             throw new IllegalStateException("操作草案已经被确认或终止");
         }
         if (!now.isBefore(action.getConfirmationExpiresAt())) {
-            action.expire(now);
-            throw new IllegalStateException("操作确认已经过期");
+            // 过期状态必须随当前事务提交，不能因为向上抛出冲突异常而回滚为待确认。
+            expireIfNecessary(action, now);
+            throw new ActionConfirmationExpiredException();
         }
         if (!tokenService.matches(action, confirmationToken)) {
             throw new SecurityException("操作确认令牌无效");
@@ -308,11 +307,27 @@ public class ActionStateStore {
         assertOwner(action, userId);
 
         // 状态查询也要及时固化过期结果，避免客户端持续看到已经无法确认的草案。
-        if (action.getStatus() == AgentActionStatus.AWAITING_CONFIRMATION
-                && !clock.instant().isBefore(action.getConfirmationExpiresAt())) {
-            action.expire(clock.instant());
-        }
+        expireIfNecessary(action, clock.instant());
         return action;
+    }
+
+    /**
+     * 在待确认草案首次超过截止时间时固化终态并记录一次过期指标。
+     *
+     * @param action 操作草案
+     * @param now 当前时间
+     */
+    private void expireIfNecessary(
+            ActionDraftEntity action,
+            Instant now) {
+        if (action.getStatus() != AgentActionStatus.AWAITING_CONFIRMATION
+                || now.isBefore(action.getConfirmationExpiresAt())) {
+            return;
+        }
+
+        // 状态变化和指标只发生一次，后续状态查询不会重复累计同一草案。
+        action.expire(now);
+        actionMetrics.recordConfirmationExpired(action.getActionType());
     }
 
     /**
@@ -339,6 +354,12 @@ public class ActionStateStore {
         if (userId == null || !userId.equals(action.getUserId())) {
             throw new IllegalArgumentException("无权访问该操作草案");
         }
+    }
+
+    /**
+     * 标识已经在当前事务内固化为过期、但仍需向确认接口返回冲突的状态。
+     */
+    private static final class ActionConfirmationExpiredException extends IllegalStateException {
     }
 
     /**

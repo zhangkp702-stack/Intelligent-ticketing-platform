@@ -43,6 +43,11 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import static org.opengoofy.index12306.ai.agentservice.action.service.AgentActionMetrics.ConfirmationRejection.EXPIRED;
+import static org.opengoofy.index12306.ai.agentservice.action.service.AgentActionMetrics.ConfirmationRejection.INVALID_TOKEN;
+import static org.opengoofy.index12306.ai.agentservice.action.service.AgentActionMetrics.ConfirmationRejection.NOT_CONFIRMABLE;
+import static org.opengoofy.index12306.ai.agentservice.action.service.AgentActionMetrics.ConfirmationRejection.PREVIEW_CHANGED;
+
 /**
  * 创建购票草案，并统一签发和执行购票、取消及退票的显式确认操作。
  */
@@ -61,6 +66,7 @@ public class PurchaseActionService {
     private final ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider;
     private final TicketOperationActionService ticketOperationActionService;
     private final PurchaseDraftRevalidationService purchaseDraftRevalidationService;
+    private final AgentActionMetrics actionMetrics;
     private final AgentActionProperties properties;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -74,6 +80,7 @@ public class PurchaseActionService {
      * @param ticketOperationExecutorProvider 取消和退票专用 MCP 写执行器
      * @param ticketOperationActionService 取消和退票草案服务
      * @param purchaseDraftRevalidationService 购票确认前最新余票核验服务
+     * @param actionMetrics 高风险操作指标记录器
      * @param properties 操作确认配置
      * @param objectMapper JSON 序列化器
      * @param clock 统一时钟
@@ -85,6 +92,7 @@ public class PurchaseActionService {
             ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider,
             TicketOperationActionService ticketOperationActionService,
             PurchaseDraftRevalidationService purchaseDraftRevalidationService,
+            AgentActionMetrics actionMetrics,
             AgentActionProperties properties,
             ObjectMapper objectMapper,
             Clock clock) {
@@ -94,6 +102,7 @@ public class PurchaseActionService {
         this.ticketOperationExecutorProvider = ticketOperationExecutorProvider;
         this.ticketOperationActionService = ticketOperationActionService;
         this.purchaseDraftRevalidationService = purchaseDraftRevalidationService;
+        this.actionMetrics = actionMetrics;
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -159,10 +168,15 @@ public class PurchaseActionService {
             return toStatusView(current);
         }
         if (current.getStatus() != AgentActionStatus.AWAITING_CONFIRMATION) {
+            // 过期与其他不可确认状态分开计数，便于判断确认窗口是否合理。
+            actionMetrics.recordConfirmationRejected(
+                    current.getActionType(),
+                    current.getStatus() == AgentActionStatus.EXPIRED ? EXPIRED : NOT_CONFIRMABLE);
             throw conflict("ACTION_NOT_CONFIRMABLE", "操作已经确认、终止或正在执行");
         }
         if (!tokenService.matches(current, command.confirmationToken())) {
             // 外部只读重检之前先校验令牌，避免伪造确认触发额外的用户态业务查询。
+            actionMetrics.recordConfirmationRejected(current.getActionType(), INVALID_TOKEN);
             throw new AgentChatException(
                     HttpStatus.FORBIDDEN,
                     "INVALID_CONFIRMATION",
@@ -173,22 +187,27 @@ public class PurchaseActionService {
                 current.getConversationId(), current.getTurnId());
         ConfirmedPurchaseExecutor purchaseExecutor = null;
         ConfirmedTicketOperationExecutor ticketOperationExecutor = null;
-        if (current.getActionType() == AgentActionType.TICKET_PURCHASE) {
-            // 购票继续使用只发现真实下单工具的隔离执行器。
-            purchaseExecutor = executorProvider.getIfAvailable();
-            if (purchaseExecutor == null) {
-                throw writeMcpUnavailable("购票执行服务暂时不可用，请稍后重新生成草案");
+        try {
+            if (current.getActionType() == AgentActionType.TICKET_PURCHASE) {
+                // 购票继续使用只发现真实下单工具的隔离执行器。
+                purchaseExecutor = executorProvider.getIfAvailable();
+                if (purchaseExecutor == null) {
+                    throw writeMcpUnavailable("购票执行服务暂时不可用，请稍后重新生成草案");
+                }
+                // 购票确认前重新查询同一车次和席别余票，过期快照不能领取真实下单执行权。
+                purchaseDraftRevalidationService.revalidate(
+                        readPayload(current.getPayloadJson()), context);
+            } else {
+                // 取消和退票在消费令牌前重新预览，避免执行用户未确认的新状态或新金额。
+                ticketOperationActionService.revalidate(current, context);
+                ticketOperationExecutor = ticketOperationExecutorProvider.getIfAvailable();
+                if (ticketOperationExecutor == null) {
+                    throw writeMcpUnavailable("订单操作执行服务暂时不可用，请重新生成草案");
+                }
             }
-            // 购票确认前重新查询同一车次和席别余票，过期快照不能领取真实下单执行权。
-            purchaseDraftRevalidationService.revalidate(
-                    readPayload(current.getPayloadJson()), context);
-        } else {
-            // 取消和退票在消费令牌前重新预览，避免执行用户未确认的新状态或新金额。
-            ticketOperationActionService.revalidate(current, context);
-            ticketOperationExecutor = ticketOperationExecutorProvider.getIfAvailable();
-            if (ticketOperationExecutor == null) {
-                throw writeMcpUnavailable("订单操作执行服务暂时不可用，请重新生成草案");
-            }
+        } catch (AgentChatException exception) {
+            recordRevalidationRejection(current, command.requestId(), exception);
+            throw exception;
         }
 
         // 短事务先消费确认并创建执行记录，提交后才进行可能耗时的 MCP 网络调用。
@@ -198,11 +217,17 @@ public class PurchaseActionService {
                     command.userId(), command.actionId(), command.confirmationToken(),
                     command.requestId(), command.idempotencyKey());
         } catch (SecurityException ex) {
+            actionMetrics.recordConfirmationRejected(current.getActionType(), INVALID_TOKEN);
             throw new AgentChatException(HttpStatus.FORBIDDEN, "INVALID_CONFIRMATION", "操作确认令牌无效");
         } catch (IllegalStateException ex) {
+            // 重检期间跨过确认截止时间时仍归类为过期，其余并发或幂等冲突统一归类为不可确认。
+            actionMetrics.recordConfirmationRejected(
+                    current.getActionType(),
+                    clock.instant().isBefore(current.getConfirmationExpiresAt()) ? NOT_CONFIRMABLE : EXPIRED);
             throw conflict("ACTION_NOT_CONFIRMABLE", "操作已经确认、过期或幂等键已被使用");
         }
 
+        long executionStartedNanos = System.nanoTime();
         try {
             // 专用执行器不会注册到回答模型，只能接收已经领取执行权的数据库快照。
             String safeResultJson = claimed.actionType() == AgentActionType.TICKET_PURCHASE
@@ -223,6 +248,11 @@ public class PurchaseActionService {
             }
             stateStore.succeed(
                     claimed.actionId(), safeResultJson, orderSn, fingerprint(safeResultJson));
+            actionMetrics.recordExecution(
+                    claimed.actionType(), AgentActionStatus.SUCCEEDED, executionStartedNanos);
+            LOGGER.info(
+                    "Agent写操作执行成功，requestId={}, actionId={}, actionType={}",
+                    command.requestId(), claimed.actionId(), claimed.actionType());
             return new ActionStatusView(
                     claimed.actionId(), claimed.actionType().name(),
                     AgentActionStatus.SUCCEEDED, orderSn, result, null);
@@ -232,6 +262,8 @@ public class PurchaseActionService {
                 // MCP 明确返回工具拒绝时订单没有成功，记录 FAILED 允许用户修正后创建新草案。
                 String failureCategory = purchaseFailureCategory(ex);
                 stateStore.fail(claimed.actionId(), failureCategory, ex.getClass().getName());
+                actionMetrics.recordExecution(
+                        claimed.actionType(), AgentActionStatus.FAILED, executionStartedNanos);
                 LOGGER.warn(
                         "Agent购票确认明确失败，requestId={}, actionId={}, failureCategory={}, exceptionType={}",
                         command.requestId(), claimed.actionId(), failureCategory, ex.getClass().getName());
@@ -247,6 +279,8 @@ public class PurchaseActionService {
                     : ticketOperationActionService.unknownCategory(claimed.actionType());
             stateStore.markUnknown(
                     claimed.actionId(), unknownCategory, ex.getClass().getName());
+            actionMetrics.recordExecution(
+                    claimed.actionType(), AgentActionStatus.UNKNOWN, executionStartedNanos);
             LOGGER.warn(
                     "Agent写操作结果待核对，requestId={}, actionId={}, failureCategory={}, exceptionType={}",
                     command.requestId(), claimed.actionId(), unknownCategory, ex.getClass().getName());
@@ -255,6 +289,30 @@ public class PurchaseActionService {
                     unknownCategory,
                     "操作结果暂时无法确认，请先查询本人订单和支付状态，切勿重复提交");
         }
+    }
+
+    /**
+     * 记录确认前业务快照变化，同时忽略临时服务不可用等非快照类异常。
+     *
+     * @param action 当前操作草案
+     * @param requestId 当前确认请求标识
+     * @param exception 重新核验异常
+     */
+    private void recordRevalidationRejection(
+            ActionDraftEntity action,
+            String requestId,
+            AgentChatException exception) {
+        String category = exception.failureCategory();
+        if (!"PURCHASE_DRAFT_STALE".equals(category)
+                && !"ACTION_PREVIEW_CHANGED".equals(category)) {
+            return;
+        }
+
+        // 两类草案使用同一个低基数指标原因，原始稳定分类只进入结构化日志。
+        actionMetrics.recordConfirmationRejected(action.getActionType(), PREVIEW_CHANGED);
+        LOGGER.info(
+                "Agent写操作确认前快照变化，requestId={}, actionId={}, actionType={}, failureCategory={}",
+                requestId, action.getId(), action.getActionType(), category);
     }
 
     /**
