@@ -3,10 +3,13 @@ package org.opengoofy.index12306.ai.agentservice.chat.service;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskExecutionModels.TaskExecutionResult;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.EventType;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 
 import java.time.Duration;
@@ -179,6 +182,44 @@ public class AgentChatMetrics {
     }
 
     /**
+     * 为单个固定链任务记录耗时和终态，不使用任务标识、问题正文等高基数字段。
+     *
+     * @param source 单个任务的结果流
+     * @param intent 当前受控意图
+     * @return 保持任务结果、异常和取消语义不变的观测流
+     */
+    public Mono<TaskExecutionResult> observeTask(
+            Mono<TaskExecutionResult> source,
+            AgentIntent intent) {
+        return Mono.defer(() -> {
+            long startedNanos = System.nanoTime();
+            AtomicReference<String> outcome = new AtomicReference<>("INCOMPLETE");
+            AtomicBoolean terminalRecorded = new AtomicBoolean();
+
+            // 业务状态直接作为低基数结果标签，异常和上游取消使用独立固定值。
+            return source
+                    .doOnNext(result -> {
+                        outcome.set(result.status().name());
+                        // 在结果交给汇总阶段前完成指标记录，保证同一信号内查询指标时已经可见。
+                        recordTaskTerminal(
+                                startedNanos,
+                                SignalType.ON_COMPLETE,
+                                intent,
+                                outcome.get(),
+                                terminalRecorded);
+                    })
+                    .doOnError(ignored -> outcome.set("ERROR"))
+                    .doOnCancel(() -> outcome.set("CANCELLED"))
+                    .doFinally(signal -> recordTaskTerminal(
+                            startedNanos,
+                            signal,
+                            intent,
+                            outcome.get(),
+                            terminalRecorded));
+        });
+    }
+
+    /**
      * 记录模型完成后的业务收口和轮次持久化耗时。
      *
      * @param startedNanos 阶段开始的单调时钟值
@@ -218,6 +259,41 @@ public class AgentChatMetrics {
                 "reused", reused).increment();
         Timer.builder("agent.chat.duration")
                 .tags("outcome", actualOutcome, "reused", reused)
+                .register(meterRegistry)
+                .record(elapsed(startedNanos));
+    }
+
+    /**
+     * 记录单个任务唯一一次执行终态和耗时。
+     *
+     * @param startedNanos 任务订阅开始时间
+     * @param signal Reactor 最终信号
+     * @param intent 当前受控意图
+     * @param observedOutcome 已观察到的业务终态
+     * @param terminalRecorded 终态幂等标记
+     */
+    private void recordTaskTerminal(
+            long startedNanos,
+            SignalType signal,
+            AgentIntent intent,
+            String observedOutcome,
+            AtomicBoolean terminalRecorded) {
+        if (!terminalRecorded.compareAndSet(false, true)) {
+            return;
+        }
+
+        // 信号级错误或取消覆盖业务结果，正常完成使用任务返回的稳定状态。
+        String actualOutcome = signal == SignalType.CANCEL
+                ? "CANCELLED"
+                : signal == SignalType.ON_ERROR ? "ERROR" : observedOutcome;
+        meterRegistry.counter(
+                "agent.chat.task.executions",
+                "intent", intent.name(),
+                "outcome", actualOutcome).increment();
+        Timer.builder("agent.chat.task.duration")
+                .tags(
+                        "intent", intent.name(),
+                        "outcome", actualOutcome)
                 .register(meterRegistry)
                 .record(elapsed(startedNanos));
     }

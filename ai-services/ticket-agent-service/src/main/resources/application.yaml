@@ -67,6 +67,8 @@ index12306:
   agent:
     chat:
       response-timeout: 60s
+      read-task-timeout: 25s
+      task-max-concurrency: 4
     action:
       confirmation-secret: ${TICKET_AGENT_CONFIRMATION_SECRET:${TICKET_MCP_INTERNAL_SECRET:}}
       confirmation-ttl: 5m
