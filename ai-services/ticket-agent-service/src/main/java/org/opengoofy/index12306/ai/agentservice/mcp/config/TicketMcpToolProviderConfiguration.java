@@ -3,7 +3,7 @@ package org.opengoofy.index12306.ai.agentservice.mcp.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.client.McpSyncClient;
 import org.opengoofy.index12306.ai.agentservice.mcp.audit.AuditedToolCallback;
-import org.opengoofy.index12306.ai.agentservice.mcp.audit.ToolCallAuditService;
+import org.opengoofy.index12306.ai.agentservice.mcp.audit.service.ToolCallAuditService;
 import org.springframework.ai.mcp.McpToolFilter;
 import org.springframework.ai.mcp.McpToolNamePrefixGenerator;
 import org.springframework.ai.mcp.SyncMcpToolCallbackProvider;

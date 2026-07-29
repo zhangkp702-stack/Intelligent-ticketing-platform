@@ -6,8 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionDraftEntity;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionType;
-import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmationTokenService;
-import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateStore;
+import org.opengoofy.index12306.ai.agentservice.action.security.ConfirmationTokenService;
+import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ActionExpirationPersistenceTests {
 
     @Autowired
-    private ActionStateStore stateStore;
+    private ActionStateService stateStore;
 
     @Autowired
     private ConfirmationTokenService tokenService;

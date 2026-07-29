@@ -1,7 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.action.mcp;
 
 
-import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateStore.ClaimedAction;
+import org.opengoofy.index12306.ai.agentservice.action.dto.ClaimedAction;
 
 /**
  * 不暴露给模型、只接受已消费确认令牌草案的取消和退票执行端口。

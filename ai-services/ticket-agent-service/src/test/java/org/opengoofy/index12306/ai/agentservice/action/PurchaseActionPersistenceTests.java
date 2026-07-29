@@ -6,7 +6,7 @@ import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedPurchaseExec
 import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedTicketOperationExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.TicketOperationPreviewExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
-import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseDraftRevalidationService;
+import org.opengoofy.index12306.ai.agentservice.action.validation.PurchaseDraftRevalidator;
 import org.opengoofy.index12306.ai.agentservice.action.service.TicketOperationActionService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
@@ -73,7 +73,7 @@ class PurchaseActionPersistenceTests {
     private TicketOperationPreviewExecutor previewExecutor;
 
     @Autowired
-    private PurchaseDraftRevalidationService purchaseDraftRevalidationService;
+    private PurchaseDraftRevalidator purchaseDraftRevalidator;
 
     @Autowired
     private MeterRegistry meterRegistry;
@@ -84,7 +84,7 @@ class PurchaseActionPersistenceTests {
     @BeforeEach
     void resetExecutor() {
         // 每个测试独立断言真实购票执行次数，避免上下文缓存造成相互影响。
-        reset(executor, ticketOperationExecutor, previewExecutor, purchaseDraftRevalidationService);
+        reset(executor, ticketOperationExecutor, previewExecutor, purchaseDraftRevalidator);
     }
 
     /**
@@ -117,7 +117,7 @@ class PurchaseActionPersistenceTests {
                 "agent.action.executions", "TICKET_PURCHASE", "outcome", "SUCCEEDED"))
                 .isEqualTo(executionsBefore + 1);
         verify(executor, times(1)).execute(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq("alice"));
-        verify(purchaseDraftRevalidationService, times(1)).revalidate(
+        verify(purchaseDraftRevalidator, times(1)).revalidate(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
     }
 
@@ -141,7 +141,7 @@ class PurchaseActionPersistenceTests {
         assertThat(purchaseActionService.getStatus(fixture.userId(), confirmation.actionId()).status())
                 .isEqualTo(AgentActionStatus.AWAITING_CONFIRMATION);
         verifyNoInteractions(executor);
-        verifyNoInteractions(purchaseDraftRevalidationService);
+        verifyNoInteractions(purchaseDraftRevalidator);
     }
 
     /**
@@ -163,7 +163,7 @@ class PurchaseActionPersistenceTests {
                 HttpStatus.CONFLICT,
                 "PURCHASE_DRAFT_STALE",
                 "车次或余票状态已经变化，请重新查询并生成购票草案"))
-                .when(purchaseDraftRevalidationService)
+                .when(purchaseDraftRevalidator)
                 .revalidate(
                         org.mockito.ArgumentMatchers.any(),
                         org.mockito.ArgumentMatchers.any());
@@ -446,9 +446,9 @@ class PurchaseActionPersistenceTests {
          */
         @Bean
         @Primary
-        PurchaseDraftRevalidationService testPurchaseDraftRevalidationService() {
+    PurchaseDraftRevalidator testPurchaseDraftRevalidator() {
             // 具体余票核验规则由独立单元测试覆盖，持久化测试只验证调用时机和状态机。
-            return mock(PurchaseDraftRevalidationService.class);
+        return mock(PurchaseDraftRevalidator.class);
         }
     }
 

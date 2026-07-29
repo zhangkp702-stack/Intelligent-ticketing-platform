@@ -14,7 +14,7 @@ import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.Cont
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationSummaryRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.SummaryTaskRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.TurnRepository;
-import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationContextService;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationContextLoader;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.SummaryTaskService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,7 +36,7 @@ class AgentMemoryPersistenceTests {
     private ConversationMemoryService conversationMemoryService;
 
     @Autowired
-    private ConversationContextService conversationContextService;
+    private ConversationContextLoader conversationContextLoader;
 
     @Autowired
     private SummaryTaskService summaryTaskService;
@@ -90,7 +90,7 @@ class AgentMemoryPersistenceTests {
         ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
                 fixture.userId(), fixture.conversationId(), requestId, requestId, "二等座还有吗", 6));
-        ConversationHistoryContext context = conversationContextService.load(
+        ConversationHistoryContext context = conversationContextLoader.load(
                 fixture.userId(),
                 requestId,
                 fixture.conversationId(),

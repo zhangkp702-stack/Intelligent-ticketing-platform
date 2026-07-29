@@ -2,7 +2,8 @@ package org.opengoofy.index12306.ai.agentservice.mcp.audit;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.opengoofy.index12306.ai.agentservice.mcp.audit.ToolCallAuditService.ToolCallAuditEvent;
+import org.opengoofy.index12306.ai.agentservice.mcp.audit.service.ToolCallAuditService;
+import org.opengoofy.index12306.ai.agentservice.mcp.audit.service.ToolCallAuditService.ToolCallAuditEvent;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

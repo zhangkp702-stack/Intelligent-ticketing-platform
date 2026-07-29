@@ -2,7 +2,8 @@ package org.opengoofy.index12306.ai.agentservice.mcp.audit;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.ai.agentservice.mcp.audit.ToolCallAuditService.ToolCallAuditEvent;
+import org.opengoofy.index12306.ai.agentservice.mcp.audit.service.ToolCallAuditService;
+import org.opengoofy.index12306.ai.agentservice.mcp.audit.service.ToolCallAuditService.ToolCallAuditEvent;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;

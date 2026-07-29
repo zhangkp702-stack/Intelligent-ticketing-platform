@@ -8,7 +8,7 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.TicketOperationAction
 import org.opengoofy.index12306.ai.agentservice.action.dto.TicketOperationActionModels.RefundPreview;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.audit.AuditedToolCallback;
-import org.opengoofy.index12306.ai.agentservice.mcp.audit.ToolCallAuditService;
+import org.opengoofy.index12306.ai.agentservice.mcp.audit.service.ToolCallAuditService;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.McpToolNamePrefixGenerator;
