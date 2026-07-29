@@ -28,6 +28,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketPreviewRe
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.PurchaseOperationService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketService;
 import org.opengoofy.index12306.framework.starter.captcha.annotation.RiskGuard;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
@@ -49,6 +50,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class TicketController {
 
     private final TicketService ticketService;
+    private final PurchaseOperationService purchaseOperationService;
 
     /**
      * 根据条件查询车票
@@ -71,13 +73,17 @@ public class TicketController {
     }
 
     /**
-     * 购买车票v2
+     * 执行 V2 购票流程；Agent 请求携带操作标识时同时提供持久化幂等保护。
+     *
+     * @param requestParam 购票参数以及可选的 Agent 操作标识
+     * @return 新建订单，或同一操作标识已经成功时保存的原订单结果
      */
     @RateLimiter(permitsPerSecond = 3, dimension = RateLimitDimensionEnum.USER, message = "下单过于频繁，请稍后再试")
     @RiskGuard(dimension = RateLimitDimensionEnum.USER)
     @PostMapping("/api/ticket-service/ticket/purchase/v2")
     public Result<TicketPurchaseRespDTO> purchaseTicketsV2(@RequestBody PurchaseTicketReqDTO requestParam) {
-        return Results.success(ticketService.purchaseTicketsV2(requestParam));
+        // Agent 请求先认领操作标识，普通客户端仍沿用原有 V2 购票行为。
+        return Results.success(purchaseOperationService.purchaseTicketsV2(requestParam));
     }
 
     /**

@@ -452,8 +452,9 @@ public class TicketBusinessClient {
                     identity.requestId(), identity.actionId(),
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - passengerCheckStarted));
 
-            // 调用既有购票流程以继续复用库存扣减、订单创建、限流和风控规则。
+            // actionId 作为 operationId 传给 V2 购票接口，使票务服务能够持久化去重真实下单。
             Map<String, Object> request = Map.of(
+                    "operationId", identity.actionId(),
                     "trainId", trainId,
                     "departure", departure,
                     "arrival", arrival,
@@ -463,7 +464,7 @@ public class TicketBusinessClient {
             long ticketRequestStarted = System.nanoTime();
             purchaseRequestDispatched = true;
             JsonNode root = ticketClient.post()
-                    .uri("/api/ticket-service/ticket/purchase")
+                    .uri("/api/ticket-service/ticket/purchase/v2")
                     .headers(headers -> addIdentity(headers, identity))
                     .body(request)
                     .retrieve()

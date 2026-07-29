@@ -32,6 +32,11 @@ import java.util.List;
 public class PurchaseTicketReqDTO {
 
     /**
+     * Agent 已确认操作标识；普通购票请求可以不传。
+     */
+    private String operationId;
+
+    /**
      * 车次 ID
      */
     private String trainId;
