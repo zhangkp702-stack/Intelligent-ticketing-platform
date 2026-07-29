@@ -37,6 +37,6 @@ class IntentCatalogTests {
                 .contains("ORDER_CANCELLATION")
                 .contains("不允许指定单个乘车人")
                 .contains("TICKET_REFUND")
-                .contains("只要指定了乘车人也属于退票");
+                .contains("只要指定乘车人也属于退票");
     }
 }

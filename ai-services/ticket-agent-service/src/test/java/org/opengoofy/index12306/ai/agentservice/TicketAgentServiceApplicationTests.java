@@ -48,9 +48,9 @@ class TicketAgentServiceApplicationTests {
     @Test
     void modelRoutingConfigurationIsBound() {
         // 检查回答链和摘要链的首选模型，防止枚举键或模型 ID 绑定错误。
-        assertThat(modelProperties.routes().get(ModelRole.ANSWER_TOOL))
+        assertThat(modelProperties.routes().get(ModelRole.ANSWER_SUMMARY))
                 .startsWith("bailian-answer-primary", "siliconflow-answer-secondary");
-        assertThat(modelProperties.routes().get(ModelRole.INTENT_CLASSIFICATION))
+        assertThat(modelProperties.routes().get(ModelRole.TASK_PLANNING))
                 .startsWith("bailian-flash", "siliconflow-summary-primary");
         assertThat(modelProperties.routes().get(ModelRole.MEMORY_SUMMARY))
                 .startsWith("siliconflow-summary-primary", "bailian-flash");

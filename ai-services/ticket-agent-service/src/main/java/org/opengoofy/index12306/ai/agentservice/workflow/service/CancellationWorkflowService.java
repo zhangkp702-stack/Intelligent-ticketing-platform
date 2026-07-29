@@ -10,6 +10,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflo
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionRequest;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.OrderSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowPlanningContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.OrderResolutionStatus;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowType;
@@ -18,6 +19,7 @@ import org.springframework.util.StringUtils;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -179,20 +181,48 @@ public class CancellationWorkflowService {
     }
 
     /**
-     * 生成供回答模型继续取消订单链路的服务端工作流提示。
+     * 生成供任务规划模型理解指代的最小取消订单工作流上下文。
      *
      * @param userId 当前用户标识
      * @param conversationId 所属会话标识
-     * @return 不含敏感字段的活动工作流提示
+     * @return 不含候选订单和执行指令的活动工作流上下文
      */
-    public Optional<String> activeWorkflowPrompt(String userId, String conversationId) {
-        // 模型只能读取服务端已确认的订单号和阶段，不能自行替换选择结果。
+    public Optional<WorkflowPlanningContext> activeWorkflowContext(
+            String userId,
+            String conversationId) {
+        // 只提供用户原本给出的定位条件和最终选定订单，不传递整页候选订单详情。
         return workflowService.findActive(userId, conversationId)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.ORDER_CANCELLATION)
-                .map(workflow -> "当前取消订单工作流由服务端维护，workflowId=" + workflow.getId()
-                        + "，stage=" + workflow.getStage().name() + "，context=" + workflow.getContextJson()
-                        + "。stage=CREATING_DRAFT 时必须使用 selectedOrderSn 创建取消草案；"
-                        + "stage=SELECTING_ORDER 时必须等待用户提交订单选择表单。");
+                .map(workflow -> {
+                    CancellationWorkflowContext context = readContext(workflow.getContextJson());
+                    Map<String, Object> facts = new LinkedHashMap<>();
+                    putText(facts, "requestedOrderSn", context.requestedOrderSn());
+                    putText(facts, "requestedTrainNumber", context.requestedTrainNumber());
+                    putText(facts, "requestedRidingDate", context.requestedRidingDate());
+                    putText(facts, "selectedOrderSn", context.selectedOrderSn());
+                    return new WorkflowPlanningContext(
+                            workflow.getWorkflowType(),
+                            workflow.getStage(),
+                            facts,
+                            workflow.getStage() == WorkflowStage.SELECTING_ORDER);
+                });
+    }
+
+    /**
+     * 将非空订单定位文本加入规划模型可见的事实白名单。
+     *
+     * @param facts 规划事实映射
+     * @param key 稳定字段名
+     * @param value 待筛选文本
+     */
+    private void putText(
+            Map<String, Object> facts,
+            String key,
+            String value) {
+        if (StringUtils.hasText(value)) {
+            // 候选订单中的金额、姓名和状态不进入模型，只保留当前指代所需字段。
+            facts.put(key, value.trim());
+        }
     }
 
     /**

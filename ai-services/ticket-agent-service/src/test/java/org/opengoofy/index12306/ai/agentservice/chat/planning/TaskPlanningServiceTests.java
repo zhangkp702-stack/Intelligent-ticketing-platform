@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.chat.planning;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
@@ -13,6 +14,9 @@ import org.opengoofy.index12306.ai.agentservice.infra.enums.ModelRole;
 import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelAttemptContext;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.ModelCallResult;
 import org.opengoofy.index12306.ai.agentservice.infra.model.structured.StructuredModelInvoker;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowPlanningContext;
+import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
+import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowType;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -22,6 +26,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,10 +50,10 @@ class TaskPlanningServiceTests {
         TaskPlanValidator validator = new TaskPlanValidator();
         Clock clock = Clock.fixed(Instant.parse("2026-07-29T00:00:00Z"), ZoneOffset.UTC);
         TaskPlanningService service = new TaskPlanningService(
-                invoker, validator, new IntentCatalog(), clock);
+                invoker, validator, new IntentCatalog(), new ObjectMapper(), clock);
         TaskPlan taskPlan = threeTaskPlan();
         when(invoker.call(
-                eq(ModelRole.INTENT_CLASSIFICATION),
+                eq(ModelRole.TASK_PLANNING),
                 any(),
                 any(),
                 eq(TaskPlan.class),
@@ -65,7 +70,11 @@ class TaskPlanningServiceTests {
         // 复合请求只进入一次规划模型，返回值已经同时包含拆分任务和独立问题。
         TaskPlan result = service.plan(
                 history("查询北京到南京的高铁，给万重山买上海到北京的一等座，再查乘车人"),
-                "当前购票工作流由服务端维护，stage=SELECTING_PASSENGERS",
+                new WorkflowPlanningContext(
+                        WorkflowType.TICKET_PURCHASE,
+                        WorkflowStage.SELECTING_PASSENGERS,
+                        Map.of("departure", "上海", "arrival", "北京"),
+                        true),
                 new ModelAttemptContext("request-1", "conversation-1", "turn-1"));
 
         assertThat(result.tasks())
@@ -76,7 +85,7 @@ class TaskPlanningServiceTests {
                         AgentIntent.PASSENGER_QUERY);
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(invoker, times(1)).call(
-                eq(ModelRole.INTENT_CLASSIFICATION),
+                eq(ModelRole.TASK_PLANNING),
                 promptCaptor.capture(),
                 any(),
                 eq(TaskPlan.class),
@@ -85,7 +94,6 @@ class TaskPlanningServiceTests {
         assertThat(prompt.getInstructions().get(0))
                 .isInstanceOfSatisfying(SystemMessage.class, message -> {
                     assertThat(message.getText()).contains("任务规划器");
-                    assertThat(message.getText()).contains("当前日期：2026-07-29");
                     assertThat(message.getText()).contains("selectionPolicy");
                     assertThat(message.getText()).contains("EARLIEST、LATEST 或 CHEAPEST");
                     assertThat(message.getText()).contains(
@@ -95,11 +103,14 @@ class TaskPlanningServiceTests {
                 });
         assertThat(prompt.getInstructions())
                 .anySatisfy(message -> assertThat(message.getText())
-                        .contains("stage=SELECTING_PASSENGERS"));
+                        .contains("\"stage\":\"SELECTING_PASSENGERS\""));
         assertThat(prompt.getInstructions().get(prompt.getInstructions().size() - 1))
                 .isInstanceOfSatisfying(UserMessage.class, message ->
-                        assertThat(message.getText()).isEqualTo(
-                                "查询北京到南京的高铁，给万重山买上海到北京的一等座，再查乘车人"));
+                        assertThat(message.getText())
+                                .contains("\"currentDate\":\"2026-07-29\"")
+                                .contains("\"previousSummary\":\"用户此前查询过上海到北京\"")
+                                .contains("\"previousStructuredState\":")
+                                .contains("\"currentQuestion\":"));
     }
 
     /**
@@ -159,11 +170,11 @@ class TaskPlanningServiceTests {
         // 当前测试不依赖旧轮次，只验证原始复合问题保持为最后一条用户消息。
         return new ConversationHistoryContext(
                 "conversation-1",
-                null,
-                null,
-                null,
-                null,
-                0,
+                "summary-1",
+                "用户此前查询过上海到北京",
+                "{\"activeIntent\":\"TRAIN_QUERY\"}",
+                1,
+                2,
                 List.of(),
                 AgentChatMessage.user(question),
                 List.of(),

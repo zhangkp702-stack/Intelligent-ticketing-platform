@@ -50,7 +50,7 @@ class ModelHttpCallTimingFilterTests {
         ExchangeFilterFunction filter = ModelHttpCallTimingFilter.create(
                 "provider-a", "candidate-a", "model-a");
         ModelHttpCallTraceContext traceContext = ModelHttpCallTraceContext.create(
-                ModelRole.ANSWER_TOOL,
+                ModelRole.ANSWER_SUMMARY,
                 new ModelAttemptContext("request-1", "conversation-1", "turn-1"));
 
         // 消费过滤后的响应，确认计时监听没有提前读取或重复订阅原始响应体。

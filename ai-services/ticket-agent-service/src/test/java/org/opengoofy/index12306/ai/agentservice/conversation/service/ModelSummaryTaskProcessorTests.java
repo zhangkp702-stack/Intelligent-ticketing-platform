@@ -7,6 +7,8 @@ import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.ModelCallResult;
 import org.opengoofy.index12306.ai.agentservice.infra.model.structured.StructuredModelInvoker;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
 
 import java.time.Duration;
 import java.util.List;
@@ -14,6 +16,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -28,7 +31,19 @@ class ModelSummaryTaskProcessorTests {
     void returnsValidatedSummaryAndSelectedModelMetadata() {
         StructuredModelInvoker invoker = mock(StructuredModelInvoker.class);
         ObjectMapper objectMapper = new ObjectMapper();
-        ObjectNode state = objectMapper.createObjectNode().put("intent", "ticket_query");
+        ObjectNode trip = objectMapper.createObjectNode();
+        trip.put("departure", "北京");
+        trip.put("arrival", "上海");
+        trip.putNull("departureDate");
+        trip.putNull("trainNumber");
+        trip.putNull("departureTime");
+        trip.putNull("seatClass");
+        ObjectNode state = objectMapper.createObjectNode();
+        state.set("trip", trip);
+        state.putArray("passengerNames");
+        state.putNull("lastOrderSn");
+        state.put("activeIntent", "TRAIN_QUERY");
+        state.putNull("pendingRequest");
         ModelSummaryTaskProcessor.SummaryModelOutput output =
                 new ModelSummaryTaskProcessor.SummaryModelOutput(
                         "用户查询北京到上海的余票。",
@@ -58,8 +73,27 @@ class ModelSummaryTaskProcessorTests {
         SummaryTaskService.SummaryGenerationResult result = processor.process(workItem);
 
         assertThat(result.summaryContent()).isEqualTo("用户查询北京到上海的余票。");
-        assertThat(result.structuredState()).isEqualTo("{\"intent\":\"ticket_query\"}");
+        assertThat(result.structuredState())
+                .contains("\"trip\"")
+                .contains("\"activeIntent\":\"TRAIN_QUERY\"");
         assertThat(result.providerId()).isEqualTo("siliconflow");
         assertThat(result.candidateId()).isEqualTo("summary-primary");
+
+        // 提示词只包含业务摘要和消息投影，不泄露内部持久化标识或 Token 统计。
+        org.mockito.ArgumentCaptor<Prompt> promptCaptor =
+                org.mockito.ArgumentCaptor.forClass(Prompt.class);
+        verify(invoker).call(any(), promptCaptor.capture(), any(), any(), any());
+        assertThat(promptCaptor.getValue().getInstructions())
+                .filteredOn(message -> message instanceof UserMessage)
+                .extracting(message -> message.getText())
+                .singleElement()
+                .satisfies(text -> assertThat(text)
+                        .contains("\"sequenceNo\":1")
+                        .contains("\"role\":\"USER\"")
+                        .doesNotContain("task-1")
+                        .doesNotContain("conversation-1")
+                        .doesNotContain("message-1")
+                        .doesNotContain("tokenCount")
+                        .doesNotContain("eventVersion"));
     }
 }

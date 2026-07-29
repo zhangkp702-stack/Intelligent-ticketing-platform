@@ -12,6 +12,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowMod
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionView;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.ResolvedPassenger;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowPlanningContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.PassengerResolutionStatus;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowType;
@@ -230,20 +231,58 @@ public class PurchaseWorkflowService {
     }
 
     /**
-     * 生成供回答模型继续购票的服务端工作流提示。
+     * 生成供任务规划模型理解指代的最小购票工作流上下文。
      *
      * @param userId 当前用户标识
      * @param conversationId 所属会话标识
-     * @return 不含敏感字段的活动工作流提示
+     * @return 不含候选列表、内部标识和执行指令的活动工作流上下文
      */
-    public Optional<String> activeWorkflowPrompt(String userId, String conversationId) {
-        // 只把当前购票阶段和服务端已校验上下文提供给模型，模型不能覆盖数据库状态。
+    public Optional<WorkflowPlanningContext> activeWorkflowContext(
+            String userId,
+            String conversationId) {
+        // 规划模型只需要工作流阶段和可用于解析指代的业务事实，不需要乘车人内部标识。
         return workflowService.findActive(userId, conversationId)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
-                .map(workflow -> "当前购票工作流由服务端维护，workflowId=" + workflow.getId()
-                        + "，stage=" + workflow.getStage().name() + "，context=" + workflow.getContextJson()
-                        + "。只能使用 selectedPassengerIds 中的标识生成草案；如果仍在 SELECTING_PASSENGERS，"
-                        + "必须等待用户提交选择表单，不得要求证件号码。");
+                .map(workflow -> {
+                    PurchaseWorkflowContext context = readContext(workflow.getContextJson());
+                    Map<String, Object> facts = new java.util.LinkedHashMap<>();
+                    putText(facts, "departure", context.departure());
+                    putText(facts, "arrival", context.arrival());
+                    putText(facts, "departureDate", context.departureDate());
+                    if (context.requestedPassengerNames() != null
+                            && !context.requestedPassengerNames().isEmpty()) {
+                        facts.put("requestedPassengerNames", List.copyOf(context.requestedPassengerNames()));
+                    }
+                    if (context.seatType() != null) {
+                        facts.put("seatClass", PurchaseSeatClass.fromCode(context.seatType()).label());
+                    }
+                    facts.put("trainSelected", StringUtils.hasText(context.trainId()));
+                    facts.put(
+                            "selectedPassengerCount",
+                            context.selectedPassengerIds() == null ? 0 : context.selectedPassengerIds().size());
+                    return new WorkflowPlanningContext(
+                            workflow.getWorkflowType(),
+                            workflow.getStage(),
+                            facts,
+                            workflow.getStage() == WorkflowStage.SELECTING_PASSENGERS);
+                });
+    }
+
+    /**
+     * 将非空文本加入规划模型可见的事实白名单。
+     *
+     * @param facts 规划事实映射
+     * @param key 稳定字段名
+     * @param value 待筛选文本
+     */
+    private void putText(
+            Map<String, Object> facts,
+            String key,
+            String value) {
+        if (StringUtils.hasText(value)) {
+            // 只保留完成指代解析所需的业务文本，不复制完整持久化上下文。
+            facts.put(key, value.trim());
+        }
     }
 
     /**

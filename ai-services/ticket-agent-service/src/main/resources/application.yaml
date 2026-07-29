@@ -154,22 +154,15 @@ index12306:
           extra-body:
             enable_thinking: false
       routes:
-        ANSWER_TOOL:
+        ANSWER_SUMMARY:
           - bailian-answer-primary
           - siliconflow-answer-secondary
           - siliconflow-answer-tertiary
           - bailian-flash
-        INTENT_CLASSIFICATION:
-          - bailian-flash
-          - siliconflow-summary-primary
-        QUESTION_REWRITE:
+        TASK_PLANNING:
           - bailian-flash
           - siliconflow-summary-primary
         MEMORY_SUMMARY:
           - siliconflow-summary-primary
           - bailian-flash
           - siliconflow-answer-tertiary
-        PARAMETER_REPAIR:
-          - bailian-answer-primary
-          - siliconflow-answer-secondary
-          - bailian-flash

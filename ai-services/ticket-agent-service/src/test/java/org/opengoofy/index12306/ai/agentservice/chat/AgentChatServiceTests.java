@@ -152,7 +152,11 @@ class AgentChatServiceTests {
         assertThat(promptCaptor.getValue().getInstructions())
                 .filteredOn(message -> message instanceof UserMessage)
                 .extracting(message -> message.getText())
-                .containsExactly(command.message());
+                .singleElement()
+                .satisfies(text -> assertThat(text)
+                        .contains("\"originalQuestion\":")
+                        .contains(command.message())
+                        .contains("\"intent\":\"GENERAL_CHAT\""));
 
         // 首事件与首个正文指标都应记录一次，避免性能优化破坏现有观测口径。
         assertThat(test.meterRegistry()
@@ -673,8 +677,12 @@ class AgentChatServiceTests {
         assertThat(promptCaptor.getValue().getOptions()).isNull();
         assertThat(promptCaptor.getValue().getInstructions())
                 .extracting(message -> message.getText())
-                .anyMatch(text -> text.contains("\"trainNumber\":\"G1\"")
-                        && text.contains("\"realName\":\"万重山\""));
+                .anySatisfy(text -> assertThat(text)
+                        .contains("\\\"trainNumber\\\":\\\"G1\\\"")
+                        .contains("\\\"realName\\\":")
+                        .contains("\"intent\":\"TICKET_PURCHASE\"")
+                        .contains("\"result\":null")
+                        .contains("\"authoritativeContentAppendedSeparately\":true"));
     }
 
     /**
@@ -842,7 +850,7 @@ class AgentChatServiceTests {
                 refundWorkflowService,
                 purchaseChainService,
                 ticketOperationChainService,
-                Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC));
+                new ObjectMapper());
         AgentChatService service = new AgentChatService(
                 memory,
                 pipeline,

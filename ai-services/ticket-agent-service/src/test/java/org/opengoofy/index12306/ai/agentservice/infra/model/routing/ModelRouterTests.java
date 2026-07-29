@@ -45,7 +45,7 @@ class ModelRouterTests {
 
         // 主模型模拟网络异常，次模型返回结果，验证候选顺序和最终元数据。
         ModelCallResult<String> result = context.router().execute(
-                ModelRole.ANSWER_TOOL,
+                ModelRole.ANSWER_SUMMARY,
                 Set.of(),
                 client -> {
                     if (client.candidateId().equals("primary")) {
@@ -72,7 +72,7 @@ class ModelRouterTests {
 
         // 主模型调用阶段抛出不可降级业务异常，次模型计数必须保持为零。
         assertThatThrownBy(() -> context.router().execute(
-                ModelRole.ANSWER_TOOL,
+                ModelRole.ANSWER_SUMMARY,
                 Set.of(),
                 client -> {
                     if (client.candidateId().equals("primary")) {
@@ -96,7 +96,7 @@ class ModelRouterTests {
 
         // 主模型在输出任何数据前失败，次模型应成为用户看到的唯一响应来源。
         Flux<String> response = context.router().stream(
-                ModelRole.ANSWER_TOOL,
+                ModelRole.ANSWER_SUMMARY,
                 Set.of(ModelCapability.STREAMING),
                 client -> client.candidateId().equals("primary")
                         ? Flux.error(new ResourceAccessException("network"))
@@ -120,7 +120,7 @@ class ModelRouterTests {
 
         // 主模型先输出一个数据块再失败，路由器只能向用户返回终止错误。
         Flux<String> response = context.router().stream(
-                ModelRole.ANSWER_TOOL,
+                ModelRole.ANSWER_SUMMARY,
                 Set.of(ModelCapability.STREAMING),
                 client -> {
                     if (client.candidateId().equals("primary")) {
@@ -151,7 +151,7 @@ class ModelRouterTests {
 
         // 主模型首包前失败并降级，两个尝试都必须关联到当前对话轮次。
         Flux<String> response = context.router().stream(
-                ModelRole.ANSWER_TOOL,
+                ModelRole.ANSWER_SUMMARY,
                 Set.of(ModelCapability.STREAMING),
                 attemptContext,
                 client -> client.candidateId().equals("primary")
@@ -205,7 +205,7 @@ class ModelRouterTests {
         AgentModelProperties.Candidate secondary = new AgentModelProperties.Candidate(
                 true, "siliconflow", "answer-secondary", capabilities, 0.2, 1024, Map.of());
 
-        // 仅 ANSWER_TOOL 角色参与单元测试，其他角色不经过配置校验器。
+        // 仅 ANSWER_SUMMARY 角色参与单元测试，其他角色不经过配置校验器。
         return new AgentModelProperties(
                 Duration.ofSeconds(2),
                 Duration.ofSeconds(5),
@@ -215,7 +215,7 @@ class ModelRouterTests {
                 20,
                 Map.of("bailian", bailian, "siliconflow", siliconflow),
                 Map.of("primary", primary, "secondary", secondary),
-                Map.of(ModelRole.ANSWER_TOOL, List.of("primary", "secondary")));
+                Map.of(ModelRole.ANSWER_SUMMARY, List.of("primary", "secondary")));
     }
 
     /**

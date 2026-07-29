@@ -9,11 +9,9 @@ import java.util.Set;
  */
 public enum ModelRole {
 
-    ANSWER_TOOL(EnumSet.of(ModelCapability.CHAT)),
-    INTENT_CLASSIFICATION(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT)),
-    QUESTION_REWRITE(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT)),
-    MEMORY_SUMMARY(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT)),
-    PARAMETER_REPAIR(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT));
+    ANSWER_SUMMARY(EnumSet.of(ModelCapability.CHAT)),
+    TASK_PLANNING(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT)),
+    MEMORY_SUMMARY(EnumSet.of(ModelCapability.CHAT, ModelCapability.STRUCTURED_OUTPUT));
 
     private final Set<ModelCapability> requiredCapabilities;
 

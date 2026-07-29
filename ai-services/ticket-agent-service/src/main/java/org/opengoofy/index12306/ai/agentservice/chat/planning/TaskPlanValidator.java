@@ -5,6 +5,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskSlots;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TrainSelectionPolicy;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.WorkflowRelation;
 import org.opengoofy.index12306.ai.agentservice.infra.model.structured.InvalidModelOutputException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -88,10 +89,6 @@ public class TaskPlanValidator {
         if (task.intent() == null) {
             throw invalid("任务意图不能为空");
         }
-        if (task.workflowRelation() == null) {
-            throw invalid("任务与活动工作流的关系不能为空");
-        }
-
         // 业务槽位只保留规范化后的文本和姓名，避免下游重复处理空白和重复项。
         TaskSlots slots = normalizeSlots(task.slots());
         AgentIntent normalizedIntent = normalizeIntent(task.intent(), slots);
@@ -109,7 +106,9 @@ public class TaskPlanValidator {
                 slots,
                 missingFields,
                 dependencies,
-                task.workflowRelation(),
+                task.workflowRelation() == null
+                        ? WorkflowRelation.INDEPENDENT
+                        : task.workflowRelation(),
                 unresolvedReferences);
     }
 

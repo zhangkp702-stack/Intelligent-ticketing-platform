@@ -29,20 +29,20 @@ class ModelHealthTrackerTests {
         ModelHealthTracker tracker = new ModelHealthTracker(properties(), clock);
 
         // 连续两次超时达到阈值后，候选模型在冷却期内不再接收请求。
-        tracker.recordFailure(ModelRole.ANSWER_TOOL, "primary", ModelFailureCategory.TIMEOUT);
-        tracker.recordFailure(ModelRole.ANSWER_TOOL, "primary", ModelFailureCategory.TIMEOUT);
-        assertThat(tracker.snapshot(ModelRole.ANSWER_TOOL, "primary").state())
+        tracker.recordFailure(ModelRole.ANSWER_SUMMARY, "primary", ModelFailureCategory.TIMEOUT);
+        tracker.recordFailure(ModelRole.ANSWER_SUMMARY, "primary", ModelFailureCategory.TIMEOUT);
+        assertThat(tracker.snapshot(ModelRole.ANSWER_SUMMARY, "primary").state())
                 .isEqualTo(ModelCircuitState.OPEN);
-        assertThat(tracker.tryAcquire(ModelRole.ANSWER_TOOL, "primary")).isFalse();
+        assertThat(tracker.tryAcquire(ModelRole.ANSWER_SUMMARY, "primary")).isFalse();
 
         // 冷却结束后只有首个请求获得半开探测资格，探测成功后恢复关闭状态。
         clock.advance(Duration.ofSeconds(10));
-        assertThat(tracker.tryAcquire(ModelRole.ANSWER_TOOL, "primary")).isTrue();
-        assertThat(tracker.tryAcquire(ModelRole.ANSWER_TOOL, "primary")).isFalse();
-        tracker.recordSuccess(ModelRole.ANSWER_TOOL, "primary");
-        assertThat(tracker.snapshot(ModelRole.ANSWER_TOOL, "primary").state())
+        assertThat(tracker.tryAcquire(ModelRole.ANSWER_SUMMARY, "primary")).isTrue();
+        assertThat(tracker.tryAcquire(ModelRole.ANSWER_SUMMARY, "primary")).isFalse();
+        tracker.recordSuccess(ModelRole.ANSWER_SUMMARY, "primary");
+        assertThat(tracker.snapshot(ModelRole.ANSWER_SUMMARY, "primary").state())
                 .isEqualTo(ModelCircuitState.CLOSED);
-        assertThat(tracker.tryAcquire(ModelRole.ANSWER_TOOL, "primary")).isTrue();
+        assertThat(tracker.tryAcquire(ModelRole.ANSWER_SUMMARY, "primary")).isTrue();
     }
 
     /**

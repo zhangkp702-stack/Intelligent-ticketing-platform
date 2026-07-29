@@ -15,6 +15,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModel
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundableOrderOption;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModels.RefundableTicketOption;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowPlanningContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.RefundResolutionStatus;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowType;
@@ -288,20 +289,62 @@ public class RefundWorkflowService {
     }
 
     /**
-     * 生成供回答模型继续退票链路的服务端工作流提示。
+     * 生成供任务规划模型理解指代的最小退票工作流上下文。
      *
      * @param userId 当前用户标识
      * @param conversationId 所属会话标识
-     * @return 不含敏感字段的活动工作流提示
+     * @return 不含候选订单、车票内部标识和执行指令的活动工作流上下文
      */
-    public Optional<String> activeWorkflowPrompt(String userId, String conversationId) {
+    public Optional<WorkflowPlanningContext> activeWorkflowContext(
+            String userId,
+            String conversationId) {
+        // 规划模型只接收用户定位条件、已选订单和退票范围数量，不接收订单或车票候选明细。
         return workflowService.findActive(userId, conversationId)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
-                .map(workflow -> "当前退票工作流由服务端维护，workflowId=" + workflow.getId()
-                        + "，stage=" + workflow.getStage().name() + "，context=" + workflow.getContextJson()
-                        + "。SELECTING_REFUND_ORDER 时等待用户选择；SELECTING_REFUND_TICKETS 且 ticketOptions 为空时，"
-                        + "固定退票链必须使用 selectedOrderSn 重新解析退票范围；ticketOptions 非空时等待用户选择。"
-                        + "CREATING_DRAFT 时只能使用已保存的 orderSn、refundType 和 selectedOrderItemIds 创建草案。");
+                .map(workflow -> {
+                    RefundWorkflowContext context = readContext(workflow.getContextJson());
+                    Map<String, Object> facts = new LinkedHashMap<>();
+                    putText(facts, "requestedOrderSn", context.requestedOrderSn());
+                    putText(facts, "requestedTrainNumber", context.requestedTrainNumber());
+                    putText(facts, "requestedRidingDate", context.requestedRidingDate());
+                    if (context.requestedPassengerNames() != null
+                            && !context.requestedPassengerNames().isEmpty()) {
+                        facts.put("requestedPassengerNames", List.copyOf(context.requestedPassengerNames()));
+                    }
+                    putText(facts, "selectedOrderSn", context.selectedOrderSn());
+                    facts.put(
+                            "selectedTicketCount",
+                            context.selectedOrderItemIds() == null ? 0 : context.selectedOrderItemIds().size());
+                    if (context.refundType() != null) {
+                        facts.put("refundScope", context.refundType() == 1 ? "ALL" : "PARTIAL");
+                    }
+                    boolean awaitingSelection = workflow.getStage() == WorkflowStage.SELECTING_REFUND_ORDER
+                            || workflow.getStage() == WorkflowStage.SELECTING_REFUND_TICKETS
+                                    && context.ticketOptions() != null
+                                    && !context.ticketOptions().isEmpty();
+                    return new WorkflowPlanningContext(
+                            workflow.getWorkflowType(),
+                            workflow.getStage(),
+                            facts,
+                            awaitingSelection);
+                });
+    }
+
+    /**
+     * 将非空退票定位文本加入规划模型可见的事实白名单。
+     *
+     * @param facts 规划事实映射
+     * @param key 稳定字段名
+     * @param value 待筛选文本
+     */
+    private void putText(
+            Map<String, Object> facts,
+            String key,
+            String value) {
+        if (StringUtils.hasText(value)) {
+            // 工作流内部车票标识和候选明细不进入模型，只保留当前指代所需字段。
+            facts.put(key, value.trim());
+        }
     }
 
     /**
