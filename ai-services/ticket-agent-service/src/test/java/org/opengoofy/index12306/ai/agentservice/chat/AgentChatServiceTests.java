@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.chat;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.opengoofy.index12306.ai.agentservice.chat.service.AgentChatService;
 import org.opengoofy.index12306.ai.agentservice.chat.exception.AgentChatException;
 import org.opengoofy.index12306.ai.agentservice.chat.service.AgentChatMetrics;
@@ -13,15 +14,22 @@ import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.EventType;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
-import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService;
-import org.opengoofy.index12306.ai.agentservice.chat.rewrite.QuestionRewriteService.QuestionRewriteResult;
 import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.CancellationIntentData;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.IntentClassificationResult;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.RefundIntentData;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentToolRoutingService;
-import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.ReadTaskChainService;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskExecutionModels.TaskExecutionResult;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskExecutionModels.TaskExecutionStatus;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskDependencyResolver;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskPlanExecutionService;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.PlannedTask;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskPlan;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskSlots;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TrainSelectionPolicy;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.WorkflowRelation;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningService;
+import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.CancellationIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.PurchaseIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.RefundIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentExecutionRoutingService;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationTurnContext;
@@ -42,11 +50,6 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.openai.OpenAiChatOptions;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.beans.factory.ObjectProvider;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
@@ -54,7 +57,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -62,7 +64,6 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
@@ -122,11 +123,11 @@ class AgentChatServiceTests {
                     org.assertj.core.api.Assertions.assertThat(event.performance().routingDurationMs()).isNotNegative();
                     org.assertj.core.api.Assertions.assertThat(event.performance().modelDurationMs()).isNotNegative();
                     org.assertj.core.api.Assertions.assertThat(event.performance().completionDurationMs()).isNotNegative();
-                    org.assertj.core.api.Assertions.assertThat(event.performance().rewriteModelInvoked()).isFalse();
+                    org.assertj.core.api.Assertions.assertThat(event.performance().rewriteModelInvoked()).isTrue();
                     org.assertj.core.api.Assertions.assertThat(event.performance().rewritten()).isFalse();
                     org.assertj.core.api.Assertions.assertThat(event.performance().route()).isEqualTo("CHAT_ONLY");
                     org.assertj.core.api.Assertions.assertThat(event.performance().toolAvailability())
-                            .isEqualTo("NOT_REQUIRED");
+                            .isEqualTo("DIRECT_CHAIN");
                     org.assertj.core.api.Assertions.assertThat(event.performance().enabledTools()).isEmpty();
                     org.assertj.core.api.Assertions.assertThat(event.performance().missingTools()).isEmpty();
                     org.assertj.core.api.Assertions.assertThat(event.performance().modelCalls())
@@ -147,12 +148,11 @@ class AgentChatServiceTests {
         // 捕获实际发送给模型的提示，确认独立只读工具可以在同一模型轮次中批量请求。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.model(), atLeastOnce()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
-        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
-        assertThat(options.getParallelToolCalls()).isTrue();
+        assertThat(promptCaptor.getValue().getOptions()).isNull();
         assertThat(promptCaptor.getValue().getInstructions())
                 .filteredOn(message -> message instanceof UserMessage)
                 .extracting(message -> message.getText())
-                .containsExactly("上一轮问题", command.message());
+                .containsExactly(command.message());
 
         // 首事件与首个正文指标都应记录一次，避免性能优化破坏现有观测口径。
         assertThat(test.meterRegistry()
@@ -176,10 +176,7 @@ class AgentChatServiceTests {
      */
     @Test
     void contextualQuestionUsesRewrittenStandaloneQuestion() {
-        ToolCallbackProvider provider = ToolCallbackProvider.from(
-                toolCallback("resolve_station"),
-                toolCallback("query_tickets"));
-        TestContext test = context(Duration.ofSeconds(60), provider);
+        TestContext test = context();
         ChatCommand command = new ChatCommand(
                 "request-2", "request-2", "user-1", "tester",
                 "conversation-1", "第二个呢");
@@ -191,21 +188,20 @@ class AgentChatServiceTests {
                         AgentChatMessage.user("查询明天北京到上海的车票"),
                         AgentChatMessage.assistant("第一趟 G9001，第二趟 G9003"))));
 
-        // 模拟改写阶段把省略问句补全，回答模型仍只执行一次正式回答调用。
+        // 任务规划阶段把省略问句补全，固定链使用补全后的独立问题。
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        doReturn(new QuestionRewriteResult(
-                command.message(),
-                "明天北京到上海的第二趟车 G9003 还有票吗",
-                true,
-                true))
-                .when(test.questionRewriteService())
-                .rewrite(eq(conversationHistory), any());
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(classification(AgentIntent.TRAIN_QUERY));
+        doReturn(plan(task(
+                        AgentIntent.TRAIN_QUERY,
+                        command.message(),
+                        "明天北京到上海的第二趟车 G9003 还有票吗",
+                        new TaskSlots(
+                                "北京", "上海", "2026-07-17", "G9003",
+                                null, null, null, List.of(), null, null))))
+                .when(test.taskPlanningService()).plan(eq(conversationHistory), any(), any());
         ChatResponse modelResponse = response("G9003 还有余票");
-        when(test.model().stream(any(), any(), any(), eq(true), any()))
+        when(test.model().stream(any(), any(), any(), eq(false), any()))
                 .thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -214,19 +210,18 @@ class AgentChatServiceTests {
                 .expectNextMatches(event -> event.type() == EventType.DONE)
                 .verifyComplete();
 
-        // 意图识别和回答模型都必须使用补全后的独立问题，避免再次丢失上文车次信息。
-        verify(test.intentClassificationService()).classifyWithActionData(
-                eq("明天北京到上海的第二趟车 G9003 还有票吗"),
-                eq(conversationHistory),
+        // 固定链必须使用补全后的独立问题，最终回答模型只接收固定链结果且没有工具。
+        verify(test.readTaskChainService()).execute(
                 any(),
+                org.mockito.ArgumentMatchers.argThat(task ->
+                        "明天北京到上海的第二趟车 G9003 还有票吗".equals(task.standaloneQuestion())),
                 any());
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true), any());
-        assertThat(promptCaptor.getValue().getInstructions().get(
-                promptCaptor.getValue().getInstructions().size() - 1))
-                .isInstanceOfSatisfying(UserMessage.class, message ->
-                        assertThat(message.getText())
-                                .isEqualTo("明天北京到上海的第二趟车 G9003 还有票吗"));
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
+        assertThat(promptCaptor.getValue().getOptions()).isNull();
+        assertThat(promptCaptor.getValue().getInstructions())
+                .extracting(message -> message.getText())
+                .anyMatch(text -> text.contains("明天北京到上海的第二趟车 G9003 还有票吗"));
     }
 
     /**
@@ -246,8 +241,14 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(classification(AgentIntent.TICKET_PURCHASE));
+        doReturn(plan(task(
+                        AgentIntent.TICKET_PURCHASE,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                null, null, null, "G9001", null,
+                                "一等座", null, List.of("万重山"), null, null))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
         when(test.purchaseChainService().execute(any(), any())).thenReturn(
                 new PurchaseChainService.PurchaseChainResult("已生成购票草案"));
         when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
@@ -290,8 +291,14 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(classification(AgentIntent.TICKET_PURCHASE));
+        doReturn(plan(task(
+                        AgentIntent.TICKET_PURCHASE,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                null, null, "2026-07-17", null, "07:00",
+                                null, null, List.of("万重山"), null, null))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
         ChatResponse incorrectModelResponse = response("系统提示当前账号没有可用乘车人");
         when(test.model().stream(any(), any(), any(), eq(true), any()))
                 .thenReturn(Flux.just(incorrectModelResponse));
@@ -324,9 +331,15 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(new IntentClassificationResult(
-                        AgentIntent.ORDER_CANCELLATION, null, cancellationRequest, null));
+        doReturn(plan(task(
+                        AgentIntent.ORDER_CANCELLATION,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                null, null, null, cancellationRequest.trainNumber(),
+                                null, null, null, List.of(), cancellationRequest.orderSn(),
+                                cancellationRequest.ridingDate()))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
         when(test.ticketOperationChainService().executeCancellation(any(), eq(cancellationRequest)))
                 .thenReturn(new TicketOperationChainService.OperationChainResult("取消订单草案已生成。"));
 
@@ -358,9 +371,15 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(new IntentClassificationResult(
-                        AgentIntent.ORDER_CANCELLATION, null, cancellationRequest, null));
+        doReturn(plan(task(
+                        AgentIntent.ORDER_CANCELLATION,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                null, null, null, cancellationRequest.trainNumber(),
+                                null, null, null, List.of(), cancellationRequest.orderSn(),
+                                cancellationRequest.ridingDate()))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
         when(test.ticketOperationChainService().executeCancellation(any(), eq(cancellationRequest)))
                 .thenReturn(new TicketOperationChainService.OperationChainResult("等待用户选择订单。"));
         when(test.cancellationWorkflowService().findPendingSelection("user-1", "conversation-1"))
@@ -400,9 +419,15 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(new IntentClassificationResult(
-                        AgentIntent.TICKET_REFUND, null, null, refundRequest));
+        doReturn(plan(task(
+                        AgentIntent.TICKET_REFUND,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                null, null, null, refundRequest.trainNumber(),
+                                null, null, null, refundRequest.passengerNames(),
+                                refundRequest.orderSn(), refundRequest.ridingDate()))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
         when(test.ticketOperationChainService().executeRefund(any(), eq(refundRequest)))
                 .thenReturn(new TicketOperationChainService.OperationChainResult("退票草案已生成。"));
 
@@ -421,8 +446,7 @@ class AgentChatServiceTests {
      */
     @Test
     void purchaseCodeChainDoesNotResolveModelTools() {
-        ToolCallbackProvider provider = mock(ToolCallbackProvider.class);
-        TestContext test = context(Duration.ofSeconds(60), provider);
+        TestContext test = context();
         ChatCommand command = new ChatCommand(
                 "request-purchase", "request-purchase", "user-1", "tester",
                 "conversation-1", "帮我购买明天北京到上海的二等座车票");
@@ -432,8 +456,14 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(classification(AgentIntent.TICKET_PURCHASE));
+        doReturn(plan(task(
+                        AgentIntent.TICKET_PURCHASE,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                "北京", "上海", "2026-07-17", null,
+                                null, "二等座", null, List.of(), null, null))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
@@ -441,20 +471,16 @@ class AgentChatServiceTests {
                 .expectNextMatches(event -> event.type() == EventType.DONE)
                 .verifyComplete();
 
-        // 固定链既不调用回答模型，也不读取回答模型工具提供器。
-        verify(provider, never()).getToolCallbacks();
+        // 固定链既不调用回答模型，也不把任何工具提供给回答模型。
         verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
     }
 
     /**
-     * 验证乘车人查询分流要求的只读工具能够通过回答模型最终白名单。
+     * 验证乘车人查询由固定链执行，回答模型只接收执行结果。
      */
     @Test
     void passengerQueryReceivesPassengerTool() {
-        ToolCallback passengerTool = toolCallback("list_my_passengers");
-        ToolCallback passengerLookupTool = toolCallback("find_my_passengers_by_name");
-        ToolCallbackProvider provider = ToolCallbackProvider.from(passengerTool, passengerLookupTool);
-        TestContext test = context(Duration.ofSeconds(60), provider);
+        TestContext test = context();
         ChatCommand command = new ChatCommand(
                 "request-passenger", "request-passenger", "user-1", "tester",
                 "conversation-1", "查询有没有万重山这个乘车人");
@@ -466,9 +492,15 @@ class AgentChatServiceTests {
         when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(classification(AgentIntent.PASSENGER_QUERY));
-        when(test.model().stream(any(), any(), any(), eq(true), any())).thenReturn(Flux.just(modelResponse));
+        doReturn(plan(task(
+                        AgentIntent.PASSENGER_QUERY,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                null, null, null, null, null, null, null,
+                                List.of("万重山"), null, null))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
+        when(test.model().stream(any(), any(), any(), eq(false), any())).thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
@@ -476,13 +508,11 @@ class AgentChatServiceTests {
                 .expectNextMatches(event -> event.type() == EventType.DONE)
                 .verifyComplete();
 
-        // 捕获最终模型选项，确认乘车人查询工具已实际注册且没有缺失工具。
+        // 乘车人查询由固定链直接执行，最终模型调用明确关闭工具。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
-        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(true), any());
-        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
-        assertThat(options.getToolCallbacks())
-                .extracting(callback -> callback.getToolDefinition().name())
-                .containsExactlyInAnyOrder("list_my_passengers", "find_my_passengers_by_name");
+        verify(test.readTaskChainService()).execute(any(), any(), any());
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
+        assertThat(promptCaptor.getValue().getOptions()).isNull();
     }
 
     /**
@@ -490,9 +520,7 @@ class AgentChatServiceTests {
      */
     @Test
     void ordinaryQuestionSkipsMcpTools() {
-        ToolCallback queryTool = toolCallback("query_tickets");
-        ToolCallbackProvider provider = ToolCallbackProvider.from(queryTool);
-        TestContext test = context(Duration.ofSeconds(60), provider);
+        TestContext test = context();
         ChatCommand command = new ChatCommand(
                 "request-chat", "request-chat", "user-1", "tester",
                 "conversation-1", "你好，请介绍一下你自己");
@@ -515,15 +543,14 @@ class AgentChatServiceTests {
 
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
-        OpenAiChatOptions options = (OpenAiChatOptions) promptCaptor.getValue().getOptions();
-        assertThat(options.getToolCallbacks()).isEmpty();
+        assertThat(promptCaptor.getValue().getOptions()).isNull();
     }
 
     /**
      * 验证业务路径缺少必需工具时不会继续调用回答模型。
      */
     @Test
-    void missingBusinessToolsStopsBeforeModelCall() {
+    void failedReadTaskStillProducesSafeSummary() {
         TestContext test = context();
         ChatCommand command = new ChatCommand(
                 "request-missing-tools", "request-missing-tools", "user-1", "tester",
@@ -536,29 +563,118 @@ class AgentChatServiceTests {
                 command.conversationId(), "turn-1", "message-1", 1L, true));
         stubHistory(test, command, conversationHistory);
 
-        // 意图模型已识别为查票，后续缺少工具时应在回答模型调用前失败。
-        when(test.intentClassificationService().classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(classification(AgentIntent.TRAIN_QUERY));
+        // 规划结果进入查票固定链，单个查询异常由调度器转换为安全失败结果。
+        doReturn(plan(task(
+                        AgentIntent.TRAIN_QUERY,
+                        command.message(),
+                        command.message(),
+                        new TaskSlots(
+                                "北京", "上海", "2026-07-17", null,
+                                null, null, null, List.of(), null, null))))
+                .when(test.taskPlanningService()).plan(any(), any(), any());
+        doReturn(reactor.core.publisher.Mono.error(
+                new IllegalStateException("resolve_station unavailable")))
+                .when(test.readTaskChainService()).execute(any(), any(), any());
+        ChatResponse failureSummary = response("车票查询暂时失败，请稍后重试");
+        when(test.model().stream(any(), any(), any(), eq(false), any()))
+                .thenReturn(Flux.just(failureSummary));
 
         StepVerifier.create(test.service().stream(command))
-                .expectErrorSatisfies(error -> assertThat(error)
-                        .isInstanceOfSatisfying(AgentChatException.class, exception -> {
-                            assertThat(exception.failureCategory()).isEqualTo("MCP_TOOLS_UNAVAILABLE");
-                            assertThat(exception.getMessage()).contains("工具暂时不可用");
-                        }))
-                .verify();
+                .expectNextMatches(event -> event.type() == EventType.META)
+                .expectNextMatches(event -> event.type() == EventType.DELTA)
+                .expectNextMatches(event -> event.type() == EventType.DONE)
+                .verifyComplete();
 
-        verify(test.model(), never()).stream(any(), any(), any(), anyBoolean(), any());
-        verify(test.memory()).failTurn(eq(command.userId()), eq("turn-1"), any());
-        assertThat(test.meterRegistry()
-                .get("agent.chat.tools.missing")
-                .tag("tool", "resolve_station")
-                .counter().count()).isEqualTo(1);
-        assertThat(test.meterRegistry()
-                .get("agent.chat.routing.requests")
-                .tag("route", "TOOL_ASSISTED")
-                .tag("toolAvailability", "MISSING")
-                .counter().count()).isEqualTo(1);
+        verify(test.model()).stream(any(), any(), any(), eq(false), any());
+        verify(test.memory()).completeTurn(any());
+    }
+
+    /**
+     * 验证复合问题只规划一次、并行执行查询、串行进入交易链并进行一次无工具汇总。
+     */
+    @Test
+    void compoundRequestExecutesFixedChainsAndUsesToolFreeSummary() {
+        TestContext test = context();
+        ChatCommand command = new ChatCommand(
+                "request-compound", "request-compound", "user-1", "tester",
+                "conversation-1",
+                "查询北京到南京的车票，买最早的一等座，再查询当前乘车人");
+        ConversationHistoryContext conversationHistory = history(
+                command.conversationId(), command.message(), List.of());
+        PlannedTask trainTask = new PlannedTask(
+                "task-1", 1, AgentIntent.TRAIN_QUERY,
+                "查询北京到南京的车票", "查询 2026-07-17 北京到南京的车票",
+                new TaskSlots(
+                        "北京", "南京", "2026-07-17", null,
+                        null, null, null, List.of(), null, null),
+                List.of(), List.of(), WorkflowRelation.INDEPENDENT, List.of());
+        PlannedTask purchaseTask = new PlannedTask(
+                "task-2", 2, AgentIntent.TICKET_PURCHASE,
+                "买最早的一等座", "购买上述查询结果中最早的一班一等座",
+                new TaskSlots(
+                        "北京", "南京", "2026-07-17", null,
+                        null, "一等座", TrainSelectionPolicy.EARLIEST,
+                        List.of("万重山"), null, null),
+                List.of(), List.of("task-1"), WorkflowRelation.INDEPENDENT, List.of());
+        PlannedTask passengerTask = new PlannedTask(
+                "task-3", 3, AgentIntent.PASSENGER_QUERY,
+                "查询当前乘车人", "查询当前账号下的乘车人",
+                emptySlots(),
+                List.of(), List.of(), WorkflowRelation.INDEPENDENT, List.of());
+
+        // 规划结果一次返回三个任务，两个查询由固定链处理，购票继续走服务端代码链。
+        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, true));
+        stubHistory(test, command, conversationHistory);
+        doReturn(new TaskPlan(List.of(trainTask, purchaseTask, passengerTask)))
+                .when(test.taskPlanningService()).plan(eq(conversationHistory), any(), any());
+        doReturn(reactor.core.publisher.Mono.just(new TaskExecutionResult(
+                "task-1", 1, AgentIntent.TRAIN_QUERY, TaskExecutionStatus.SUCCESS,
+                trainTask.standaloneQuestion(),
+                "{\"trains\":[{\"trainId\":\"train-1\",\"trainNumber\":\"G1\","
+                        + "\"departureTime\":\"06:30\",\"seats\":[{\"type\":1,\"quantity\":3,\"price\":320}]}]}",
+                List.of(), null, null)))
+                .when(test.readTaskChainService()).execute(
+                        any(), org.mockito.ArgumentMatchers.argThat(task -> task.sequence() == 1), any());
+        doReturn(reactor.core.publisher.Mono.just(new TaskExecutionResult(
+                "task-3", 3, AgentIntent.PASSENGER_QUERY, TaskExecutionStatus.SUCCESS,
+                passengerTask.standaloneQuestion(), "[{\"realName\":\"万重山\"}]",
+                List.of(), null, null)))
+                .when(test.readTaskChainService()).execute(
+                        any(), org.mockito.ArgumentMatchers.argThat(task -> task.sequence() == 3), any());
+        when(test.purchaseChainService().execute(any(), any())).thenReturn(
+                new PurchaseChainService.PurchaseChainResult("已返回可购买车次，请选择具体车次。"));
+        ChatResponse summaryResponse = response("已完成车票和乘车人查询，购票仍需选择具体车次。");
+        when(test.model().stream(any(), any(), any(), eq(false), any()))
+                .thenReturn(Flux.just(summaryResponse));
+
+        StepVerifier.create(test.service().stream(command).collectList())
+                .assertNext(events -> {
+                    assertThat(events).extracting(event -> event.type())
+                            .contains(EventType.META, EventType.DELTA, EventType.DONE);
+                    assertThat(events.stream()
+                            .filter(event -> event.type() == EventType.DONE)
+                            .findFirst()
+                            .orElseThrow()
+                            .performance()
+                            .route()).isEqualTo("MULTI_TASK_DIRECT_CHAIN");
+                })
+                .verifyComplete();
+
+        verify(test.taskPlanningService()).plan(eq(conversationHistory), any(), any());
+        verify(test.readTaskChainService(), org.mockito.Mockito.times(2)).execute(any(), any(), any());
+        ArgumentCaptor<PurchaseIntentData> purchaseCaptor =
+                ArgumentCaptor.forClass(PurchaseIntentData.class);
+        verify(test.purchaseChainService()).execute(any(), purchaseCaptor.capture());
+        assertThat(purchaseCaptor.getValue().trainNumber()).isEqualTo("G1");
+        assertThat(purchaseCaptor.getValue().departureTime()).isEqualTo("06:30");
+        ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
+        verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
+        assertThat(promptCaptor.getValue().getOptions()).isNull();
+        assertThat(promptCaptor.getValue().getInstructions())
+                .extracting(message -> message.getText())
+                .anyMatch(text -> text.contains("\"trainNumber\":\"G1\"")
+                        && text.contains("\"realName\":\"万重山\""));
     }
 
     /**
@@ -659,27 +775,12 @@ class AgentChatServiceTests {
      * @param responseTimeout 整轮响应超时
      * @return 编排服务及依赖替身
      */
-    @SuppressWarnings("unchecked")
     private TestContext context(Duration responseTimeout) {
-        // 默认测试不注册任何工具，覆盖普通问答直接由模型生成正文的路径。
-        return context(responseTimeout, new ToolCallbackProvider[0]);
-    }
-
-    /**
-     * 使用指定超时和工具提供器创建编排测试上下文。
-     *
-     * @param responseTimeout 整轮响应超时
-     * @param configuredProviders 本轮需要注入的工具提供器
-     * @return 编排服务及依赖替身
-     */
-    @SuppressWarnings("unchecked")
-    private TestContext context(
-            Duration responseTimeout,
-            ToolCallbackProvider... configuredProviders) {
+        // 测试上下文只注入固定业务链和最终回答模型，不再创建模型工具提供器。
         ConversationMemoryService memory = mock(ConversationMemoryService.class);
         ConversationContextService contextService = mock(ConversationContextService.class);
-        QuestionRewriteService questionRewriteService = mock(QuestionRewriteService.class);
-        IntentClassificationService intentClassificationService = mock(IntentClassificationService.class);
+        TaskPlanningService taskPlanningService = mock(TaskPlanningService.class);
+        ReadTaskChainService readTaskChainService = mock(ReadTaskChainService.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
         PurchaseActionService purchaseActionService = mock(PurchaseActionService.class);
         PurchaseWorkflowService purchaseWorkflowService = mock(PurchaseWorkflowService.class);
@@ -687,16 +788,31 @@ class AgentChatServiceTests {
         RefundWorkflowService refundWorkflowService = mock(RefundWorkflowService.class);
         PurchaseChainService purchaseChainService = mock(PurchaseChainService.class);
         TicketOperationChainService ticketOperationChainService = mock(TicketOperationChainService.class);
-        ObjectProvider<ToolCallbackProvider> providers = mock(ObjectProvider.class);
-        // 工具提供器顺序保持与 Spring 容器一致，便于验证同名去重和最终白名单。
-        when(providers.orderedStream()).thenReturn(Arrays.stream(configuredProviders));
-        when(questionRewriteService.rewrite(any(), any())).thenAnswer(invocation -> {
+        // 默认规划单个普通问答任务，具体业务场景在各测试中覆盖该计划。
+        when(taskPlanningService.plan(any(), any(), any())).thenAnswer(invocation -> {
             ConversationHistoryContext history = invocation.getArgument(0);
-            return QuestionRewriteResult.unchanged(
-                    history.currentQuestion().content(), false);
+            return plan(task(
+                    AgentIntent.GENERAL_CHAT,
+                    history.currentQuestion().content(),
+                    history.currentQuestion().content(),
+                    emptySlots()));
         });
-        when(intentClassificationService.classifyWithActionData(any(), any(), any(), any()))
-                .thenReturn(classification(AgentIntent.GENERAL_CHAT));
+        when(readTaskChainService.execute(any(), any(), any())).thenAnswer(invocation -> {
+            PlannedTask task = invocation.getArgument(1);
+            return reactor.core.publisher.Mono.just(new TaskExecutionResult(
+                    task.taskId(),
+                    task.sequence(),
+                    task.intent(),
+                    TaskExecutionStatus.SUCCESS,
+                    task.standaloneQuestion(),
+                    "{\"result\":\"ok\"}",
+                    List.of(),
+                    null,
+                    null));
+        });
+        ChatResponse defaultModelResponse = response("默认汇总回答");
+        when(model.stream(any(), any(), any(), anyBoolean(), any()))
+                .thenReturn(Flux.just(defaultModelResponse));
         // 默认让购票测试落入确定性代码链路，普通问答仍覆盖原有模型路径。
         when(purchaseChainService.execute(any(), any())).thenReturn(
                 new PurchaseChainService.PurchaseChainResult("购票信息不完整：缺少乘车人。"));
@@ -706,12 +822,18 @@ class AgentChatServiceTests {
                 new TicketOperationChainService.OperationChainResult("请选择需要退票的订单。"));
         SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
         AgentChatMetrics chatMetrics = new AgentChatMetrics(meterRegistry);
+        AgentChatProperties chatProperties = new AgentChatProperties(
+                responseTimeout,
+                Duration.ofSeconds(5),
+                4);
         AgentChatPipeline pipeline = new AgentChatPipeline(
                 memory,
                 contextService,
-                questionRewriteService,
-                intentClassificationService,
-                new IntentToolRoutingService(),
+                taskPlanningService,
+                new TaskPlanExecutionService(chatProperties, chatMetrics),
+                readTaskChainService,
+                new TaskDependencyResolver(new ObjectMapper()),
+                new IntentExecutionRoutingService(),
                 chatMetrics,
                 model,
                 purchaseActionService,
@@ -720,43 +842,65 @@ class AgentChatServiceTests {
                 refundWorkflowService,
                 purchaseChainService,
                 ticketOperationChainService,
-                new McpToolContextFactory(),
-                providers,
                 Clock.fixed(Instant.parse("2026-07-16T00:00:00Z"), ZoneOffset.UTC));
         AgentChatService service = new AgentChatService(
                 memory,
                 pipeline,
-                new AgentChatProperties(responseTimeout),
+                chatProperties,
                 chatMetrics);
         return new TestContext(
-                service, memory, contextService, questionRewriteService, intentClassificationService, model,
+                service, memory, contextService, taskPlanningService, readTaskChainService, model,
                 purchaseActionService, purchaseWorkflowService,
                 cancellationWorkflowService, purchaseChainService, ticketOperationChainService, meterRegistry);
     }
 
     /**
-     * 创建仅提供稳定名称的工具回调替身。
+     * 创建只包含一个任务的测试计划。
      *
-     * @param name 工具名称
-     * @return 可参与编排白名单测试的工具回调
+     * @param task 当前测试任务
+     * @return 单任务计划
      */
-    private ToolCallback toolCallback(String name) {
-        ToolCallback callback = mock(ToolCallback.class);
-        ToolDefinition definition = mock(ToolDefinition.class);
-        // 工具边界测试只依赖定义名称，不执行工具正文。
-        when(definition.name()).thenReturn(name);
-        when(callback.getToolDefinition()).thenReturn(definition);
-        return callback;
+    private TaskPlan plan(PlannedTask task) {
+        // 流水线测试只关心执行集成，规划模型结构校验由独立测试覆盖。
+        return new TaskPlan(List.of(task));
     }
 
     /**
-     * 为编排测试构造不携带购票字段的受控意图识别结果。
+     * 创建稳定的单个测试任务。
      *
-     * @param intent 测试需要的业务意图
-     * @return 与生产分类接口一致的结构化结果
+     * @param intent 当前意图
+     * @param originalClause 用户原文
+     * @param standaloneQuestion 补全后的独立问题
+     * @param slots 当前业务槽位
+     * @return 可直接交给调度器的任务
      */
-    private IntentClassificationResult classification(AgentIntent intent) {
-        return new IntentClassificationResult(intent, null, null, null);
+    private PlannedTask task(
+            AgentIntent intent,
+            String originalClause,
+            String standaloneQuestion,
+            TaskSlots slots) {
+        // 单任务默认不依赖其他任务，也不延续活动工作流。
+        return new PlannedTask(
+                "task-1",
+                1,
+                intent,
+                originalClause,
+                standaloneQuestion,
+                slots,
+                List.of(),
+                List.of(),
+                WorkflowRelation.INDEPENDENT,
+                List.of());
+    }
+
+    /**
+     * 创建所有字段为空的统一槽位对象。
+     *
+     * @return 空业务槽位
+     */
+    private TaskSlots emptySlots() {
+        return new TaskSlots(
+                null, null, null, null, null, null, null, List.of(), null, null);
     }
 
     /**
@@ -790,8 +934,8 @@ class AgentChatServiceTests {
      * @param service 待测服务
      * @param memory 会话记忆替身
      * @param contextService 会话上下文替身
-     * @param questionRewriteService 问题改写服务替身
-     * @param intentClassificationService 意图分类模型服务替身
+     * @param taskPlanningService 多任务规划服务替身
+     * @param readTaskChainService 只读固定链替身
      * @param model 回答模型替身
      * @param purchaseActionService 购票动作服务替身
      * @param purchaseWorkflowService 购票工作流服务替身
@@ -801,8 +945,8 @@ class AgentChatServiceTests {
             AgentChatService service,
             ConversationMemoryService memory,
             ConversationContextService contextService,
-            QuestionRewriteService questionRewriteService,
-            IntentClassificationService intentClassificationService,
+            TaskPlanningService taskPlanningService,
+            ReadTaskChainService readTaskChainService,
             RoutedChatModelService model,
             PurchaseActionService purchaseActionService,
             PurchaseWorkflowService purchaseWorkflowService,

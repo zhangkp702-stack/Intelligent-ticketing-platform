@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.action.enums.PurchaseSeatClass;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.PurchaseDraftTools;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.PurchaseIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.PurchaseIntentData;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerResolutionResult;

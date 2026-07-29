@@ -2,8 +2,8 @@ package org.opengoofy.index12306.ai.agentservice.workflow.service;
 
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.TicketOperationDraftTools;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.CancellationIntentData;
-import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentClassificationService.RefundIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.CancellationIntentData;
+import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.RefundIntentData;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.CancellationWorkflowModels.CancellableOrderOption;
