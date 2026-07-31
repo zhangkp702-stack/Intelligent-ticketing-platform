@@ -4,11 +4,7 @@ import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionType;
 
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -21,53 +17,36 @@ import java.util.Objects;
  * 模型只能创建、用户确认后才能进入执行态的高风险操作草案。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_action_draft")
+@TableName("t_agent_action_draft")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ActionDraftEntity extends AgentBaseEntity {
 
-    @Column(name = "user_id", nullable = false, length = 64)
     private String userId;
 
-    @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "turn_id", nullable = false, length = 32)
     private String turnId;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "action_type", nullable = false, length = 32)
     private AgentActionType actionType;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 32)
     private AgentActionStatus status;
 
-    @Column(name = "payload_json", nullable = false, columnDefinition = "TEXT")
     private String payloadJson;
 
-    @Column(name = "payload_hash", nullable = false, length = 64)
     private String payloadHash;
 
-    @Column(name = "confirmation_expires_at", nullable = false)
     private Instant confirmationExpiresAt;
 
-    @Column(name = "confirmation_consumed_at")
     private Instant confirmationConsumedAt;
 
-    @Column(name = "execution_id", length = 32)
     private String executionId;
 
-    @Column(name = "result_json", columnDefinition = "TEXT")
     private String resultJson;
 
-    @Column(name = "result_reference", length = 128)
     private String resultReference;
 
-    @Column(name = "failure_category", length = 64)
     private String failureCategory;
 
-    @Column(name = "finished_at")
     private Instant finishedAt;
 
     private ActionDraftEntity(

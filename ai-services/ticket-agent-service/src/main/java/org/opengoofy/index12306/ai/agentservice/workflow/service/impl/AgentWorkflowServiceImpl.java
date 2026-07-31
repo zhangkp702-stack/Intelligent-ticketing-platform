@@ -86,7 +86,8 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
                 normalizedContext,
                 now.plus(DEFAULT_WORKFLOW_TTL),
                 now);
-        return workflowRepository.save(workflow);
+        workflowRepository.insert(workflow);
+        return workflow;
     }
 
     /**
@@ -122,7 +123,7 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
         requireText(workflowId, "工作流标识不能为空");
 
         // 标识查询仍校验用户归属、终态和有效期，不能把工作流 ID 当作访问凭证。
-        return workflowRepository.findById(workflowId.trim())
+        return Optional.ofNullable(workflowRepository.selectById(workflowId.trim()))
                 .filter(workflow -> workflow.getUserId().equals(userId.trim()))
                 .filter(workflow -> !TERMINAL_STAGES.contains(workflow.getStage()))
                 .filter(workflow -> workflow.getExpiresAt().isAfter(clock.instant()));
@@ -162,6 +163,8 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
 
         // 只保存服务端确认过的业务字段，不接受证件号等敏感信息作为工作流上下文。
         workflow.advance(nextStage, normalizeContext(contextJson), now);
+        // MyBatis-Plus 不跟踪实体脏状态，阶段推进后立即以版本字段更新工作流。
+        workflowRepository.updateById(workflow);
         return workflow;
     }
 
@@ -191,6 +194,7 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
         requireActive(workflow, now);
         requireExpectedStage(workflow, expectedStage);
         workflow.advance(WorkflowStage.COMPLETED, normalizeContext(contextJson), now);
+        workflowRepository.updateById(workflow);
         return workflow;
     }
 
@@ -220,6 +224,7 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
         requireActive(workflow, now);
         requireExpectedStage(workflow, expectedStage);
         workflow.advance(expectedStage, normalizeContext(contextJson), now);
+        workflowRepository.updateById(workflow);
         return workflow;
     }
 
@@ -241,6 +246,7 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
         AgentWorkflowEntity workflow = loadOwnedWorkflow(userId.trim(), workflowId.trim());
         if (!TERMINAL_STAGES.contains(workflow.getStage())) {
             workflow.expire(now);
+            workflowRepository.updateById(workflow);
         }
         return workflow;
     }

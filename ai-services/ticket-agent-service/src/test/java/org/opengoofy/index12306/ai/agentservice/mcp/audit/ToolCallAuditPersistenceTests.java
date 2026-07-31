@@ -8,6 +8,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.Optional;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -46,7 +48,7 @@ class ToolCallAuditPersistenceTests {
 
         // 审计服务在独立事务中分配调用序号并写入 V2 表。
         String id = auditService.record(event);
-        ToolCallEntity persisted = repository.findById(id).orElseThrow();
+        ToolCallEntity persisted = Optional.ofNullable(repository.selectById(id)).orElseThrow();
 
         assertThat(persisted.getRequestId()).isEqualTo("request-tool-a");
         assertThat(persisted.getToolName()).isEqualTo("query_tickets");

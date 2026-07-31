@@ -18,6 +18,7 @@ import org.springframework.util.StringUtils;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * 负责会话、消息和问答轮次的一致性写入，并合并异步摘要目标。
@@ -68,7 +69,8 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
 
         // 会话本身不携带模型或票务业务状态，摘要由后续异步任务维护。
         ConversationEntity conversation = ConversationEntity.create(userId, title, now);
-        return conversationRepository.save(conversation);
+        conversationRepository.insert(conversation);
+        return conversation;
     }
 
     /**
@@ -107,7 +109,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
                     .findByConversationIdAndIdempotencyKey(command.conversationId(), command.idempotencyKey())
                     .orElse(null);
             if (existingMessage != null && existingMessage.getTurnId() != null) {
-                TurnEntity idempotentTurn = turnRepository.findById(existingMessage.getTurnId())
+                TurnEntity idempotentTurn = Optional.ofNullable(turnRepository.selectById(existingMessage.getTurnId()))
                         .orElseThrow(() -> new IllegalStateException("幂等消息缺少关联轮次"));
                 return toStartedTurn(conversation, idempotentTurn, existingMessage, false);
             }
@@ -129,8 +131,10 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         TurnEntity turn = TurnEntity.start(
                 command.conversationId(), command.requestId(), userMessage.getId(), now);
         userMessage.attachTurn(turn.getId(), now);
-        messageRepository.save(userMessage);
-        turnRepository.save(turn);
+        messageRepository.insert(userMessage);
+        turnRepository.insert(turn);
+        // 消息序号保存在会话行中，MyBatis-Plus 下需显式更新以保持下一轮递增。
+        conversationRepository.updateById(conversation);
         return toStartedTurn(conversation, turn, userMessage, true);
     }
 
@@ -170,8 +174,11 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
                 turn.getRequestId() + ":assistant",
                 now);
         assistantMessage.attachTurn(turn.getId(), now);
-        messageRepository.save(assistantMessage);
+        messageRepository.insert(assistantMessage);
         turn.complete(assistantMessage.getId(), now);
+        // 助手消息、轮次终态和会话序号必须在同一事务内显式写回。
+        turnRepository.updateById(turn);
+        conversationRepository.updateById(conversation);
         // 与回答在同一事务内仅合并任务目标，MQ 发布和模型摘要在事务提交后异步执行。
         summaryTaskService.requestIfNeeded(turn.getConversationId(), sequence);
         return assistantMessage;
@@ -193,6 +200,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         // 失败状态更新前再次校验会话所有权，避免跨用户操作轮次。
         requireConversation(userId, turn.getConversationId());
         turn.fail(failureCategory, clock.instant());
+        turnRepository.updateById(turn);
     }
 
     /**
@@ -205,7 +213,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
     @Transactional(readOnly = true)
     @Override
     public TurnState getTurnState(String userId, String turnId) {
-        TurnEntity turn = turnRepository.findById(turnId)
+        TurnEntity turn = Optional.ofNullable(turnRepository.selectById(turnId))
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
 
         // 先校验会话所有权，再按终态读取助手消息，避免幂等查询越权。
@@ -231,6 +239,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         requireConversation(userId, turn.getConversationId());
         if (turn.getStatus() == TurnStatus.RUNNING) {
             turn.cancel(clock.instant());
+            turnRepository.updateById(turn);
         }
     }
 
@@ -260,6 +269,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
             return false;
         }
         lockedTurn.cancel(clock.instant());
+        turnRepository.updateById(lockedTurn);
         return true;
     }
 
@@ -285,7 +295,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
      * @return 会话实体
      */
     private ConversationEntity requireConversation(String userId, String conversationId) {
-        ConversationEntity conversation = conversationRepository.findById(conversationId)
+        ConversationEntity conversation = Optional.ofNullable(conversationRepository.selectById(conversationId))
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
         assertOwner(conversation, userId);
         return conversation;
@@ -311,7 +321,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
      * @return 消息实体
      */
     private MessageEntity requireMessage(String messageId) {
-        return messageRepository.findById(messageId)
+        return Optional.ofNullable(messageRepository.selectById(messageId))
                 .orElseThrow(() -> new IllegalStateException("轮次关联消息不存在"));
     }
 

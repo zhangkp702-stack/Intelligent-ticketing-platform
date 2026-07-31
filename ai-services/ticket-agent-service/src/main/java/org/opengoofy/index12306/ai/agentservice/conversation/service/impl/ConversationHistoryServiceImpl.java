@@ -10,9 +10,6 @@ import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.MessageRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationHistoryService;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -20,6 +17,7 @@ import org.springframework.util.StringUtils;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * 为前端提供经过用户归属校验和数量限制的会话、消息历史读取能力。
@@ -62,19 +60,16 @@ public class ConversationHistoryServiceImpl implements ConversationHistoryServic
         int normalizedSize = boundedSize(size, MAX_CONVERSATION_PAGE_SIZE);
 
         // 只按 userId 查询，避免先加载会话再在内存中过滤造成越权窗口。
-        Page<ConversationEntity> page = conversationRepository.findByUserId(
+        // Mapper 使用数据库排序和偏移量分页，避免将用户会话全集加载到服务内存。
+        List<ConversationEntity> page = conversationRepository.findByUserId(
                 userId,
-                PageRequest.of(
-                        normalizedCurrent - 1,
-                        normalizedSize,
-                        Sort.by(
-                                Sort.Order.desc("updatedAt"),
-                                Sort.Order.desc("id"))));
-        List<ConversationView> records = page.getContent().stream()
+                (long) (normalizedCurrent - 1) * normalizedSize,
+                normalizedSize);
+        List<ConversationView> records = page.stream()
                 .map(this::toConversationView)
                 .toList();
         return new ConversationPage(
-                normalizedCurrent, normalizedSize, page.getTotalElements(), records);
+                normalizedCurrent, normalizedSize, conversationRepository.countByUserId(userId), records);
     }
 
     /**
@@ -104,7 +99,7 @@ public class ConversationHistoryServiceImpl implements ConversationHistoryServic
                 conversationId,
                 MessageType.TEXT,
                 upperBound,
-                PageRequest.of(0, normalizedSize + 1));
+                normalizedSize + 1);
         boolean hasMore = descending.size() > normalizedSize;
         List<MessageEntity> selected = new ArrayList<>(
                 descending.subList(0, Math.min(normalizedSize, descending.size())));
@@ -134,7 +129,7 @@ public class ConversationHistoryServiceImpl implements ConversationHistoryServic
         }
 
         // 会话不存在和不属于当前用户使用相同异常边界，避免通过标识探测其他用户数据。
-        ConversationEntity conversation = conversationRepository.findById(conversationId)
+        ConversationEntity conversation = Optional.ofNullable(conversationRepository.selectById(conversationId))
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
         if (!conversation.belongsTo(userId)) {
             throw new IllegalArgumentException("无权访问该会话");

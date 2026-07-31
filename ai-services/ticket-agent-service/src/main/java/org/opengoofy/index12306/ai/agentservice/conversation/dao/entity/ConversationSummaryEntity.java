@@ -1,8 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -14,36 +12,26 @@ import java.util.Objects;
  * 保存一个会话当前唯一有效的累计摘要。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_conversation_summary")
+@TableName("t_agent_conversation_summary")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ConversationSummaryEntity extends AgentBaseEntity {
 
-    @Column(name = "conversation_id", nullable = false, unique = true, length = 32)
     private String conversationId;
 
-    @Column(name = "summary_content", nullable = false, columnDefinition = "TEXT")
     private String summaryContent;
 
-    @Column(name = "structured_state", columnDefinition = "TEXT")
     private String structuredState;
 
-    @Column(name = "summarized_through_sequence", nullable = false)
     private long summarizedThroughSequence;
 
-    @Column(name = "summary_version", nullable = false)
     private int summaryVersion;
 
-    @Column(name = "source_message_count", nullable = false)
     private int sourceMessageCount;
 
-    @Column(name = "provider_id", length = 64)
     private String providerId;
 
-    @Column(name = "candidate_id", length = 128)
     private String candidateId;
 
-    @Column(name = "model_id", length = 128)
     private String modelId;
 
     private ConversationSummaryEntity(String conversationId, Instant now) {

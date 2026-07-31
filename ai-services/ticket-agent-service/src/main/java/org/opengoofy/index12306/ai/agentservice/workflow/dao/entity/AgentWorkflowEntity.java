@@ -1,10 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.workflow.dao.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -18,29 +14,20 @@ import java.time.Instant;
  * 保存由服务端负责推进的会话业务工作流，禁止使用模型摘要承载可执行状态。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_workflow")
+@TableName("t_agent_workflow")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class AgentWorkflowEntity extends AgentBaseEntity {
 
-    @Column(name = "user_id", nullable = false, updatable = false, length = 64)
     private String userId;
 
-    @Column(name = "conversation_id", nullable = false, updatable = false, length = 32)
     private String conversationId;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "workflow_type", nullable = false, updatable = false, length = 32)
     private WorkflowType workflowType;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "stage", nullable = false, length = 64)
     private WorkflowStage stage;
 
-    @Column(name = "context_json", nullable = false, columnDefinition = "TEXT")
     private String contextJson;
 
-    @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
 
     /**

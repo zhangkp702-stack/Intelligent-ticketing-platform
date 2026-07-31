@@ -1,10 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -19,63 +15,42 @@ import java.util.Objects;
  * 不包含提示词和响应正文的持久化模型调用审计。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_model_call")
+@TableName("t_agent_model_call")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ModelCallEntity extends AgentBaseEntity {
 
-    @Column(name = "request_id", length = 64)
     private String requestId;
 
-    @Column(name = "conversation_id", length = 32)
     private String conversationId;
 
-    @Column(name = "turn_id", length = 32)
     private String turnId;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "role", nullable = false, length = 32)
     private ModelRole role;
 
-    @Column(name = "provider_id", nullable = false, length = 64)
     private String providerId;
 
-    @Column(name = "candidate_id", nullable = false, length = 128)
     private String candidateId;
 
-    @Column(name = "model_id", nullable = false, length = 128)
     private String modelId;
 
-    @Column(name = "attempt_no", nullable = false)
     private int attemptNo;
 
-    @Column(name = "fallback_index", nullable = false)
     private int fallbackIndex;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "outcome", nullable = false, length = 32)
     private ModelAttemptOutcome outcome;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "failure_category", length = 64)
     private ModelFailureCategory failureCategory;
 
-    @Column(name = "latency_millis", nullable = false)
     private long latencyMillis;
 
-    @Column(name = "prompt_tokens")
     private Integer promptTokens;
 
-    @Column(name = "completion_tokens")
     private Integer completionTokens;
 
-    @Column(name = "total_tokens")
     private Integer totalTokens;
 
-    @Column(name = "first_chunk_emitted", nullable = false)
     private boolean firstChunkEmitted;
 
-    @Column(name = "exception_type", length = 256)
     private String exceptionType;
 
     private ModelCallEntity(ModelCallData data, Instant now) {

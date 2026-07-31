@@ -3,11 +3,7 @@ package org.opengoofy.index12306.ai.agentservice.action.dao.entity;
 import org.opengoofy.index12306.ai.agentservice.action.enums.ActionExecutionOutcome;
 
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -20,40 +16,28 @@ import java.util.Objects;
  * 对一次受确认保护的真实业务写调用进行独立审计。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_action_execution")
+@TableName("t_agent_action_execution")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ActionExecutionEntity extends AgentBaseEntity {
 
-    @Column(name = "action_id", nullable = false, length = 32)
     private String actionId;
 
-    @Column(name = "request_id", nullable = false, length = 64)
     private String requestId;
 
-    @Column(name = "idempotency_key", nullable = false, length = 128)
     private String idempotencyKey;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "outcome", nullable = false, length = 32)
     private ActionExecutionOutcome outcome;
 
-    @Column(name = "started_at", nullable = false)
     private Instant startedAt;
 
-    @Column(name = "finished_at")
     private Instant finishedAt;
 
-    @Column(name = "result_reference", length = 128)
     private String resultReference;
 
-    @Column(name = "response_fingerprint", length = 64)
     private String responseFingerprint;
 
-    @Column(name = "failure_category", length = 64)
     private String failureCategory;
 
-    @Column(name = "exception_type", length = 256)
     private String exceptionType;
 
     private ActionExecutionEntity(

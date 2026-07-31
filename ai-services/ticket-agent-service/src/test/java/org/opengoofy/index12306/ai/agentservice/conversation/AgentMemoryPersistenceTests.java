@@ -21,12 +21,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 验证会话消息、唯一摘要和会话级上下文在真实 JPA 映射下的核心约束。
+ * 验证会话消息、唯一摘要和会话级上下文在真实 MyBatis-Plus 映射下的核心约束。
  */
 @ActiveProfiles("test")
 @SpringBootTest(properties = "index12306.agent.memory.summary-trigger-message-count=2")
@@ -69,7 +70,7 @@ class AgentMemoryPersistenceTests {
                 new ConversationMemoryService.CompleteTurnCommand(
                         fixture.userId(), fixture.turnId(), "不会重复写入的回答", 8));
 
-        TurnEntity turn = turnRepository.findById(fixture.turnId()).orElseThrow();
+        TurnEntity turn = Optional.ofNullable(turnRepository.selectById(fixture.turnId())).orElseThrow();
         assertThat(retried.created()).isFalse();
         assertThat(retried.turnId()).isEqualTo(fixture.turnId());
         assertThat(retried.sequenceNo()).isEqualTo(1L);
@@ -134,7 +135,7 @@ class AgentMemoryPersistenceTests {
                         "{\"intent\":\"ticket_query\"}",
                         "siliconflow", "summary-primary", "Qwen/Qwen3.5-9B"));
 
-        SummaryTaskEntity completed = summaryTaskRepository.findById(task.getId()).orElseThrow();
+        SummaryTaskEntity completed = Optional.ofNullable(summaryTaskRepository.selectById(task.getId())).orElseThrow();
         assertThat(workItem.messages()).hasSize(2);
         assertThat(completed.getStatus()).isEqualTo(SummaryTaskStatus.SUCCEEDED);
         assertThat(summary.getSummaryVersion()).isEqualTo(1);

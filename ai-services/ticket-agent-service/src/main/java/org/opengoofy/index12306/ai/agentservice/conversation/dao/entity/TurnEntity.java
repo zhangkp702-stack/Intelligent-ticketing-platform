@@ -1,11 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -17,34 +13,24 @@ import java.util.Objects;
  * 从一条用户问题到最终助手回答的完整执行轮次。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_turn")
+@TableName("t_agent_turn")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class TurnEntity extends AgentBaseEntity {
 
-    @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "request_id", nullable = false, length = 64)
     private String requestId;
 
-    @Column(name = "user_message_id", nullable = false, length = 32)
     private String userMessageId;
 
-    @Column(name = "assistant_message_id", length = 32)
     private String assistantMessageId;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 32)
     private TurnStatus status;
 
-    @Column(name = "started_at", nullable = false)
     private Instant startedAt;
 
-    @Column(name = "finished_at")
     private Instant finishedAt;
 
-    @Column(name = "failure_category", length = 64)
     private String failureCategory;
 
     private TurnEntity(String conversationId, String requestId, String userMessageId, Instant now) {

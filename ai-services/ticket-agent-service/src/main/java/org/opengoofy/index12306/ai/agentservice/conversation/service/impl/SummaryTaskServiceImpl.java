@@ -81,9 +81,12 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
                     summaryVersion,
                     properties.summaryMaxAttempts(),
                     clock.instant());
-            return Optional.of(taskRepository.save(task));
+            taskRepository.insert(task);
+            return Optional.of(task);
         }
         task.request(throughSequence, summaryVersion, clock.instant());
+        // 摘要目标边界在 MyBatis-Plus 下需要显式更新，防止后续消息覆盖该请求。
+        taskRepository.updateById(task);
         return Optional.of(task);
     }
 
@@ -125,6 +128,7 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
         for (SummaryTaskEntity task : candidates) {
             // 状态机保留事件版本与尝试次数，并在达到上限时直接终止。
             if (task.recoverForRepublish(now)) {
+                taskRepository.updateById(task);
                 recovered++;
             }
         }
@@ -146,6 +150,7 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
         if (task.getEventVersion() == eventVersion) {
             // 只有仍对应当前事件版本的任务才能进入已发布状态。
             task.published(messageId, clock.instant());
+            taskRepository.updateById(task);
         }
     }
 
@@ -166,6 +171,8 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
         if (!task.claim(eventVersion, workerId, now, properties.summaryLeaseDuration())) {
             return Optional.empty();
         }
+        // 领取状态和租约必须先持久化，避免另一个消费者重复领取同一摘要任务。
+        taskRepository.updateById(task);
 
         // 领取事务只冻结边界并读取输入，耗时模型调用不会持有数据库锁。
         ConversationSummaryEntity summary = summaryRepository.findByConversationId(task.getConversationId())
@@ -207,8 +214,12 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
                 .orElseThrow(() -> new IllegalArgumentException("摘要任务不存在"));
         ConversationSummaryEntity summary = summaryRepository
                 .findLockedByConversationId(task.getConversationId())
-                .orElseGet(() -> summaryRepository.save(
-                        ConversationSummaryEntity.empty(task.getConversationId(), clock.instant())));
+                .orElseGet(() -> {
+                    ConversationSummaryEntity emptySummary =
+                            ConversationSummaryEntity.empty(task.getConversationId(), clock.instant());
+                    summaryRepository.insert(emptySummary);
+                    return emptySummary;
+                });
         if (summary.getSummaryVersion() != task.getExpectedSummaryVersion()) {
             throw new IllegalStateException("摘要任务版本已经过期");
         }
@@ -229,6 +240,8 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
                 result.modelId(),
                 clock.instant());
         task.succeed(summary.getSummaryVersion(), clock.instant());
+        summaryRepository.updateById(summary);
+        taskRepository.updateById(task);
         return summary;
     }
 
@@ -245,7 +258,10 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
     public boolean fail(String taskId, String category, String safeMessage) {
         SummaryTaskEntity task = taskRepository.findLockedById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("摘要任务不存在"));
-        return task.fail(category, safeMessage, clock.instant(), properties.summaryRetryDelay());
+        boolean retryable = task.fail(category, safeMessage, clock.instant(), properties.summaryRetryDelay());
+        // 失败分类、重试时间和终态均需显式写回，供 Outbox 恢复任务读取。
+        taskRepository.updateById(task);
+        return retryable;
     }
 
     /**

@@ -17,6 +17,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,7 +42,7 @@ class PurchaseWorkflowServiceTests {
     @AfterEach
     void cleanUp() {
         // 测试数据没有外键依赖，可按仓储边界直接清理。
-        workflowRepository.deleteAll();
+        workflowRepository.delete(null);
     }
 
     /**
@@ -68,7 +69,7 @@ class PurchaseWorkflowServiceTests {
         assertThat(result.status()).isEqualTo(PassengerResolutionStatus.RESOLVED);
         assertThat(result.resolvedPassengers()).extracting("passengerId")
                 .containsExactly("passenger-1");
-        assertThat(workflowRepository.findById(result.workflowId()).orElseThrow().getStage())
+        assertThat(Optional.ofNullable(workflowRepository.selectById(result.workflowId())).orElseThrow().getStage())
                 .isEqualTo(WorkflowStage.CREATING_DRAFT);
         assertThat(purchaseWorkflowService.findReadyDraftContext(
                 requestContext.userId(), requestContext.conversationId()))

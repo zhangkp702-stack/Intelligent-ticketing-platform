@@ -1,11 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.SummaryTaskStatus;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -18,61 +14,42 @@ import java.util.Objects;
  * 合并同一会话摘要请求并记录 MQ 发布、领取和重试状态。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_summary_task")
+@TableName("t_agent_summary_task")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class SummaryTaskEntity extends AgentBaseEntity {
 
-    @Column(name = "conversation_id", nullable = false, unique = true, length = 32)
     private String conversationId;
 
-    @Column(name = "desired_through_sequence", nullable = false)
     private long desiredThroughSequence;
 
-    @Column(name = "processing_through_sequence")
     private Long processingThroughSequence;
 
-    @Column(name = "expected_summary_version", nullable = false)
     private int expectedSummaryVersion;
 
-    @Column(name = "event_version", nullable = false)
     private long eventVersion;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 32)
     private SummaryTaskStatus status;
 
-    @Column(name = "attempt_count", nullable = false)
     private int attemptCount;
 
-    @Column(name = "max_attempts", nullable = false)
     private int maxAttempts;
 
-    @Column(name = "next_retry_at")
     private Instant nextRetryAt;
 
-    @Column(name = "lease_owner", length = 128)
     private String leaseOwner;
 
-    @Column(name = "lease_until")
     private Instant leaseUntil;
 
-    @Column(name = "mq_message_id", length = 128)
     private String mqMessageId;
 
-    @Column(name = "published_at")
     private Instant publishedAt;
 
-    @Column(name = "failure_category", length = 64)
     private String failureCategory;
 
-    @Column(name = "failure_message", length = 512)
     private String failureMessage;
 
-    @Column(name = "started_at")
     private Instant startedAt;
 
-    @Column(name = "finished_at")
     private Instant finishedAt;
 
     private SummaryTaskEntity(

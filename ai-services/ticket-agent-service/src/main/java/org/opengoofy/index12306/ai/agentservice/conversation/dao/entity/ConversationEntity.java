@@ -1,11 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.ConversationStatus;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -17,22 +13,16 @@ import java.util.Objects;
  * 用户与购票智能体的一次长期会话。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_conversation")
+@TableName("t_agent_conversation")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ConversationEntity extends AgentBaseEntity {
 
-    @Column(name = "user_id", nullable = false, length = 64)
     private String userId;
 
-    @Column(name = "title", length = 200)
     private String title;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 32)
     private ConversationStatus status;
 
-    @Column(name = "last_message_sequence", nullable = false)
     private long lastMessageSequence;
 
     private ConversationEntity(String userId, String title, Instant now) {

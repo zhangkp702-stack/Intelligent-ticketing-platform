@@ -16,6 +16,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,7 +41,7 @@ class CancellationWorkflowServiceTests {
     @AfterEach
     void cleanUp() {
         // 工作流测试数据没有外键依赖，可以独立清理。
-        workflowRepository.deleteAll();
+        workflowRepository.delete(null);
     }
 
     /**
@@ -57,7 +58,7 @@ class CancellationWorkflowServiceTests {
 
         assertThat(result.status()).isEqualTo(OrderResolutionStatus.RESOLVED);
         assertThat(result.selectedOrder().orderSn()).isEqualTo("order-1");
-        assertThat(workflowRepository.findById(result.workflowId()).orElseThrow().getStage())
+        assertThat(Optional.ofNullable(workflowRepository.selectById(result.workflowId())).orElseThrow().getStage())
                 .isEqualTo(WorkflowStage.CREATING_DRAFT);
 
         // 草案只能使用工作流选定的订单号。

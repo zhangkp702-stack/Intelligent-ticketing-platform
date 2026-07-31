@@ -35,7 +35,7 @@ class AgentWorkflowServiceTests {
     @AfterEach
     void cleanUp() {
         // 工作流测试没有外键依赖，可以按仓储边界独立清理。
-        workflowRepository.deleteAll();
+        workflowRepository.delete(null);
     }
 
     /**

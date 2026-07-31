@@ -20,7 +20,6 @@ import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.Conv
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationSummaryRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.MessageRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.TurnRepository;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,6 +33,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 按会话唯一摘要和摘要边界后的完整轮次装配回答上下文。
@@ -103,7 +103,7 @@ public class ConversationContextLoader {
             long currentUserSequence,
             String currentQuestion) {
         // 先校验会话归属，防止通过会话标识读取其他用户的摘要和消息。
-        ConversationEntity conversation = conversationRepository.findById(conversationId)
+        ConversationEntity conversation = Optional.ofNullable(conversationRepository.selectById(conversationId))
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
         if (!conversation.belongsTo(userId)) {
             throw new IllegalArgumentException("无权访问该会话");
@@ -117,7 +117,7 @@ public class ConversationContextLoader {
                 TurnStatus.COMPLETED,
                 summarizedThrough,
                 currentTurnId,
-                PageRequest.of(0, properties.recentTurnLimit()));
+                properties.recentTurnLimit());
 
         // 一次性加载轮次两侧消息，避免按轮次逐条查询形成 N+1。
         Map<String, MessageEntity> messagesById = loadMessagesById(recentTurns);
@@ -156,7 +156,7 @@ public class ConversationContextLoader {
             messageIds.add(turn.getAssistantMessageId());
         }
         Map<String, MessageEntity> messagesById = new LinkedHashMap<>();
-        messageRepository.findAllById(messageIds)
+        messageRepository.selectByIds(messageIds)
                 .forEach(message -> messagesById.put(message.getId(), message));
         return messagesById;
     }
@@ -289,7 +289,7 @@ public class ConversationContextLoader {
                 context.estimatedTokenCount(),
                 hashContext(context),
                 clock.instant());
-        snapshotRepository.save(snapshot);
+        snapshotRepository.insert(snapshot);
     }
 
     /**

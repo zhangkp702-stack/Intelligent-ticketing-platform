@@ -1,9 +1,9 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Id;
-import jakarta.persistence.MappedSuperclass;
-import jakarta.persistence.Version;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -15,22 +15,20 @@ import java.util.UUID;
  * 智能体持久化实体统一的标识、乐观锁和审计时间字段。
  */
 @Getter
-@MappedSuperclass
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public abstract class AgentBaseEntity {
 
-    @Id
-    @Column(name = "id", nullable = false, updatable = false, length = 32)
+    @TableId(value = "id", type = IdType.INPUT)
     private String id;
 
     @Version
-    @Column(name = "version", nullable = false)
+    @TableField("version")
     private long version;
 
-    @Column(name = "created_at", nullable = false, updatable = false)
+    @TableField("created_at")
     private Instant createdAt;
 
-    @Column(name = "updated_at", nullable = false)
+    @TableField("updated_at")
     private Instant updatedAt;
 
     /**

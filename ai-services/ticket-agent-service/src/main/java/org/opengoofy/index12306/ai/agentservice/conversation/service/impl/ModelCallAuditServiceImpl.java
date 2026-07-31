@@ -40,6 +40,7 @@ public class ModelCallAuditServiceImpl implements ModelCallAuditService {
     public String record(ModelCallEntity.ModelCallData data) {
         // 持久化入口只接受受限字段记录，避免调用方误写用户正文。
         ModelCallEntity entity = ModelCallEntity.create(data, clock.instant());
-        return repository.save(entity).getId();
+        repository.insert(entity);
+        return entity.getId();
     }
 }

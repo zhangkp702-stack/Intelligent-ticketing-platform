@@ -13,6 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.time.Instant;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -52,7 +53,7 @@ class ModelAttemptAuditPersistenceTests {
 
         // 记录器同时更新内存观测数据和独立事务审计记录。
         String modelCallId = attemptRecorder.record(event);
-        ModelCallEntity persisted = modelCallRepository.findById(modelCallId).orElseThrow();
+        ModelCallEntity persisted = Optional.ofNullable(modelCallRepository.selectById(modelCallId)).orElseThrow();
 
         assertThat(persisted.getRequestId()).isEqualTo("request-audit");
         assertThat(persisted.getConversationId()).isEqualTo("conversation-audit");

@@ -1,10 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.mcp.audit;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -17,46 +13,32 @@ import java.util.Objects;
  * 不保存工具参数和响应正文的 MCP 工具调用持久化审计记录。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_tool_call")
+@TableName("t_agent_tool_call")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ToolCallEntity extends AgentBaseEntity {
 
-    @Column(name = "request_id", length = 64)
     private String requestId;
 
-    @Column(name = "conversation_id", length = 32)
     private String conversationId;
 
-    @Column(name = "turn_id", length = 32)
     private String turnId;
 
-    @Column(name = "tool_name", nullable = false, length = 64)
     private String toolName;
 
-    @Column(name = "mcp_server", nullable = false, length = 64)
     private String mcpServer;
 
-    @Column(name = "invocation_no", nullable = false)
     private int invocationNo;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "outcome", nullable = false, length = 32)
     private ToolCallOutcome outcome;
 
-    @Column(name = "latency_millis", nullable = false)
     private long latencyMillis;
 
-    @Column(name = "failure_category", length = 64)
     private String failureCategory;
 
-    @Column(name = "request_fingerprint", nullable = false, length = 64)
     private String requestFingerprint;
 
-    @Column(name = "response_item_count")
     private Integer responseItemCount;
 
-    @Column(name = "exception_type", length = 256)
     private String exceptionType;
 
     /**

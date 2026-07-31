@@ -1,8 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -14,39 +12,28 @@ import java.util.Objects;
  * 一次模型调用实际装配上下文的可追溯元数据，不保存重复正文。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_context_snapshot")
+@TableName("t_agent_context_snapshot")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ContextSnapshotEntity extends AgentBaseEntity {
 
-    @Column(name = "request_id", nullable = false, length = 64)
     private String requestId;
 
-    @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "summary_id", length = 32)
     private String summaryId;
 
-    @Column(name = "summary_version")
     private Integer summaryVersion;
 
-    @Column(name = "summarized_through_sequence", nullable = false)
     private long summarizedThroughSequence;
 
-    @Column(name = "message_from_sequence")
     private Long messageFromSequence;
 
-    @Column(name = "message_through_sequence")
     private Long messageThroughSequence;
 
-    @Column(name = "selected_message_ids", columnDefinition = "TEXT")
     private String selectedMessageIds;
 
-    @Column(name = "estimated_token_count", nullable = false)
     private int estimatedTokenCount;
 
-    @Column(name = "context_hash", nullable = false, length = 64)
     private String contextHash;
 
     private ContextSnapshotEntity(

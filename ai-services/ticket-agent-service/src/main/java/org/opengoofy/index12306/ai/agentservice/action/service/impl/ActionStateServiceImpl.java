@@ -107,12 +107,12 @@ public class ActionStateServiceImpl implements ActionStateService {
             String payloadHash,
             Instant expiresAt) {
         // 再次校验会话和轮次归属，避免本地工具上下文被错误组合后写入跨用户草案。
-        ConversationEntity conversation = conversationRepository.findById(context.conversationId())
+        ConversationEntity conversation = Optional.ofNullable(conversationRepository.selectById(context.conversationId()))
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
         if (!conversation.belongsTo(context.userId())) {
             throw new IllegalArgumentException("无权访问该会话");
         }
-        TurnEntity turn = turnRepository.findById(context.turnId())
+        TurnEntity turn = Optional.ofNullable(turnRepository.selectById(context.turnId()))
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
         if (!turn.getConversationId().equals(context.conversationId())
                 || turn.getStatus() != TurnStatus.RUNNING) {
@@ -131,7 +131,8 @@ public class ActionStateServiceImpl implements ActionStateService {
         ActionDraftEntity created = ActionDraftEntity.create(
                 context.userId(), context.conversationId(), context.turnId(),
                 actionType, payloadJson, payloadHash, expiresAt, clock.instant());
-        return actionRepository.save(created);
+        actionRepository.insert(created);
+        return created;
     }
 
     /**
@@ -168,7 +169,7 @@ public class ActionStateServiceImpl implements ActionStateService {
     public Optional<ActionDraftEntity> findLatestByConversation(
             String userId,
             String conversationId) {
-        ConversationEntity conversation = conversationRepository.findById(conversationId)
+        ConversationEntity conversation = Optional.ofNullable(conversationRepository.selectById(conversationId))
                 .orElseThrow(() -> new IllegalArgumentException("会话不存在"));
         if (!conversation.belongsTo(userId)) {
             throw new IllegalArgumentException("无权访问该会话");
@@ -231,8 +232,10 @@ public class ActionStateServiceImpl implements ActionStateService {
         // 先创建执行记录标识，再把草案和执行记录在同一事务中关联为 EXECUTING。
         ActionExecutionEntity execution = ActionExecutionEntity.start(
                 action.getId(), requestId, idempotencyKey, now);
-        executionRepository.save(execution);
+        executionRepository.insert(execution);
         action.startExecution(execution.getId(), now);
+        // 确认消费后显式保存草稿执行状态，保证执行记录与草稿状态在同一事务内提交。
+        actionRepository.updateById(action);
         return new ClaimedAction(
                 action.getId(), execution.getId(), requestId, action.getActionType(),
                 action.getUserId(), action.getConversationId(),
@@ -262,6 +265,8 @@ public class ActionStateServiceImpl implements ActionStateService {
         // 草案状态和独立执行审计必须在同一事务中完成，避免一边成功一边仍为运行中。
         action.succeed(safeResultJson, resultReference, now);
         execution.succeed(resultReference, responseFingerprint, now);
+        actionRepository.updateById(action);
+        executionRepository.updateById(execution);
     }
 
     /**
@@ -282,6 +287,8 @@ public class ActionStateServiceImpl implements ActionStateService {
         // 明确业务拒绝同时结束草案和执行审计，避免前端误显示为结果待核对。
         action.fail(category, now);
         execution.fail(category, exceptionType, now);
+        actionRepository.updateById(action);
+        executionRepository.updateById(execution);
     }
 
     /**
@@ -302,6 +309,8 @@ public class ActionStateServiceImpl implements ActionStateService {
         // 超时或网络异常可能发生在下游已经创建订单之后，只能等待订单查询核对。
         action.markUnknown(category, now);
         execution.markUnknown(category, exceptionType, now);
+        actionRepository.updateById(action);
+        executionRepository.updateById(execution);
     }
 
     /**
@@ -314,7 +323,7 @@ public class ActionStateServiceImpl implements ActionStateService {
     @Transactional
     @Override
     public ActionDraftEntity get(String userId, String actionId) {
-        ActionDraftEntity action = actionRepository.findById(actionId)
+        ActionDraftEntity action = Optional.ofNullable(actionRepository.selectById(actionId))
                 .orElseThrow(() -> new IllegalArgumentException("操作草案不存在"));
         assertOwner(action, userId);
 
@@ -339,6 +348,8 @@ public class ActionStateServiceImpl implements ActionStateService {
 
         // 状态变化和指标只发生一次，后续状态查询不会重复累计同一草案。
         action.expire(now);
+        // 过期状态需要在当前事务内显式写回，避免后续读取仍看到待确认草稿。
+        actionRepository.updateById(action);
         actionMetrics.recordConfirmationExpired(action.getActionType());
     }
 
@@ -352,7 +363,7 @@ public class ActionStateServiceImpl implements ActionStateService {
         if (action.getExecutionId() == null) {
             throw new IllegalStateException("操作草案缺少执行记录");
         }
-        return executionRepository.findById(action.getExecutionId())
+        return Optional.ofNullable(executionRepository.selectById(action.getExecutionId()))
                 .orElseThrow(() -> new IllegalStateException("操作执行记录不存在"));
     }
 

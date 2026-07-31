@@ -13,14 +13,6 @@ spring:
       connection-timeout: 3000
       maximum-pool-size: 16
       minimum-idle: 2
-  jpa:
-    open-in-view: false
-    hibernate:
-      ddl-auto: validate
-    properties:
-      hibernate:
-        jdbc:
-          time_zone: Asia/Shanghai
   flyway:
     enabled: true
     locations: classpath:db/migration
@@ -47,6 +39,10 @@ spring:
             ticket:
               url: ${TICKET_MCP_SERVER_URL:http://127.0.0.1:9006}
               endpoint: /mcp
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
 
 rocketmq:
   name-server: ${ROCKETMQ_NAME_SERVER:192.168.126.100:9876}

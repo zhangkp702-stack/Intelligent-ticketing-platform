@@ -1,12 +1,11 @@
 package org.opengoofy.index12306.ai.agentservice.workflow.dao.repository;
 
-import jakarta.persistence.LockModeType;
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.opengoofy.index12306.ai.agentservice.workflow.dao.entity.AgentWorkflowEntity;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Lock;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -15,7 +14,8 @@ import java.util.Optional;
 /**
  * 提供智能体业务工作流的持久化查询和并发锁定能力。
  */
-public interface AgentWorkflowRepository extends JpaRepository<AgentWorkflowEntity, String> {
+@Mapper
+public interface AgentWorkflowRepository extends BaseMapper<AgentWorkflowEntity> {
 
     /**
      * 查询会话中最近一个尚未结束且未过期的工作流。
@@ -26,11 +26,25 @@ public interface AgentWorkflowRepository extends JpaRepository<AgentWorkflowEnti
      * @param now 当前时间
      * @return 可继续推进的工作流
      */
+    @Select("""
+            <script>
+            SELECT * FROM t_agent_workflow
+            WHERE user_id = #{userId}
+              AND conversation_id = #{conversationId}
+              AND stage NOT IN
+              <foreach collection="terminalStages" item="stage" open="(" separator="," close=")">
+                #{stage}
+              </foreach>
+              AND expires_at > #{now}
+            ORDER BY updated_at DESC
+            LIMIT 1
+            </script>
+            """)
     Optional<AgentWorkflowEntity> findFirstByUserIdAndConversationIdAndStageNotInAndExpiresAtAfterOrderByUpdatedAtDesc(
-            String userId,
-            String conversationId,
-            Collection<WorkflowStage> terminalStages,
-            Instant now);
+            @Param("userId") String userId,
+            @Param("conversationId") String conversationId,
+            @Param("terminalStages") Collection<WorkflowStage> terminalStages,
+            @Param("now") Instant now);
 
     /**
      * 使用数据库写锁读取工作流，避免同一阶段被并发请求重复推进。
@@ -38,7 +52,6 @@ public interface AgentWorkflowRepository extends JpaRepository<AgentWorkflowEnti
      * @param workflowId 工作流标识
      * @return 已锁定的工作流
      */
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select w from AgentWorkflowEntity w where w.id = :workflowId")
+    @Select("SELECT * FROM t_agent_workflow WHERE id = #{workflowId} FOR UPDATE")
     Optional<AgentWorkflowEntity> findLockedById(@Param("workflowId") String workflowId);
 }

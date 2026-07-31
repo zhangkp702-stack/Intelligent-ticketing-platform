@@ -71,7 +71,8 @@ public class ToolCallAuditServiceImpl implements ToolCallAuditService {
 
         // 审计与主对话事务隔离，即使工具失败也保留诊断记录。
         ToolCallEntity entity = ToolCallEntity.create(data, clock.instant());
-        return repository.save(entity).getId();
+        repository.insert(entity);
+        return entity.getId();
     }
 
     /**

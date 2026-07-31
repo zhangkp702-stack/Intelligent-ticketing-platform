@@ -2,11 +2,7 @@ package org.opengoofy.index12306.ai.agentservice.conversation.dao.entity;
 
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Table;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -18,41 +14,28 @@ import java.util.Objects;
  * 不因摘要成功而删除的原始对话或工具消息。
  */
 @Getter
-@Entity
-@Table(name = "t_agent_message")
+@TableName("t_agent_message")
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class MessageEntity extends AgentBaseEntity {
 
-    @Column(name = "conversation_id", nullable = false, length = 32)
     private String conversationId;
 
-    @Column(name = "turn_id", length = 32)
     private String turnId;
 
-    @Column(name = "sequence_no", nullable = false)
     private long sequenceNo;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "role", nullable = false, length = 32)
     private MessageRole role;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "message_type", nullable = false, length = 32)
     private MessageType messageType;
 
-    @Column(name = "content", nullable = false, columnDefinition = "TEXT")
     private String content;
 
-    @Column(name = "content_format", nullable = false, length = 32)
     private String contentFormat;
 
-    @Column(name = "token_count", nullable = false)
     private int tokenCount;
 
-    @Column(name = "request_id", length = 64)
     private String requestId;
 
-    @Column(name = "idempotency_key", length = 128)
     private String idempotencyKey;
 
     private MessageEntity(
