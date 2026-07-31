@@ -16,6 +16,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.Histo
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.RecoverableActionView;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationHistoryService;
+import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationDeletionService;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionRequest;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionView;
@@ -34,6 +35,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.RefundWorkflowModel
 import org.opengoofy.index12306.ai.agentservice.workflow.service.RefundWorkflowService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -63,6 +65,7 @@ public class AgentChatController {
 
     private final AgentChatService agentChatService;
     private final ConversationHistoryService conversationHistoryService;
+    private final ConversationDeletionService conversationDeletionService;
     private final PurchaseActionService purchaseActionService;
     private final PurchaseWorkflowService purchaseWorkflowService;
     private final CancellationWorkflowService cancellationWorkflowService;
@@ -73,6 +76,7 @@ public class AgentChatController {
      *
      * @param agentChatService 对话编排服务
      * @param conversationHistoryService 会话历史查询服务
+     * @param conversationDeletionService 会话删除服务
      * @param purchaseActionService 高风险操作恢复服务
      * @param purchaseWorkflowService 购票工作流服务
      * @param cancellationWorkflowService 取消订单工作流服务
@@ -81,12 +85,14 @@ public class AgentChatController {
     public AgentChatController(
             AgentChatService agentChatService,
             ConversationHistoryService conversationHistoryService,
+            ConversationDeletionService conversationDeletionService,
             PurchaseActionService purchaseActionService,
             PurchaseWorkflowService purchaseWorkflowService,
             CancellationWorkflowService cancellationWorkflowService,
             RefundWorkflowService refundWorkflowService) {
         this.agentChatService = agentChatService;
         this.conversationHistoryService = conversationHistoryService;
+        this.conversationDeletionService = conversationDeletionService;
         this.purchaseActionService = purchaseActionService;
         this.purchaseWorkflowService = purchaseWorkflowService;
         this.cancellationWorkflowService = cancellationWorkflowService;
@@ -144,6 +150,22 @@ public class AgentChatController {
         // 工具调用和内部结构化消息不会通过历史接口返回浏览器。
         return conversationHistoryService.listMessages(
                 userId, conversationId, beforeSequence, size);
+    }
+
+    /**
+     * 删除当前认证用户拥有的会话及其关联数据。
+     *
+     * @param userId 网关注入的用户标识
+     * @param conversationId 会话标识
+     * @return 删除完成后的空响应
+     */
+    @DeleteMapping("/conversations/{conversationId}")
+    public ResponseEntity<Void> deleteConversation(
+            @RequestHeader(USER_ID_HEADER) String userId,
+            @PathVariable String conversationId) {
+        // 用户标识仅来自网关认证头，服务层会锁定会话后再次校验归属。
+        conversationDeletionService.deleteConversation(userId, conversationId);
+        return ResponseEntity.noContent().build();
     }
 
     /**
