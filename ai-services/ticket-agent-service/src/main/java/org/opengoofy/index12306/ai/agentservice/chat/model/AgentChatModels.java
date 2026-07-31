@@ -133,27 +133,6 @@ public final class AgentChatModels {
     }
 
     /**
-     * 非流式完整回答。
-     *
-     * @param requestId 请求标识
-     * @param conversationId 会话标识
-     * @param turnId 轮次标识
-     * @param content 最终助手回答
-     * @param reused 是否复用幂等请求的既有回答
-     * @param action 可选的待确认操作视图
-     * @param workflow 可选的工作流交互视图
-     */
-    public record ChatResult(
-            String requestId,
-            String conversationId,
-            String turnId,
-            String content,
-            boolean reused,
-            ActionConfirmationView action,
-            WorkflowInteractionView workflow) {
-    }
-
-    /**
      * 流式事件类型。
      */
     public enum EventType {

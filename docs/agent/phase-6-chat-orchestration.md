@@ -37,28 +37,19 @@ Content-Type: application/json
 {"conversationId":"..."}
 ```
 
-### 2.2 普通完整回答
-
-```http
-POST /api/agent-service/chat
-X-Request-Id: request-001
-Idempotency-Key: request-001
-Content-Type: application/json
-
-{"conversationId":"...","message":"查询明天北京到上海的二等座"}
-```
-
-`X-Request-Id` 和 `Idempotency-Key` 均可省略。省略请求标识时服务端生成 32 位标识，省略幂等键时沿用请求标识。
-
-### 2.3 SSE 流式回答
+### 2.2 SSE 流式回答
 
 ```http
 POST /api/agent-service/chat/stream
 Accept: text/event-stream
+X-Request-Id: request-001
+Idempotency-Key: request-001
 Content-Type: application/json
 
 {"conversationId":"...","message":"G1 经过哪些站？"}
 ```
+
+`X-Request-Id` 和 `Idempotency-Key` 均可省略。省略请求标识时服务端生成 32 位标识，省略幂等键时沿用请求标识。
 
 事件顺序为：
 

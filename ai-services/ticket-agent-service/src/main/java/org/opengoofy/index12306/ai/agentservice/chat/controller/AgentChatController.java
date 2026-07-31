@@ -9,7 +9,6 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatC
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCancelRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatRequest;
-import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatResult;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ConversationPage;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.CreateConversationRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.CreateConversationResponse;
@@ -51,7 +50,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 为网关认证后的用户提供会话创建、普通回答和 SSE 流式回答接口。
+ * 为网关认证后的用户提供会话创建和 SSE 流式回答接口。
  */
 @RestController
 @RequestMapping("/api/agent-service")
@@ -345,28 +344,6 @@ public class AgentChatController {
                     "WORKFLOW_STATE_CHANGED",
                     exception.getMessage());
         }
-    }
-
-    /**
-     * 完成一轮对话并以普通 JSON 返回完整回答。
-     *
-     * @param userId 网关注入的用户标识
-     * @param username 网关注入的用户名
-     * @param requestId 可选请求标识
-     * @param idempotencyKey 可选幂等键
-     * @param request 用户问题
-     * @return 最终完整回答
-     */
-    @PostMapping("/chat")
-    public Mono<ChatResult> chat(
-            @RequestHeader(USER_ID_HEADER) String userId,
-            @RequestHeader(USERNAME_HEADER) String username,
-            @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
-            @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody ChatRequest request) {
-        // 普通接口与 SSE 接口共用同一编排链和数据库幂等语义。
-        return agentChatService.chat(buildCommand(
-                userId, username, requestId, idempotencyKey, request));
     }
 
     /**

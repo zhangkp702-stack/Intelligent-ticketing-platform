@@ -10,13 +10,10 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCancelRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatEvent;
-import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatResult;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
-import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ActionConfirmationView;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.exception.ModelRoutingException;
-import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -90,7 +87,7 @@ public class AgentChatServiceImpl implements AgentChatService {
      * 执行一轮完整对话并返回元数据、增量正文和完成事件。
      *
      * @param command 包含身份、幂等键和用户问题的对话命令
-     * @return 可供 SSE 或普通 JSON 接口消费的事件流
+     * @return 可供 SSE 接口消费的事件流
      */
     @Override
     public Flux<ChatEvent> stream(ChatCommand command) {
@@ -181,38 +178,6 @@ public class AgentChatServiceImpl implements AgentChatService {
                         activeTurnCancels.remove(command.requestId(), newCancellation);
                     }
                 });
-    }
-
-    /**
-     * 执行一轮对话并只返回最终完整回答。
-     *
-     * @param command 对话命令
-     * @return 最终回答异步结果
-     */
-    @Override
-    public Mono<ChatResult> chat(ChatCommand command) {
-        // 普通 JSON 接口收集同一事件流，同时返回最终回答和可选的操作确认信息。
-        return stream(command).collectList().map(events -> {
-            ChatEvent done = events.stream()
-                    .filter(event -> event.type() == AgentChatModels.EventType.DONE)
-                    .findFirst()
-                    .orElseThrow(() -> new AgentChatException(
-                            HttpStatus.INTERNAL_SERVER_ERROR, "MISSING_DONE_EVENT", "对话未正常完成"));
-            ActionConfirmationView action = events.stream()
-                    .filter(event -> event.type() == AgentChatModels.EventType.ACTION_REQUIRED)
-                    .map(ChatEvent::action)
-                    .findFirst()
-                    .orElse(null);
-            // 非流式接口与 SSE 使用相同工作流协议，返回本轮可选的乘车人表单。
-            WorkflowInteractionView workflow = events.stream()
-                    .filter(event -> event.type() == AgentChatModels.EventType.WORKFLOW_REQUIRED)
-                    .map(ChatEvent::workflow)
-                    .findFirst()
-                    .orElse(null);
-            return new ChatResult(
-                    done.requestId(), done.conversationId(), done.turnId(),
-                    done.content(), done.reused(), action, workflow);
-        });
     }
 
     /**
