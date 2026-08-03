@@ -5,7 +5,9 @@ import org.opengoofy.index12306.ai.agentservice.infra.model.observability.ModelH
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeFunction;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
@@ -37,32 +39,83 @@ final class ModelHttpCallTimingFilter {
      */
     static ExchangeFilterFunction create(String providerId, String candidateId, String modelId) {
         // 每次 exchange 都对应一次真实模型 HTTP 往返，内部工具递归会自然产生新的调用记录。
-        return (request, next) -> Mono.deferContextual(contextView -> {
-            CallIdentity identity = createIdentity(contextView);
-            long startedNanos = System.nanoTime();
-            AtomicLong firstChunkMillis = new AtomicLong(-1);
-            AtomicBoolean terminalRecorded = new AtomicBoolean();
-            AtomicReference<Throwable> failure = new AtomicReference<>();
-            AtomicReference<HttpStatusCode> status = new AtomicReference<>();
+        ExchangeFilterFunction timingFilter = (request, next) -> Mono.deferContextual(
+                contextView -> observeExchange(
+                        request, next, contextView, providerId, candidateId, modelId));
+        return timingFilter;
+    }
 
-            LOGGER.info(
-                    "Agent模型分轮调用开始，requestId={}, conversationId={}, turnId={}, role={}, provider={}, "
-                            + "candidate={}, model={}, round={}",
-                    safe(identity.requestId()), safe(identity.conversationId()), safe(identity.turnId()),
-                    safe(identity.role()), providerId, candidateId, modelId, identity.round());
+    /**
+     * 为一次真实模型 HTTP 往返创建独立计时状态并包装响应。
+     *
+     * @param request 原始模型请求
+     * @param next WebClient 过滤器链
+     * @param contextView 当前 Reactor 上下文
+     * @param providerId 模型平台标识
+     * @param candidateId 路由候选项标识
+     * @param modelId 平台模型标识
+     * @return 带首包和终态观测的模型响应
+     */
+    private static Mono<ClientResponse> observeExchange(
+            ClientRequest request,
+            ExchangeFunction next,
+            ContextView contextView,
+            String providerId,
+            String candidateId,
+            String modelId) {
+        CallIdentity identity = createIdentity(contextView);
+        long startedNanos = System.nanoTime();
+        AtomicLong firstChunkMillis = new AtomicLong(-1);
+        AtomicBoolean terminalRecorded = new AtomicBoolean();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        AtomicReference<HttpStatusCode> status = new AtomicReference<>();
 
-            return next.exchange(request)
-                    .map(response -> instrumentResponse(
-                            response, identity, providerId, candidateId, modelId, startedNanos,
-                            firstChunkMillis, terminalRecorded, failure, status))
-                    .doOnError(exception -> {
-                        // 连接、TLS 或响应头阶段失败时没有可包装的响应体，需要在 exchange 边界直接记录。
-                        failure.set(exception);
-                        recordTerminal(
-                                SignalType.ON_ERROR, identity, providerId, candidateId, modelId,
-                                startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get());
-                    });
-        });
+        LOGGER.info(
+                "Agent模型分轮调用开始，requestId={}, conversationId={}, turnId={}, role={}, provider={}, "
+                        + "candidate={}, model={}, round={}",
+                safe(identity.requestId()), safe(identity.conversationId()), safe(identity.turnId()),
+                safe(identity.role()), providerId, candidateId, modelId, identity.round());
+
+        Mono<ClientResponse> observedExchange = next.exchange(request)
+                .map(response -> instrumentResponse(
+                        response, identity, providerId, candidateId, modelId, startedNanos,
+                        firstChunkMillis, terminalRecorded, failure, status))
+                .doOnError(exception -> recordExchangeFailure(
+                        exception, identity, providerId, candidateId, modelId, startedNanos,
+                        firstChunkMillis, terminalRecorded, failure, status));
+        return observedExchange;
+    }
+
+    /**
+     * 记录连接、TLS 或响应头阶段发生的模型调用失败。
+     *
+     * @param exception 原始请求异常
+     * @param identity 当前分轮调用身份
+     * @param providerId 模型平台标识
+     * @param candidateId 路由候选项标识
+     * @param modelId 平台模型标识
+     * @param startedNanos HTTP 调用开始时间
+     * @param firstChunkMillis 首包耗时容器
+     * @param terminalRecorded 是否已记录终态
+     * @param failure 请求异常容器
+     * @param status HTTP 状态容器
+     */
+    private static void recordExchangeFailure(
+            Throwable exception,
+            CallIdentity identity,
+            String providerId,
+            String candidateId,
+            String modelId,
+            long startedNanos,
+            AtomicLong firstChunkMillis,
+            AtomicBoolean terminalRecorded,
+            AtomicReference<Throwable> failure,
+            AtomicReference<HttpStatusCode> status) {
+        // 此阶段没有可包装的响应体，需要在 exchange 边界直接记录。
+        failure.set(exception);
+        recordTerminal(
+                SignalType.ON_ERROR, identity, providerId, candidateId, modelId,
+                startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get());
     }
 
     /**
@@ -93,7 +146,7 @@ final class ModelHttpCallTimingFilter {
             AtomicReference<HttpStatusCode> status) {
         // 直接转换 mutate 已持有的原始响应流，避免 bodyToFlux 与 mutate 分别订阅导致响应体被消费两次。
         status.set(response.statusCode());
-        return response.mutate()
+        ClientResponse instrumentedResponse = response.mutate()
                 .body(body -> body
                         .doOnNext(ignored -> recordFirstChunk(
                                 identity, providerId, candidateId, modelId, startedNanos,
@@ -115,6 +168,7 @@ final class ModelHttpCallTimingFilter {
                                 signalType, identity, providerId, candidateId, modelId,
                                 startedNanos, firstChunkMillis, terminalRecorded, failure.get(), status.get())))
                 .build();
+        return instrumentedResponse;
     }
 
     /**

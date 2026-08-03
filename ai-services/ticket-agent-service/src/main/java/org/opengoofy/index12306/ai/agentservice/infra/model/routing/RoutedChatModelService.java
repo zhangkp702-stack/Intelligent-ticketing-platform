@@ -157,16 +157,36 @@ public class RoutedChatModelService {
         Set<ModelCapability> capabilities = toolsEnabled
                 ? Set.of(ModelCapability.STREAMING, ModelCapability.TOOL_CALLING)
                 : Set.of(ModelCapability.STREAMING);
-        return Flux.defer(() -> {
-            // 每次订阅创建独立的分轮计数器，使自动工具执行产生的模型 HTTP 往返可以逐次计时。
-            ModelHttpCallTraceContext traceContext =
-                    ModelHttpCallTraceContext.create(role, attemptContext, roundConsumer);
-            return modelRouter.stream(
-                            role,
-                            capabilities,
-                            attemptContext,
-                            client -> client.chatModel().stream(prompt))
-                    .contextWrite(traceContext::writeTo);
-        });
+        Flux<ChatResponse> responseStream = Flux.defer(() -> createResponseStream(
+                role, prompt, attemptContext, capabilities, roundConsumer));
+        return responseStream;
+    }
+
+    /**
+     * 为一次订阅创建模型路由流和独立的 HTTP 分轮追踪上下文。
+     *
+     * @param role 模型业务角色
+     * @param prompt Spring AI 提示对象
+     * @param attemptContext 模型审计关联信息
+     * @param capabilities 本次调用要求的完整模型能力
+     * @param roundConsumer 每轮真实模型 HTTP 调用结束后的结果接收器
+     * @return 带分轮追踪上下文的模型响应流
+     */
+    private Flux<ChatResponse> createResponseStream(
+            ModelRole role,
+            Prompt prompt,
+            ModelAttemptContext attemptContext,
+            Set<ModelCapability> capabilities,
+            Consumer<ModelHttpCallRound> roundConsumer) {
+        // 每次订阅创建独立的分轮计数器，使自动工具执行产生的模型 HTTP 往返可以逐次计时。
+        ModelHttpCallTraceContext traceContext =
+                ModelHttpCallTraceContext.create(role, attemptContext, roundConsumer);
+        Flux<ChatResponse> routedStream = modelRouter.stream(
+                role,
+                capabilities,
+                attemptContext,
+                client -> client.chatModel().stream(prompt));
+        Flux<ChatResponse> tracedStream = routedStream.contextWrite(traceContext::writeTo);
+        return tracedStream;
     }
 }

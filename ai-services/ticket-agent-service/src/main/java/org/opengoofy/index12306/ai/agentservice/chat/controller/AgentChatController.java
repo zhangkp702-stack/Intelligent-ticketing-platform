@@ -397,15 +397,21 @@ public class AgentChatController {
 
         // SseEmitter.send 会在每个事件写入后刷新 Servlet 响应，不等待整个 Flux 完成。
         Disposable subscription = agentChatService.stream(command)
+                // 将业务异常转换为SSE错误事件，避免直接报错error
                 .onErrorResume(exception -> Mono.just(agentChatService.toErrorEvent(command, exception)))
+                // 订阅Flux，一共三种事件
                 .subscribe(
+                        // 接受新事件，每一次接收到event就执行sendEvent，把事件写入http响应
                         event -> sendEvent(emitter, event, subscriptionRef),
+                        // 出现异常，抛出异常
                         emitter::completeWithError,
+                        // 正常结束，回发出完成信号
                         emitter::complete);
         subscriptionRef.set(subscription);
 
         // 浏览器断开、页面切换或容器超时时必须取消上游，避免模型继续生成无消费者的内容。
         emitter.onCompletion(() -> dispose(subscriptionRef));
+        // 超时处理
         emitter.onTimeout(() -> {
             dispose(subscriptionRef);
             emitter.complete();

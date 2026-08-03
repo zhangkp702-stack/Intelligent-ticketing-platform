@@ -197,8 +197,9 @@ public class ModelRouter {
         Set<ModelCapability> required = requiredCapabilities(role, additionalCapabilities);
         List<String> attemptedCandidates = new ArrayList<>();
         long routingStarted = System.nanoTime();
-        return streamFrom(
+        Flux<T> routedStream = streamFrom(
                 role, required, attemptContext, invocation, 0, routingStarted, attemptedCandidates);
+        return routedStream;
     }
 
     /**
@@ -222,48 +223,80 @@ public class ModelRouter {
             int startIndex,
             long routingStarted,
             List<String> attemptedCandidates) {
-        return Flux.defer(() -> {
-            long elapsedNanos = System.nanoTime() - routingStarted;
-            long remainingNanos = properties.totalTimeout().toNanos() - elapsedNanos;
-            if (remainingNanos <= 0) {
-                TimeoutException timeout = new TimeoutException("model routing total timeout");
-                return Flux.error(routingFailure(
-                        role, attemptedCandidates, ModelFailureCategory.TIMEOUT, timeout));
-            }
+        Flux<T> routedStream = Flux.defer(() -> selectStreamCandidate(
+                role,
+                requiredCapabilities,
+                attemptContext,
+                invocation,
+                startIndex,
+                routingStarted,
+                attemptedCandidates));
+        return routedStream;
+    }
 
-            // 查找下一项真正可调用的候选模型，配置缺失和熔断项不会产生外部请求。
-            List<String> route = properties.routes().get(role);
-            for (int index = startIndex; index < route.size(); index++) {
-                String candidateId = route.get(index);
-                Optional<RoutedModelClient> clientOptional = eligibleClient(role, candidateId, requiredCapabilities);
-                if (clientOptional.isEmpty()) {
-                    continue;
-                }
-                RoutedModelClient client = clientOptional.get();
-                Optional<ProviderConcurrencyLimiter.Permit> permitOptional = concurrencyLimiter.acquire(client.providerId());
-                if (permitOptional.isEmpty()) {
-                    healthTracker.releaseProbe(role, candidateId);
-                    recordFailure(role, client, index, 0, false, ModelFailureCategory.PROVIDER_BUSY,
-                            attemptContext,
-                            new java.util.concurrent.RejectedExecutionException());
-                    continue;
-                }
-                attemptedCandidates.add(candidateId);
-                return invokeStreamCandidate(
-                        role,
-                        requiredCapabilities,
-                        attemptContext,
-                        invocation,
-                        index,
-                        routingStarted,
-                        attemptedCandidates,
-                        client,
-                        permitOptional.get(),
-                        remainingNanos);
-            }
+    /**
+     * 在当前订阅的剩余预算内选择并调用下一项可用模型。
+     *
+     * @param role 模型角色
+     * @param requiredCapabilities 完整能力要求
+     * @param attemptContext 不包含正文的业务审计关联信息
+     * @param invocation 流式调用逻辑
+     * @param startIndex 开始搜索的候选项位置
+     * @param routingStarted 路由开始时间
+     * @param attemptedCandidates 已尝试候选项
+     * @param <T> 响应数据块类型
+     * @return 当前候选、后续降级候选或路由异常
+     */
+    private <T> Flux<T> selectStreamCandidate(
+            ModelRole role,
+            Set<ModelCapability> requiredCapabilities,
+            ModelAttemptContext attemptContext,
+            ModelStreamInvocation<T> invocation,
+            int startIndex,
+            long routingStarted,
+            List<String> attemptedCandidates) {
+        long elapsedNanos = System.nanoTime() - routingStarted;
+        long remainingNanos = properties.totalTimeout().toNanos() - elapsedNanos;
+        if (remainingNanos <= 0) {
+            TimeoutException timeout = new TimeoutException("model routing total timeout");
             return Flux.error(routingFailure(
-                    role, attemptedCandidates, ModelFailureCategory.MODEL_UNAVAILABLE, null));
-        });
+                    role, attemptedCandidates, ModelFailureCategory.TIMEOUT, timeout));
+        }
+
+        // 查找下一项真正可调用的候选模型，配置缺失和熔断项不会产生外部请求。
+        List<String> route = properties.routes().get(role);
+        for (int index = startIndex; index < route.size(); index++) {
+            String candidateId = route.get(index);
+            Optional<RoutedModelClient> clientOptional =
+                    eligibleClient(role, candidateId, requiredCapabilities);
+            if (clientOptional.isEmpty()) {
+                continue;
+            }
+            RoutedModelClient client = clientOptional.get();
+            Optional<ProviderConcurrencyLimiter.Permit> permitOptional =
+                    concurrencyLimiter.acquire(client.providerId());
+            if (permitOptional.isEmpty()) {
+                healthTracker.releaseProbe(role, candidateId);
+                recordFailure(role, client, index, 0, false, ModelFailureCategory.PROVIDER_BUSY,
+                        attemptContext,
+                        new java.util.concurrent.RejectedExecutionException());
+                continue;
+            }
+            attemptedCandidates.add(candidateId);
+            return invokeStreamCandidate(
+                    role,
+                    requiredCapabilities,
+                    attemptContext,
+                    invocation,
+                    index,
+                    routingStarted,
+                    attemptedCandidates,
+                    client,
+                    permitOptional.get(),
+                    remainingNanos);
+        }
+        return Flux.error(routingFailure(
+                role, attemptedCandidates, ModelFailureCategory.MODEL_UNAVAILABLE, null));
     }
 
     /**
@@ -310,7 +343,7 @@ public class ModelRouter {
         }
 
         // 超时仅约束首包；一旦开始向用户输出，就禁止自动换模型以免拼接不同回答。
-        return source
+        Flux<T> candidateStream = source
                 .switchIfEmpty(Flux.error(new EmptyModelResponseException()))
                 .timeout(Mono.delay(firstChunkTimeout), ignored -> Mono.never())
                 .doOnNext(ignored -> emitted.set(true))
@@ -352,6 +385,7 @@ public class ModelRouter {
                     }
                     return Flux.error(routingFailure(role, attemptedCandidates, category, ex));
                 });
+        return candidateStream;
     }
 
     /**

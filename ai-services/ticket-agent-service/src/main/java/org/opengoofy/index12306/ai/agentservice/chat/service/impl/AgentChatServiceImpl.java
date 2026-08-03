@@ -94,31 +94,123 @@ public class AgentChatServiceImpl implements AgentChatService {
         validateCommand(command);
 
         // 日志和指标都从订阅时刻开始，覆盖路由、模型、工具和最终持久化的完整在线链路。
-        return chatMetrics.observe(Flux.defer(() -> {
-            long startedNanos = System.nanoTime();
-            LOGGER.info("Agent对话开始，requestId={}, conversationId={}",
-                    command.requestId(), command.conversationId());
-            return streamWithCancellation(command)
-                    .doOnNext(event -> {
-                        if (event.type() == AgentChatModels.EventType.META) {
-                            LOGGER.info("Agent会话上下文加载完成，requestId={}, turnId={}, reused={}",
-                                    event.requestId(), event.turnId(), event.reused());
-                        } else if (event.type() == AgentChatModels.EventType.DONE) {
-                            LOGGER.info("Agent对话完成，requestId={}, turnId={}, contentLength={}, durationMs={}",
-                                    event.requestId(), event.turnId(),
-                                    event.content() == null ? 0 : event.content().length(),
-                                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
-                        }
-                    })
-                    .doOnError(exception -> LOGGER.warn(
-                            "Agent对话失败，requestId={}, conversationId={}, exceptionType={}, durationMs={}",
-                            command.requestId(), command.conversationId(), exception.getClass().getSimpleName(),
-                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)))
-                    .doOnCancel(() -> LOGGER.info(
-                            "Agent对话订阅已取消，requestId={}, conversationId={}, durationMs={}",
-                            command.requestId(), command.conversationId(),
-                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)));
-        }));
+        Flux<ChatEvent> eventStream = Flux.defer(() -> createLoggedStream(command));
+        return chatMetrics.observe(eventStream);
+    }
+
+    /**
+     * 为一次实际订阅创建对话事件流，并绑定开始、进度、失败和取消日志。
+     *
+     * @param command 对话命令
+     * @return 带生命周期日志的对话事件流
+     */
+    private Flux<ChatEvent> createLoggedStream(ChatCommand command) {
+        long startedNanos = System.nanoTime();
+
+        // 开始时间必须在订阅时采集，避免把事件流创建到真正消费之间的等待计入在线耗时。
+        LOGGER.info("Agent对话开始，requestId={}, conversationId={}",
+                command.requestId(), command.conversationId());
+        // 创建包含任务规划、固定业务链和最终回答生成的完整对话流。
+        Flux<ChatEvent> eventStream = streamWithCancellation(command);
+
+        // 生命周期回调只记录观测信息，不改变事件、异常或取消信号。
+        Flux<ChatEvent> loggedStream = eventStream
+                .doOnNext(event -> logProgress(event, startedNanos))
+                .doOnError(exception -> logFailure(command, exception, startedNanos))
+                .doOnCancel(() -> logCancellation(command, startedNanos));
+        return loggedStream;
+    }
+
+    /**
+     * 为单次流式订阅绑定取消信号、超时处理和结束清理。
+     *
+     * @param command 已校验的对话命令
+     * @return 可取消的 SSE 事件流
+     */
+    private Flux<ChatEvent> streamWithCancellation(ChatCommand command) {
+        // 每次订阅先创建独立的一次性取消信号；tryEmitEmpty 只表示“停止”，不携带业务数据。
+        Sinks.One<Void> newCancellation = Sinks.one();
+
+        // 以 requestId 原子注册取消信号：首次请求保存新信号；重复订阅保留已运行请求的原信号。
+        Sinks.One<Void> registeredCancellation = activeTurnCancels.putIfAbsent(
+                command.requestId(), newCancellation);
+        boolean registeredByCurrentStream = registeredCancellation == null;
+
+        // 后续流始终监听实际登记的信号，保证同一 requestId 的显式取消能通知全部相关订阅。
+        Sinks.One<Void> cancellation = registeredByCurrentStream
+                ? newCancellation : registeredCancellation;
+
+        // defer 使 Pipeline 在订阅时才执行；此时取消、超时和结束清理规则已经完成组装。
+        Flux<ChatEvent> pipelineStream = Flux.defer(() -> chatPipeline.execute(command));
+
+        // 取消信号完成时停止模型和业务上游；timeout 限制两次上游信号之间的最长等待时间。
+        Flux<ChatEvent> guardedStream = pipelineStream
+                // 收到取消信号自动停止
+                .takeUntilOther(cancellation.asMono())
+                // 长时间没有接收数据自动超时
+                .timeout(chatProperties.responseTimeout())
+                // 将 Reactor 技术超时转换为可安全发送给 SSE 客户端的业务异常。
+                .onErrorMap(TimeoutException.class, this::toChatTimeout)
+                // 正常完成、异常、显式取消和客户端断开均会进入此处，防止取消信号残留在进程内存中。
+                .doFinally(ignored -> removeCancellationRegistration(
+                        command, newCancellation, registeredByCurrentStream));
+        return guardedStream;
+    }
+
+    /**
+     * 记录上下文就绪和最终回答完成事件。
+     *
+     * @param event 当前对话事件
+     * @param startedNanos 本次订阅开始时间
+     */
+    private void logProgress(ChatEvent event, long startedNanos) {
+        if (event.type() == AgentChatModels.EventType.META) {
+            // META 表示会话上下文已经加载，可以记录轮次和幂等复用信息。
+            LOGGER.info("Agent会话上下文加载完成，requestId={}, turnId={}, reused={}",
+                    event.requestId(), event.turnId(), event.reused());
+        } else if (event.type() == AgentChatModels.EventType.DONE) {
+            // DONE 是完整在线链路的成功终点，同时记录回答长度与总耗时。
+            LOGGER.info("Agent对话完成，requestId={}, turnId={}, contentLength={}, durationMs={}",
+                    event.requestId(), event.turnId(),
+                    event.content() == null ? 0 : event.content().length(),
+                    elapsedMillis(startedNanos));
+        }
+    }
+
+    /**
+     * 记录对话事件流异常终止信息。
+     *
+     * @param command 对话命令
+     * @param exception 终止事件流的异常
+     * @param startedNanos 本次订阅开始时间
+     */
+    private void logFailure(ChatCommand command, Throwable exception, long startedNanos) {
+        // 日志只记录稳定标识和异常类型，不输出用户问题或模型响应正文。
+        LOGGER.warn("Agent对话失败，requestId={}, conversationId={}, exceptionType={}, durationMs={}",
+                command.requestId(), command.conversationId(), exception.getClass().getSimpleName(),
+                elapsedMillis(startedNanos));
+    }
+
+    /**
+     * 记录客户端取消对话事件流订阅的信息。
+     *
+     * @param command 对话命令
+     * @param startedNanos 本次订阅开始时间
+     */
+    private void logCancellation(ChatCommand command, long startedNanos) {
+        // 取消与异常分开记录，便于区分客户端断开和服务端处理失败。
+        LOGGER.info("Agent对话订阅已取消，requestId={}, conversationId={}, durationMs={}",
+                command.requestId(), command.conversationId(), elapsedMillis(startedNanos));
+    }
+
+    /**
+     * 计算当前时刻距离订阅开始的毫秒数。
+     *
+     * @param startedNanos 本次订阅开始时间
+     * @return 已经过的毫秒数
+     */
+    private long elapsedMillis(long startedNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
     }
 
     /**
@@ -152,32 +244,34 @@ public class AgentChatServiceImpl implements AgentChatService {
     }
 
     /**
-     * 为单次流式订阅绑定取消信号、超时处理和结束清理。
+     * 将底层响应超时转换为稳定的对话接口异常。
      *
-     * @param command 已校验的对话命令
-     * @return 可取消的 SSE 事件流
+     * @param ignored Reactor 产生的原始超时异常
+     * @return 可安全返回给调用方的对话超时异常
      */
-    private Flux<ChatEvent> streamWithCancellation(ChatCommand command) {
-        Sinks.One<Void> newCancellation = Sinks.one();
-        Sinks.One<Void> registeredCancellation = activeTurnCancels.putIfAbsent(
-                command.requestId(), newCancellation);
-        boolean registeredByCurrentStream = registeredCancellation == null;
-        Sinks.One<Void> cancellation = registeredByCurrentStream
-                ? newCancellation : registeredCancellation;
+    private AgentChatException toChatTimeout(TimeoutException ignored) {
+        // 对外隐藏模型路由和供应商细节，只暴露稳定错误码与重试提示。
+        return new AgentChatException(
+                HttpStatus.GATEWAY_TIMEOUT,
+                "CHAT_TIMEOUT",
+                "智能体响应时间过长，本次生成已停止，请稍后重试");
+    }
 
-        // 超时和显式取消都会取消上游订阅，已有的 doOnCancel 会同步终止数据库轮次。
-        return Flux.defer(() -> chatPipeline.execute(command))
-                .takeUntilOther(cancellation.asMono())
-                .timeout(chatProperties.responseTimeout())
-                .onErrorMap(TimeoutException.class, ignored -> new AgentChatException(
-                        HttpStatus.GATEWAY_TIMEOUT,
-                        "CHAT_TIMEOUT",
-                        "智能体响应时间过长，本次生成已停止，请稍后重试"))
-                .doFinally(ignored -> {
-                    if (registeredByCurrentStream) {
-                        activeTurnCancels.remove(command.requestId(), newCancellation);
-                    }
-                });
+    /**
+     * 在当前流结束后移除由本次订阅创建的取消信号。
+     *
+     * @param command 当前对话命令
+     * @param newCancellation 本次尝试创建的取消信号
+     * @param registeredByCurrentStream 是否由本次订阅完成注册
+     */
+    private void removeCancellationRegistration(
+            ChatCommand command,
+            Sinks.One<Void> newCancellation,
+            boolean registeredByCurrentStream) {
+        // 复用其他订阅的取消信号时不能由当前流删除其注册关系。
+        if (registeredByCurrentStream) {
+            activeTurnCancels.remove(command.requestId(), newCancellation);
+        }
     }
 
     /**
