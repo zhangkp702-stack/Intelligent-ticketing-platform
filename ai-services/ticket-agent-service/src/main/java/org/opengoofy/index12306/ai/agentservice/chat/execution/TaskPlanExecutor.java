@@ -80,12 +80,13 @@ public class TaskPlanExecutor {
         }
 
         // flatMap 触发互不依赖任务并行订阅，结果在全部完成后按 sequence 重新排序。
-        return Flux.fromIterable(plan.tasks())
+        Mono<TaskExecutionSummary> summary = Flux.fromIterable(plan.tasks())
                 .flatMap(
                         task -> executions.get(task.taskId()),
                         properties.taskMaxConcurrency())
                 .collectList()
                 .map(TaskExecutionSummary::ordered);
+        return summary;
     }
 
     /**
@@ -122,24 +123,36 @@ public class TaskPlanExecutor {
                 .collectList();
         Mono<TaskExecutionResult> execution = dependencyResults
                 .flatMap(results -> executeTask(task, results, taskRunner))
-                .onErrorResume(exception -> {
-                    // 单个子任务异常只记录安全元数据，其余无依赖任务继续执行。
-                    LOGGER.warn(
-                            "Agent子任务执行失败，taskId={}, sequence={}, intent={}, exception={}",
-                            task.taskId(),
-                            task.sequence(),
-                            task.intent(),
-                            exception.getClass().getSimpleName());
-                    return Mono.just(TaskExecutionResult.failed(
-                            task.taskId(),
-                            task.sequence(),
-                            task.intent(),
-                            task.standaloneQuestion()));
-                });
+                .onErrorResume(exception -> recoverTaskFailure(task, exception));
         // 每个缓存任务只记录一次终态和耗时，依赖订阅与最终汇总不会重复增加指标。
         execution = chatMetrics.observeTask(execution, task.intent()).cache();
         executions.put(task.taskId(), execution);
         return execution;
+    }
+
+    /**
+     * 将单个任务异常转换为稳定失败结果，使其他无依赖任务可以继续执行。
+     *
+     * @param task 当前任务
+     * @param exception 原始执行异常
+     * @return 当前任务的失败终态
+     */
+    private Mono<TaskExecutionResult> recoverTaskFailure(
+            PlannedTask task,
+            Throwable exception) {
+        // 日志只记录稳定任务元数据和异常类型，不输出用户问题或工具响应正文。
+        LOGGER.warn(
+                "Agent子任务执行失败，taskId={}, sequence={}, intent={}, exception={}",
+                task.taskId(),
+                task.sequence(),
+                task.intent(),
+                exception.getClass().getSimpleName());
+        TaskExecutionResult failed = TaskExecutionResult.failed(
+                task.taskId(),
+                task.sequence(),
+                task.intent(),
+                task.standaloneQuestion());
+        return Mono.just(failed);
     }
 
     /**
@@ -208,20 +221,31 @@ public class TaskPlanExecutor {
             return execution;
         }
         // 只读任务超过独立时限后释放当前计划的等待关系，其他无依赖任务仍可正常完成。
-        return execution
+        Mono<TaskExecutionResult> timedExecution = execution
                 .timeout(properties.readTaskTimeout())
-                .onErrorResume(TimeoutException.class, exception -> {
-                    LOGGER.warn(
-                            "Agent只读子任务执行超时，taskId={}, sequence={}, intent={}",
-                            task.taskId(),
-                            task.sequence(),
-                            task.intent());
-                    return Mono.just(TaskExecutionResult.timedOut(
-                            task.taskId(),
-                            task.sequence(),
-                            task.intent(),
-                            task.standaloneQuestion()));
-                });
+                .onErrorResume(TimeoutException.class, exception -> recoverTaskTimeout(task));
+        return timedExecution;
+    }
+
+    /**
+     * 将只读任务超时转换为稳定超时结果。
+     *
+     * @param task 当前只读任务
+     * @return 当前任务的超时终态
+     */
+    private Mono<TaskExecutionResult> recoverTaskTimeout(PlannedTask task) {
+        // 超时仅终止当前只读任务，不阻断其他无依赖任务。
+        LOGGER.warn(
+                "Agent只读子任务执行超时，taskId={}, sequence={}, intent={}",
+                task.taskId(),
+                task.sequence(),
+                task.intent());
+        TaskExecutionResult timedOut = TaskExecutionResult.timedOut(
+                task.taskId(),
+                task.sequence(),
+                task.intent(),
+                task.standaloneQuestion());
+        return Mono.just(timedOut);
     }
 
     /**

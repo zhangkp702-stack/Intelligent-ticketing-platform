@@ -1,5 +1,6 @@
 package org.opengoofy.index12306.ai.agentservice.chat.model;
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ActionConfirmationView;
+import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.ConversationStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
@@ -240,7 +241,7 @@ public final class AgentChatModels {
          * @return 元数据事件
          */
         public static ChatEvent meta(
-                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                AgentRequestContext context,
                 boolean reused) {
             return new ChatEvent(
                     EventType.META, context.requestId(), context.conversationId(), context.turnId(),
@@ -255,7 +256,7 @@ public final class AgentChatModels {
          * @return 增量事件
          */
         public static ChatEvent delta(
-                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                AgentRequestContext context,
                 String delta) {
             return new ChatEvent(
                     EventType.DELTA, context.requestId(), context.conversationId(), context.turnId(),
@@ -270,7 +271,7 @@ public final class AgentChatModels {
          * @return 操作确认事件
          */
         public static ChatEvent actionRequired(
-                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                AgentRequestContext context,
                 ActionConfirmationView action) {
             // 确认令牌只通过服务端结构化事件返回，不写入模型回答正文。
             return new ChatEvent(
@@ -286,7 +287,7 @@ public final class AgentChatModels {
          * @return 工作流选择事件
          */
         public static ChatEvent workflowRequired(
-                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                AgentRequestContext context,
                 WorkflowInteractionView workflow) {
             // 候选项只包含当前账号的安全数据，用户选择通过独立接口写回数据库状态机。
             return new ChatEvent(
@@ -306,7 +307,7 @@ public final class AgentChatModels {
          * @return 完成事件
          */
         public static ChatEvent done(
-                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                AgentRequestContext context,
                 String content,
                 boolean reused) {
             // 幂等重放没有本次流水线的分阶段数据，因此沿用无性能快照的完成事件。
@@ -323,7 +324,7 @@ public final class AgentChatModels {
          * @return 携带性能快照的完成事件
          */
         public static ChatEvent done(
-                org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext context,
+                AgentRequestContext context,
                 String content,
                 boolean reused,
                 ChatPerformance performance) {

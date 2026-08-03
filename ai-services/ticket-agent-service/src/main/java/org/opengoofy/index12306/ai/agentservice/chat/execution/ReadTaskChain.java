@@ -63,8 +63,10 @@ public class ReadTaskChain {
             PlannedTask task,
             List<TaskExecutionResult> dependencyResults) {
         // MCP 同步回调可能阻塞网络线程，统一切换到 boundedElastic 后再执行。
-        return Mono.fromCallable(() -> executeBlocking(context, task, dependencyResults))
+        Mono<TaskExecutionResult> execution =
+                Mono.fromCallable(() -> executeBlocking(context, task, dependencyResults))
                 .subscribeOn(Schedulers.boundedElastic());
+        return execution;
     }
 
     /**

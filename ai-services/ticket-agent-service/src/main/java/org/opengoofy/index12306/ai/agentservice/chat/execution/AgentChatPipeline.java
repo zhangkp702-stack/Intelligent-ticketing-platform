@@ -246,105 +246,191 @@ public class AgentChatPipeline {
      */
     public Flux<ChatEvent> execute(ChatCommand command) {
         RequestPerformanceTrace performanceTrace = new RequestPerformanceTrace();
-        // 第一阶段先持久化或复用幂等轮次，确保后续模型和工具调用都有稳定审计边界。
+        // 先创建或复用持久化轮次，保证后续模型和工具调用拥有稳定审计边界。
         ConversationMemoryService.StartedTurn started = startTurn(command);
         AgentRequestContext context = createRequestContext(command, started);
         String currentQuestion = command.message().trim();
 
-        // 已存在的请求只重放终态，避免重复调用模型和工具。
         if (!started.created()) {
+            // 已存在的请求只重放终态，避免重复调用模型和工具。
             return reuseExistingTurn(context);
         }
 
         AtomicBoolean terminal = new AtomicBoolean();
         try {
-            // 当前问题保持独立，只加载此前已经完成的完整历史轮次。
-            long contextStartedNanos = System.nanoTime();
-            ConversationHistoryContext conversationHistory;
-            try {
-                conversationHistory = loadConversationHistory(context, started, currentQuestion);
-                performanceTrace.contextDurationMs = RequestPerformanceTrace.elapsedMillis(contextStartedNanos);
-                chatMetrics.recordContextLoad(contextStartedNanos, "SUCCESS");
-            } catch (RuntimeException exception) {
-                // 上下文加载失败需要单独计时，便于与后续模型耗时区分。
-                chatMetrics.recordContextLoad(contextStartedNanos, "ERROR");
-                throw exception;
-            }
-
-            // 先读取服务端工作流阶段，帮助任务规划模型理解“继续”“这个”等省略表达。
-            WorkflowPlanningContext workflowContext = purchaseWorkflowService
-                    .activeWorkflowContext(context.userId(), context.conversationId())
-                    .or(() -> cancellationWorkflowService.activeWorkflowContext(
-                            context.userId(), context.conversationId()))
-                    .or(() -> refundWorkflowService.activeWorkflowContext(
-                            context.userId(), context.conversationId()))
-                    .orElse(null);
-
-            // 一次结构化模型调用完成上下文补全、任务拆分、意图识别和槽位提取。
-            long routingStartedNanos = System.nanoTime();
-            ModelAttemptContext routingAttemptContext = new ModelAttemptContext(
-                    context.requestId(), context.conversationId(), context.turnId());
-        TaskPlan taskPlan = taskPlanner.plan(
-                    conversationHistory,
-                    workflowContext,
-                    routingAttemptContext);
-            long planningDurationMs = RequestPerformanceTrace.elapsedMillis(routingStartedNanos);
-            boolean rewritten = taskPlan.tasks().stream()
-                    .anyMatch(task -> !task.originalClause().equals(task.standaloneQuestion()));
-            performanceTrace.rewriteDurationMs = planningDurationMs;
-            performanceTrace.rewriteModelInvoked = true;
-            performanceTrace.rewritten = rewritten;
-            performanceTrace.routingDurationMs = planningDurationMs;
-            // 路由指标描述服务端实际执行方式，避免继续使用“模型工具调用”这一旧架构命名。
-            performanceTrace.route = taskPlan.tasks().size() > 1
-                    ? "MULTI_TASK_DIRECT_CHAIN"
-                : intentExecutionRouter
-                            .route(taskPlan.tasks().get(0).intent())
-                            .route()
-                            .name();
-            performanceTrace.matchedGroups = taskPlan.tasks().stream()
-                .flatMap(task -> intentExecutionRouter.route(task.intent()).matchedGroups().stream())
-                    .map(Enum::name)
-                    .distinct()
-                    .sorted()
-                    .toList();
-            performanceTrace.toolAvailability = "DIRECT_CHAIN";
-            performanceTrace.enabledTools = List.of();
-            performanceTrace.missingTools = List.of();
-            chatMetrics.recordRewrite(routingStartedNanos, true, rewritten);
-            chatMetrics.recordRouting(
-                    routingStartedNanos,
-                    performanceTrace.route,
-                    performanceTrace.toolAvailability,
-                    Set.copyOf(performanceTrace.matchedGroups));
-            LOGGER.info(
-                    "Agent任务规划完成，requestId={}, conversationId={}, turnId={}, taskCount={}, route={}, "
-                            + "groups={}, durationMs={}",
-                    context.requestId(),
-                    context.conversationId(),
-                    context.turnId(),
-                    taskPlan.tasks().size(),
-                    performanceTrace.route,
-                    performanceTrace.matchedGroups,
-                    planningDurationMs);
-
-            // 查询任务按依赖图并行执行，唯一交易任务在全部只读任务结束后进入固定代码链。
-        Flux<ChatEvent> processingEvents = taskPlanExecutor
-                    .execute(taskPlan, (task, dependencies) ->
-                            executePlannedTask(context, task, dependencies))
-                    .flatMapMany(summary -> createAnswerEvents(
-                            context,
-                            currentQuestion,
-                            summary,
-                            terminal,
-                            performanceTrace));
-            return Flux.concat(Flux.just(ChatEvent.meta(context, false)), processingEvents)
-                    .doOnError(exception -> failTurn(context, terminal, exception))
-                    .doOnCancel(() -> cancelTurn(context, terminal));
+            // 当前问题独立于历史轮次加载，避免把未完成输入带入模型上下文。
+            ConversationHistoryContext conversationHistory = loadObservedConversationHistory(
+                    context, started, currentQuestion, performanceTrace);
+            // 服务端工作流状态只用于补全可信的“继续”“这个”等省略表达。
+            WorkflowPlanningContext workflowContext = loadActiveWorkflowContext(context);
+            // 规划模型只产生受校验的任务计划，不直接调用任何交易工具。
+            TaskPlan taskPlan = planTasks(
+                    context, conversationHistory, workflowContext, performanceTrace);
+            // 按计划进入固定业务链，并在流内完成回答持久化和终态收口。
+            return executeTaskPlan(
+                    context, currentQuestion, taskPlan, terminal, performanceTrace);
         } catch (RuntimeException exception) {
-            failTurn(context, terminal, exception);
-            return Flux.error(exception);
+            // 同步阶段异常也要立即收口轮次，不能遗留运行中状态。
+            return failExecution(context, terminal, exception);
         }
+    }
+
+    /**
+     * 加载当前会话上下文并记录加载阶段耗时和结果。
+     *
+     * @param context 当前请求上下文
+     * @param started 当前持久化轮次
+     * @param currentQuestion 当前用户问题
+     * @param performanceTrace 本轮性能数据容器
+     * @return 可供任务规划使用的会话历史
+     */
+    private ConversationHistoryContext loadObservedConversationHistory(
+            AgentRequestContext context,
+            ConversationMemoryService.StartedTurn started,
+            String currentQuestion,
+            RequestPerformanceTrace performanceTrace) {
+        long contextStartedNanos = System.nanoTime();
+        try {
+            // 当前问题保持独立，只加载此前已经完成的完整历史轮次。
+            ConversationHistoryContext conversationHistory =
+                    loadConversationHistory(context, started, currentQuestion);
+            performanceTrace.contextDurationMs =
+                    RequestPerformanceTrace.elapsedMillis(contextStartedNanos);
+            chatMetrics.recordContextLoad(contextStartedNanos, "SUCCESS");
+            return conversationHistory;
+        } catch (RuntimeException exception) {
+            // 上下文加载失败需要单独计时，便于与后续模型耗时区分。
+            chatMetrics.recordContextLoad(contextStartedNanos, "ERROR");
+            throw exception;
+        }
+    }
+
+    /**
+     * 读取当前会话待完成的交易工作流，供任务规划理解省略表达。
+     *
+     * @param context 当前请求上下文
+     * @return 服务端筛选后的活动工作流；没有时为 {@code null}
+     */
+    private WorkflowPlanningContext loadActiveWorkflowContext(AgentRequestContext context) {
+        // 工作流优先级与交易固定链一致，规划模型只能读取服务端筛选后的可信状态。
+        return purchaseWorkflowService
+                .activeWorkflowContext(context.userId(), context.conversationId())
+                .or(() -> cancellationWorkflowService.activeWorkflowContext(
+                        context.userId(), context.conversationId()))
+                .or(() -> refundWorkflowService.activeWorkflowContext(
+                        context.userId(), context.conversationId()))
+                .orElse(null);
+    }
+
+    /**
+     * 调用任务规划模型，并记录改写、路由和模型选择指标。
+     *
+     * @param context 当前请求上下文
+     * @param conversationHistory 当前会话历史
+     * @param workflowContext 当前活动工作流
+     * @param performanceTrace 本轮性能数据容器
+     * @return 已通过服务端校验的任务计划
+     */
+    private TaskPlan planTasks(
+            AgentRequestContext context,
+            ConversationHistoryContext conversationHistory,
+            WorkflowPlanningContext workflowContext,
+            RequestPerformanceTrace performanceTrace) {
+        long routingStartedNanos = System.nanoTime();
+        ModelAttemptContext routingAttemptContext = new ModelAttemptContext(
+                context.requestId(), context.conversationId(), context.turnId());
+
+        // 一次结构化模型调用完成上下文补全、任务拆分、意图识别和槽位提取。
+        TaskPlan taskPlan = taskPlanner.plan(
+                conversationHistory,
+                workflowContext,
+                routingAttemptContext);
+        long planningDurationMs = RequestPerformanceTrace.elapsedMillis(routingStartedNanos);
+        boolean rewritten = taskPlan.tasks().stream()
+                .anyMatch(task -> !task.originalClause().equals(task.standaloneQuestion()));
+        performanceTrace.rewriteDurationMs = planningDurationMs;
+        performanceTrace.rewriteModelInvoked = true;
+        performanceTrace.rewritten = rewritten;
+        performanceTrace.routingDurationMs = planningDurationMs;
+        performanceTrace.route = taskPlan.tasks().size() > 1
+                ? "MULTI_TASK_DIRECT_CHAIN"
+                : intentExecutionRouter.route(taskPlan.tasks().get(0).intent()).route().name();
+        performanceTrace.matchedGroups = taskPlan.tasks().stream()
+                .flatMap(task -> intentExecutionRouter.route(task.intent()).matchedGroups().stream())
+                .map(Enum::name)
+                .distinct()
+                .sorted()
+                .toList();
+        performanceTrace.toolAvailability = "DIRECT_CHAIN";
+        performanceTrace.enabledTools = List.of();
+        performanceTrace.missingTools = List.of();
+        chatMetrics.recordRewrite(routingStartedNanos, true, rewritten);
+        chatMetrics.recordRouting(
+                routingStartedNanos,
+                performanceTrace.route,
+                performanceTrace.toolAvailability,
+                Set.copyOf(performanceTrace.matchedGroups));
+        LOGGER.info(
+                "Agent任务规划完成，requestId={}, conversationId={}, turnId={}, taskCount={}, route={}, "
+                        + "groups={}, durationMs={}",
+                context.requestId(),
+                context.conversationId(),
+                context.turnId(),
+                taskPlan.tasks().size(),
+                performanceTrace.route,
+                performanceTrace.matchedGroups,
+                planningDurationMs);
+        return taskPlan;
+    }
+
+    /**
+     * 按任务依赖执行固定业务链，并串接最终回答和轮次终态收口。
+     *
+     * @param context 当前请求上下文
+     * @param currentQuestion 当前用户问题
+     * @param taskPlan 已校验的任务计划
+     * @param terminal 是否已经持久化终态
+     * @param performanceTrace 本轮性能数据容器
+     * @return 元数据、正文增量和完成事件流
+     */
+    private Flux<ChatEvent> executeTaskPlan(
+            AgentRequestContext context,
+            String currentQuestion,
+            TaskPlan taskPlan,
+            AtomicBoolean terminal,
+            RequestPerformanceTrace performanceTrace) {
+        // 查询任务按依赖图并行执行，唯一交易任务在全部只读任务结束后进入固定代码链。
+        Flux<ChatEvent> processingEvents = taskPlanExecutor
+                .execute(taskPlan, (task, dependencies) ->
+                        executePlannedTask(context, task, dependencies))
+                .flatMapMany(summary -> createAnswerEvents(
+                        context,
+                        currentQuestion,
+                        summary,
+                        terminal,
+                        performanceTrace));
+        Flux<ChatEvent> responseEvents =
+                Flux.concat(Flux.just(ChatEvent.meta(context, false)), processingEvents)
+                        .doOnError(exception -> failTurn(context, terminal, exception))
+                        .doOnCancel(() -> cancelTurn(context, terminal));
+        return responseEvents;
+    }
+
+    /**
+     * 记录新轮次启动阶段异常，并将异常保留为响应式错误信号。
+     *
+     * @param context 当前请求上下文
+     * @param terminal 是否已经持久化终态
+     * @param exception 原始异常
+     * @return 终止的对话事件流
+     */
+    private Flux<ChatEvent> failExecution(
+            AgentRequestContext context,
+            AtomicBoolean terminal,
+            RuntimeException exception) {
+        // 同步阶段失败也必须把数据库轮次收口，避免遗留运行中状态。
+        failTurn(context, terminal, exception);
+        return Flux.error(exception);
     }
 
     /**
@@ -465,9 +551,10 @@ public class AgentChatPipeline {
                     null));
         }
         // 交易链可能同步调用多个 MCP 服务，必须离开 WebFlux 事件线程执行。
-        return Mono.fromCallable(() -> executeTransactionTask(
+        Mono<TaskExecutionResult> transactionExecution = Mono.fromCallable(() -> executeTransactionTask(
                         context, task, resolution.slots(), resolution.selectionSummary()))
                 .subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+        return transactionExecution;
     }
 
     /**
@@ -592,28 +679,80 @@ public class AgentChatPipeline {
                 attemptContext,
                 false,
                 performanceTrace::recordModelRound);
-        return Flux.defer(() -> {
-            long modelStartedNanos = System.nanoTime();
-            Flux<ChatEvent> generated = chatMetrics.observeModel(modelResponses, false)
-                    .map(this::extractText)
-                    .filter(StringUtils::hasText)
-                    .map(delta -> {
-                        answer.append(delta);
-                        return ChatEvent.delta(context, delta);
-                    });
-            // 交易正文不交给模型改写，服务端始终在流尾追加权威原文。
-            Flux<ChatEvent> authoritativeSuffix = Flux.defer(() -> {
-                String suffix = transactionSuffix(summary);
-                if (!StringUtils.hasText(suffix)) {
-                    return Flux.empty();
-                }
-                answer.append(suffix);
-                return Flux.just(ChatEvent.delta(context, suffix));
-            });
-            return generated.concatWith(authoritativeSuffix)
-                    .doOnComplete(() -> performanceTrace.modelDurationMs =
-                            RequestPerformanceTrace.elapsedMillis(modelStartedNanos));
-        });
+        Flux<ChatEvent> summaryStream = Flux.defer(() -> createSummaryResponseStream(
+                context, summary, answer, performanceTrace, modelResponses));
+        return summaryStream;
+    }
+
+    /**
+     * 为一次最终回答订阅创建正文增量、权威交易后缀和耗时回调。
+     *
+     * @param context 当前请求上下文
+     * @param summary 全部任务结果
+     * @param answer 最终正文累计容器
+     * @param performanceTrace 本轮性能数据容器
+     * @param modelResponses 原始模型响应流
+     * @return 最终回答增量事件流
+     */
+    private Flux<ChatEvent> createSummaryResponseStream(
+            AgentRequestContext context,
+            TaskExecutionSummary summary,
+            StringBuilder answer,
+            RequestPerformanceTrace performanceTrace,
+            Flux<ChatResponse> modelResponses) {
+        long modelStartedNanos = System.nanoTime();
+        Flux<ChatEvent> generated = chatMetrics.observeModel(modelResponses, false)
+                .map(this::extractText)
+                .filter(StringUtils::hasText)
+                .map(delta -> appendAnswerDelta(context, answer, delta));
+
+        // 交易正文不交给模型改写，服务端始终在流尾追加权威原文。
+        Flux<ChatEvent> authoritativeSuffix =
+                Flux.defer(() -> createAuthoritativeSuffix(context, summary, answer));
+        Flux<ChatEvent> responseStream = generated
+                .concatWith(authoritativeSuffix)
+                .doOnComplete(() -> performanceTrace.modelDurationMs =
+                        RequestPerformanceTrace.elapsedMillis(modelStartedNanos));
+        return responseStream;
+    }
+
+    /**
+     * 累计一个模型正文增量并转换为对外事件。
+     *
+     * @param context 当前请求上下文
+     * @param answer 最终正文累计容器
+     * @param delta 当前模型正文增量
+     * @return 对外发送的正文增量事件
+     */
+    private ChatEvent appendAnswerDelta(
+            AgentRequestContext context,
+            StringBuilder answer,
+            String delta) {
+        // 持久化前必须保持与实际发送给客户端的正文顺序一致。
+        answer.append(delta);
+        return ChatEvent.delta(context, delta);
+    }
+
+    /**
+     * 创建由服务端固定追加的交易权威正文事件。
+     *
+     * @param context 当前请求上下文
+     * @param summary 全部任务结果
+     * @param answer 最终正文累计容器
+     * @return 权威正文事件；没有交易正文时为空流
+     */
+    private Flux<ChatEvent> createAuthoritativeSuffix(
+            AgentRequestContext context,
+            TaskExecutionSummary summary,
+            StringBuilder answer) {
+        String suffix = transactionSuffix(summary);
+        if (!StringUtils.hasText(suffix)) {
+            return Flux.empty();
+        }
+
+        // 权威正文同时进入客户端事件和最终持久化内容。
+        answer.append(suffix);
+        return Flux.just(ChatEvent.delta(context, suffix));
     }
 
     /**
@@ -632,16 +771,31 @@ public class AgentChatPipeline {
             TaskExecutionSummary summary,
             AtomicBoolean terminal,
             RequestPerformanceTrace performanceTrace) {
-        return completeTurn(context, terminal, performanceTrace, () -> {
-            String content = answer.toString();
-            if (!StringUtils.hasText(content)) {
-                throw new AgentChatException(
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "EMPTY_MODEL_RESPONSE",
-                        "模型未返回有效回答，请稍后重试");
-            }
-            return new CompletedAnswer(content, summary.action(), summary.workflow());
-        });
+        Supplier<CompletedAnswer> completedAnswerSupplier =
+                () -> resolveCompletedAnswer(answer, summary);
+        Flux<ChatEvent> completionEvents =
+                completeTurn(context, terminal, performanceTrace, completedAnswerSupplier);
+        return completionEvents;
+    }
+
+    /**
+     * 校验并组装最终正文及其结构化交互状态。
+     *
+     * @param answer 已累计最终正文
+     * @param summary 全部任务结果
+     * @return 可进入持久化阶段的完整回答
+     */
+    private CompletedAnswer resolveCompletedAnswer(
+            StringBuilder answer,
+            TaskExecutionSummary summary) {
+        String content = answer.toString();
+        if (!StringUtils.hasText(content)) {
+            throw new AgentChatException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "EMPTY_MODEL_RESPONSE",
+                    "模型未返回有效回答，请稍后重试");
+        }
+        return new CompletedAnswer(content, summary.action(), summary.workflow());
     }
 
     /**
@@ -659,38 +813,70 @@ public class AgentChatPipeline {
             RequestPerformanceTrace performanceTrace,
             Supplier<CompletedAnswer> completedAnswerSupplier) {
         // 完成阶段在订阅时执行，确保它严格发生在正文增量之后。
-        return Mono.fromCallable(() -> {
-            long completionStartedNanos = System.nanoTime();
-            try {
-                CompletedAnswer completed = completedAnswerSupplier.get();
-                // 最终正文先持久化，再标记终态并返回前端事件。
-                conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
-                        context.userId(),
-                        context.turnId(),
-                        completed.content(),
-                        estimateTokens(completed.content())));
-                terminal.set(true);
-                performanceTrace.completionDurationMs =
-                        RequestPerformanceTrace.elapsedMillis(completionStartedNanos);
-                chatMetrics.recordCompletion(completionStartedNanos, "SUCCESS");
-                return completed;
-            } catch (RuntimeException exception) {
-                // 完成阶段失败单独标记，避免被误判为模型生成异常。
-                chatMetrics.recordCompletion(completionStartedNanos, "ERROR");
-                throw exception;
-            }
-        }).flatMapMany(completed -> {
-            List<ChatEvent> events = new ArrayList<>();
-            if (completed.workflow() != null) {
-                events.add(ChatEvent.workflowRequired(context, completed.workflow()));
-            }
-            if (completed.action() != null) {
-                events.add(ChatEvent.actionRequired(context, completed.action()));
-            }
-            events.add(ChatEvent.done(
-                    context, completed.content(), false, performanceTrace.snapshot()));
-            return Flux.fromIterable(events);
-        });
+        Mono<CompletedAnswer> completion = Mono.fromCallable(() -> persistCompletedAnswer(
+                context, terminal, performanceTrace, completedAnswerSupplier));
+        Flux<ChatEvent> completionEvents = completion.flatMapMany(
+                completed -> createCompletionEvents(context, completed, performanceTrace));
+        return completionEvents;
+    }
+
+    /**
+     * 持久化最终回答并记录完成阶段结果。
+     *
+     * @param context 当前请求上下文
+     * @param terminal 是否已经持久化终态
+     * @param performanceTrace 本轮性能数据容器
+     * @param completedAnswerSupplier 最终回答提供器
+     * @return 已持久化的完整回答
+     */
+    private CompletedAnswer persistCompletedAnswer(
+            AgentRequestContext context,
+            AtomicBoolean terminal,
+            RequestPerformanceTrace performanceTrace,
+            Supplier<CompletedAnswer> completedAnswerSupplier) {
+        long completionStartedNanos = System.nanoTime();
+        try {
+            CompletedAnswer completed = completedAnswerSupplier.get();
+            // 最终正文先持久化，再标记终态并返回前端事件。
+            conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
+                    context.userId(),
+                    context.turnId(),
+                    completed.content(),
+                    estimateTokens(completed.content())));
+            terminal.set(true);
+            performanceTrace.completionDurationMs =
+                    RequestPerformanceTrace.elapsedMillis(completionStartedNanos);
+            chatMetrics.recordCompletion(completionStartedNanos, "SUCCESS");
+            return completed;
+        } catch (RuntimeException exception) {
+            // 完成阶段失败单独标记，避免被误判为模型生成异常。
+            chatMetrics.recordCompletion(completionStartedNanos, "ERROR");
+            throw exception;
+        }
+    }
+
+    /**
+     * 将已持久化回答转换为工作流、确认操作和完成事件。
+     *
+     * @param context 当前请求上下文
+     * @param completed 已持久化的完整回答
+     * @param performanceTrace 本轮性能数据容器
+     * @return 按协议顺序排列的尾部事件流
+     */
+    private Flux<ChatEvent> createCompletionEvents(
+            AgentRequestContext context,
+            CompletedAnswer completed,
+            RequestPerformanceTrace performanceTrace) {
+        List<ChatEvent> events = new ArrayList<>();
+        if (completed.workflow() != null) {
+            events.add(ChatEvent.workflowRequired(context, completed.workflow()));
+        }
+        if (completed.action() != null) {
+            events.add(ChatEvent.actionRequired(context, completed.action()));
+        }
+        events.add(ChatEvent.done(
+                context, completed.content(), false, performanceTrace.snapshot()));
+        return Flux.fromIterable(events);
     }
 
     /**
