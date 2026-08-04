@@ -24,6 +24,7 @@
         <module>idempotent</module>
         <module>log</module>
         <module>ratelimiter</module>
+        <module>reliable-command</module>
         <module>web</module>
     </modules>
 </project>

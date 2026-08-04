@@ -27,8 +27,12 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * 幂等注解
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 基于 Redis 的瞬时重复拦截注解。
+ *
+ * <p>该注解只用于降低短时间内的重复提交或重复投递，不保存业务结果，也不能覆盖
+ * "真实副作用已成功但进程在响应前退出" 的故障窗口。需要服务端命令标识、结果重放、
+ * 租约围栏和 UNKNOWN 对账的远程写操作，应使用 reliable-command 的
+ * {@code @ReliableCommandExecution}，并由业务模块提供后续对账。</p>
  */
 @Target({ElementType.TYPE, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
@@ -36,17 +40,18 @@ import java.lang.annotation.Target;
 public @interface Idempotent {
 
     /**
-     * 幂等Key，只有在 {@link Idempotent#type()} 为 {@link IdempotentTypeEnum#SPEL} 时生效
+     * 幂等 Key，只有在 {@link Idempotent#type()} 为 {@link IdempotentTypeEnum#SPEL} 时生效。
+     * 此 Key 仅作为 Redis 锁或缓存标识，不能作为跨服务业务操作的权威身份。
      */
     String key() default "";
 
     /**
-     * 触发幂等失败逻辑时，返回的错误提示信息
+     * 触发瞬时重复拦截时返回的错误提示信息。
      */
     String message() default "您操作太快，请稍后再试";
 
     /**
-     * 验证幂等类型，支持多种幂等方式
+     * 验证瞬时重复拦截类型，支持多种 Redis 实现。
      * RestAPI 建议使用 {@link IdempotentTypeEnum#TOKEN} 或 {@link IdempotentTypeEnum#PARAM}
      * 其它类型幂等验证，使用 {@link IdempotentTypeEnum#SPEL}
      */
