@@ -20,11 +20,17 @@ package org.opengoofy.index12306.biz.ticketservice.service;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.biz.ticketservice.dao.entity.BusinessOperationDO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.BusinessOperationStatusRespDTO;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandMode;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandService;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
+
+import java.time.Instant;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -36,7 +42,7 @@ import static org.mockito.Mockito.when;
  */
 class BusinessOperationCoordinatorStatusTests {
 
-    private BusinessOperationTransactionService transactionService;
+    private ReliableCommandService reliableCommandService;
     private BusinessOperationCoordinator coordinator;
 
     /**
@@ -45,9 +51,8 @@ class BusinessOperationCoordinatorStatusTests {
     @BeforeEach
     void setUp() {
         // 状态查询只依赖操作事实表，使用 Mock 排除真实数据库影响。
-        transactionService = mock(BusinessOperationTransactionService.class);
-        coordinator = new BusinessOperationCoordinator(
-                transactionService, mock(BusinessOperationLeaseService.class));
+        reliableCommandService = mock(ReliableCommandService.class);
+        coordinator = new BusinessOperationCoordinator(reliableCommandService);
         UserContext.setUser(UserInfoDTO.builder().userId("user-1").username("alice").build());
     }
 
@@ -65,9 +70,10 @@ class BusinessOperationCoordinatorStatusTests {
      */
     @Test
     void returnsSafeSucceededCancellationStatus() {
-        BusinessOperationDO operation = operation("user-1", "CANCEL_TICKET_ORDER", 1);
-        operation.setResultJson("true");
-        when(transactionService.findById("action-1")).thenReturn(operation);
+        ReliableCommandRecord operation = operation(
+                "user-1", "CANCEL_TICKET_ORDER", ReliableCommandStatus.SUCCEEDED, "true");
+        when(reliableCommandService.find(BusinessOperationCoordinator.commandKey("action-1")))
+                .thenReturn(Optional.of(operation));
 
         // 对账响应不暴露原始业务返回或用户敏感信息。
         BusinessOperationStatusRespDTO result = coordinator.getStatus("action-1");
@@ -82,8 +88,9 @@ class BusinessOperationCoordinatorStatusTests {
      */
     @Test
     void rejectsOperationOwnedByAnotherUser() {
-        when(transactionService.findById("action-1"))
-                .thenReturn(operation("user-2", "PURCHASE_TICKET", 0));
+        when(reliableCommandService.find(BusinessOperationCoordinator.commandKey("action-1")))
+                .thenReturn(Optional.of(operation(
+                        "user-2", "PURCHASE_TICKET", ReliableCommandStatus.PROCESSING, null)));
 
         // 不区分不存在和无权访问，避免 actionId 枚举泄露。
         assertThatThrownBy(() -> coordinator.getStatus("action-1"))
@@ -96,16 +103,36 @@ class BusinessOperationCoordinatorStatusTests {
      *
      * @param userId 所属用户
      * @param operationType 操作类型
-     * @param status 状态码
+     * @param status 可靠命令状态
+     * @param resultPayload 可重放结果
      * @return 业务操作实体
      */
-    private BusinessOperationDO operation(String userId, String operationType, int status) {
-        // 固定 actionId 便于聚焦状态与归属校验。
-        return BusinessOperationDO.builder()
-                .operationId("action-1")
-                .operationType(operationType)
-                .userId(userId)
-                .status(status)
-                .build();
+    private ReliableCommandRecord operation(
+            String userId,
+            String operationType,
+            ReliableCommandStatus status,
+            String resultPayload) {
+        // 固定 actionId 便于聚焦状态与归属校验，其余通用字段使用安全测试值。
+        return new ReliableCommandRecord(
+                BusinessOperationCoordinator.commandKey("action-1"),
+                operationType,
+                ReliableCommandMode.REMOTE_EFFECT,
+                userId,
+                "fingerprint-1",
+                "ticket-v1",
+                status,
+                resultPayload,
+                null,
+                null,
+                null,
+                null,
+                null,
+                1L,
+                null,
+                1,
+                null,
+                0,
+                Instant.EPOCH,
+                Instant.EPOCH);
     }
 }

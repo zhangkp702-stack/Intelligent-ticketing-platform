@@ -90,10 +90,11 @@ feign:
     enabled: true
 
 index12306:
+  reliable-command:
+    execution-lease-millis: 120000
+    heartbeat-interval-millis: 30000
   ticket:
     operation:
-      lease-duration-millis: 120000
-      heartbeat-interval-millis: 30000
       recovery-interval-millis: 5000
       reconcile-max-attempts: 5
       reconcile-retry-delay-millis: 30000

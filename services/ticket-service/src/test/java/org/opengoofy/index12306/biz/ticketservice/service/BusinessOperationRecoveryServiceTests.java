@@ -18,14 +18,21 @@
 package org.opengoofy.index12306.biz.ticketservice.service;
 
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.biz.ticketservice.dao.entity.BusinessOperationDO;
 import org.opengoofy.index12306.biz.ticketservice.remote.PayRemoteService;
 import org.opengoofy.index12306.biz.ticketservice.remote.TicketOrderRemoteService;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.impl.BusinessOperationRecoveryServiceImpl;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandLease;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandMode;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandService;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -43,19 +50,17 @@ class BusinessOperationRecoveryServiceTests {
      */
     @Test
     void recoversPurchaseFromAuthoritativeOrderCommand() {
-        BusinessOperationTransactionService transactionService = mock(BusinessOperationTransactionService.class);
+        ReliableCommandService reliableCommandService = mock(ReliableCommandService.class);
         BusinessOperationCoordinator coordinator = mock(BusinessOperationCoordinator.class);
         TicketOrderRemoteService orderRemoteService = mock(TicketOrderRemoteService.class);
         PayRemoteService payRemoteService = mock(PayRemoteService.class);
-        BusinessOperationDO operation = BusinessOperationDO.builder()
-                .operationId("action-1")
-                .operationType("PURCHASE_TICKET")
-                .userId("user-1")
-                .status(BusinessOperationTransactionService.STATUS_UNKNOWN)
-                .reconcileAttemptCount(1)
-                .build();
-        when(transactionService.findDueReconciliations(any())).thenReturn(List.of(operation));
-        when(transactionService.claimReconciliation(eq("action-1"), any(), any(), any())).thenReturn(operation);
+        ReliableCommandRecord candidate = operation(ReliableCommandStatus.UNKNOWN, false);
+        ReliableCommandRecord operation = operation(ReliableCommandStatus.RECONCILING, true);
+        when(reliableCommandService.findDueReconciliations(
+                BusinessOperationCoordinator.COMMAND_NAMESPACE, 100)).thenReturn(List.of(candidate));
+        when(reliableCommandService.claimReconciliation(
+                eq(candidate.key()), any(Duration.class))).thenReturn(Optional.of(operation));
+        when(reliableCommandService.reconcileSucceeded(any(), any(), any(), any())).thenReturn(true);
         OrderCommandStatusRespDTO commandStatus = new OrderCommandStatusRespDTO();
         commandStatus.setStatus("SUCCEEDED");
         commandStatus.setOrderSn("order-1");
@@ -64,18 +69,17 @@ class BusinessOperationRecoveryServiceTests {
                         .setCode(Result.SUCCESS_CODE)
                         .setData(commandStatus));
         BusinessOperationRecoveryService recoveryService = new BusinessOperationRecoveryServiceImpl(
-                transactionService, coordinator, orderRemoteService, payRemoteService,
+                reliableCommandService, coordinator, orderRemoteService, payRemoteService,
                 5, 30000, 120000);
 
         // 恢复器只调用命令查询，并把包含空白名单车票数组的安全结果写回。
         recoveryService.recoverDueOperations();
 
         verify(orderRemoteService).queryCommandStatus("action-1:create-order");
-        verify(transactionService).reconcileSucceeded(
-                eq("action-1"),
+        verify(reliableCommandService).reconcileSucceeded(
+                eq(operation),
                 eq("{\"orderSn\":\"order-1\",\"ticketOrderDetails\":[]}"),
                 eq("order-1"),
-                any(),
                 eq("ORDER_COMMAND:SUCCEEDED"));
     }
 
@@ -84,19 +88,16 @@ class BusinessOperationRecoveryServiceTests {
      */
     @Test
     void keepsUnknownWhenOrderCommandIsNotFound() {
-        BusinessOperationTransactionService transactionService = mock(BusinessOperationTransactionService.class);
+        ReliableCommandService reliableCommandService = mock(ReliableCommandService.class);
         BusinessOperationCoordinator coordinator = mock(BusinessOperationCoordinator.class);
         TicketOrderRemoteService orderRemoteService = mock(TicketOrderRemoteService.class);
         PayRemoteService payRemoteService = mock(PayRemoteService.class);
-        BusinessOperationDO operation = BusinessOperationDO.builder()
-                .operationId("action-1")
-                .operationType("PURCHASE_TICKET")
-                .userId("user-1")
-                .status(BusinessOperationTransactionService.STATUS_UNKNOWN)
-                .reconcileAttemptCount(1)
-                .build();
-        when(transactionService.findDueReconciliations(any())).thenReturn(List.of(operation));
-        when(transactionService.claimReconciliation(eq("action-1"), any(), any(), any())).thenReturn(operation);
+        ReliableCommandRecord candidate = operation(ReliableCommandStatus.UNKNOWN, false);
+        ReliableCommandRecord operation = operation(ReliableCommandStatus.RECONCILING, true);
+        when(reliableCommandService.findDueReconciliations(
+                BusinessOperationCoordinator.COMMAND_NAMESPACE, 100)).thenReturn(List.of(candidate));
+        when(reliableCommandService.claimReconciliation(
+                eq(candidate.key()), any(Duration.class))).thenReturn(Optional.of(operation));
         OrderCommandStatusRespDTO commandStatus = new OrderCommandStatusRespDTO();
         commandStatus.setStatus("NOT_FOUND");
         when(orderRemoteService.queryCommandStatus("action-1:create-order"))
@@ -104,13 +105,54 @@ class BusinessOperationRecoveryServiceTests {
                         .setCode(Result.SUCCESS_CODE)
                         .setData(commandStatus));
         BusinessOperationRecoveryService recoveryService = new BusinessOperationRecoveryServiceImpl(
-                transactionService, coordinator, orderRemoteService, payRemoteService,
+                reliableCommandService, coordinator, orderRemoteService, payRemoteService,
                 5, 30000, 120000);
 
         // NOT_FOUND 只是当前未发现成功事实，恢复器继续只读查询而不会创建新订单。
         recoveryService.recoverDueOperations();
 
-        verify(transactionService).reconciliationPending(
-                eq(operation), any(), eq("ORDER_COMMAND:NOT_FOUND"), any(), eq(5));
+        verify(reliableCommandService).finishReconciliation(
+                eq(operation),
+                eq(ReliableCommandStatus.UNKNOWN),
+                eq("RECONCILIATION_PENDING"),
+                eq("ORDER_COMMAND:NOT_FOUND"),
+                eq("ORDER_COMMAND:NOT_FOUND"),
+                any(Instant.class));
+    }
+
+    /**
+     * 构造购票恢复场景的可靠命令记录。
+     *
+     * @param status 当前状态
+     * @param leased 是否携带对账租约
+     * @return 测试命令记录
+     */
+    private ReliableCommandRecord operation(ReliableCommandStatus status, boolean leased) {
+        Instant now = Instant.EPOCH;
+        ReliableCommandLease lease = leased
+                ? new ReliableCommandLease("reconciler-1", now.plusSeconds(120), 2L)
+                : null;
+        // 对账次数为 1，保证未达到测试配置的自动对账上限。
+        return new ReliableCommandRecord(
+                BusinessOperationCoordinator.commandKey("action-1"),
+                "PURCHASE_TICKET",
+                ReliableCommandMode.REMOTE_EFFECT,
+                "user-1",
+                "fingerprint-1",
+                "ticket-v1",
+                status,
+                null,
+                null,
+                null,
+                null,
+                lease == null ? null : lease.owner(),
+                lease == null ? null : lease.until(),
+                lease == null ? 1L : lease.fencingToken(),
+                now,
+                1,
+                now,
+                1,
+                now,
+                now);
     }
 }

@@ -19,7 +19,6 @@ package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import com.alibaba.fastjson2.JSON;
 import lombok.extern.slf4j.Slf4j;
-import org.opengoofy.index12306.biz.ticketservice.dao.entity.BusinessOperationDO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.PayRemoteService;
@@ -29,17 +28,19 @@ import org.opengoofy.index12306.biz.ticketservice.remote.dto.RefundCommandStatus
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationCoordinator;
 import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationRecoveryService;
-import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationTransactionService;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandService;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.util.Date;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -53,21 +54,21 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
     private static final String CANCELLATION_OPERATION_TYPE = "CANCEL_TICKET_ORDER";
     private static final String REFUND_OPERATION_TYPE = "REFUND_TICKET";
     private static final int ORDER_STATUS_CLOSED = 30;
+    private static final int RECOVERY_BATCH_SIZE = 100;
 
-    private final BusinessOperationTransactionService transactionService;
+    private final ReliableCommandService reliableCommandService;
     private final BusinessOperationCoordinator operationCoordinator;
     private final TicketOrderRemoteService orderRemoteService;
     private final PayRemoteService payRemoteService;
     private final int maxAttempts;
     private final long retryDelayMillis;
     private final long reconciliationLeaseMillis;
-    private final String workerId = "ticket-recovery-" + UUID.randomUUID();
     private final AtomicBoolean scanning = new AtomicBoolean();
 
     /**
      * 创建跨服务业务操作恢复器。
      *
-     * @param transactionService 独立事务状态服务
+     * @param reliableCommandService 通用可靠命令服务
      * @param operationCoordinator 操作状态归属查询服务
      * @param orderRemoteService 订单权威查询客户端
      * @param payRemoteService 支付退款权威查询客户端
@@ -76,7 +77,7 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
      * @param reconciliationLeaseMillis 单次只读对账租约时长
      */
     public BusinessOperationRecoveryServiceImpl(
-            BusinessOperationTransactionService transactionService,
+            ReliableCommandService reliableCommandService,
             BusinessOperationCoordinator operationCoordinator,
             TicketOrderRemoteService orderRemoteService,
             PayRemoteService payRemoteService,
@@ -85,7 +86,7 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
             long retryDelayMillis,
             @Value("${index12306.ticket.operation.reconcile-lease-millis:120000}")
             long reconciliationLeaseMillis) {
-        this.transactionService = transactionService;
+        this.reliableCommandService = reliableCommandService;
         this.operationCoordinator = operationCoordinator;
         this.orderRemoteService = orderRemoteService;
         this.payRemoteService = payRemoteService;
@@ -116,12 +117,13 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
      */
     @Override
     public int recoverDueOperations() {
-        Date now = new Date();
         // 第一步只迁移状态，绝不在租约过期后重新调用购票、取消或退款接口。
-        transactionService.recoverExpiredProcessing(now, workerId);
+        reliableCommandService.recoverExpiredLeases(
+                BusinessOperationCoordinator.COMMAND_NAMESPACE, RECOVERY_BATCH_SIZE);
         int terminalCount = 0;
-        for (BusinessOperationDO candidate : transactionService.findDueReconciliations(now)) {
-            terminalCount += reconcile(candidate.getOperationId()) ? 1 : 0;
+        for (ReliableCommandRecord candidate : reliableCommandService.findDueReconciliations(
+                BusinessOperationCoordinator.COMMAND_NAMESPACE, RECOVERY_BATCH_SIZE)) {
+            terminalCount += reconcile(candidate) ? 1 : 0;
         }
         return terminalCount;
     }
@@ -136,21 +138,23 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
     public String reconcileNow(String operationId) {
         // 先复用公开状态查询完成用户归属校验，防止通过恢复接口探测他人操作。
         operationCoordinator.getStatus(operationId);
-        reconcile(operationId);
+        ReliableCommandRecord operation = reliableCommandService.find(
+                BusinessOperationCoordinator.commandKey(operationId)).orElse(null);
+        if (operation != null) {
+            reconcile(operation);
+        }
         return operationCoordinator.getStatus(operationId).getStatus();
     }
 
     /**
      * 唯一领取一条 UNKNOWN 记录并按操作类型查询下游事实。
      *
-     * @param operationId 业务操作标识
+     * @param candidate 待领取的 UNKNOWN 命令
      * @return 已收敛为成功终态返回 true
      */
-    private boolean reconcile(String operationId) {
-        Date now = new Date();
-        BusinessOperationDO operation = transactionService.claimReconciliation(
-                operationId, workerId, now,
-                new Date(now.getTime() + reconciliationLeaseMillis));
+    private boolean reconcile(ReliableCommandRecord candidate) {
+        ReliableCommandRecord operation = reliableCommandService.claimReconciliation(
+                candidate.key(), Duration.ofMillis(reconciliationLeaseMillis)).orElse(null);
         if (operation == null) {
             return false;
         }
@@ -158,13 +162,11 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
         UserInfoDTO previousUser = currentUser();
         try {
             // 后台线程恢复原用户身份，仅用于下游所有权校验和 Feign 头传递。
-            UserContext.setUser(UserInfoDTO.builder().userId(operation.getUserId()).build());
+            UserContext.setUser(UserInfoDTO.builder().userId(operation.ownerId()).build());
             RecoveryResult result = queryDownstream(operation);
             if (result.succeeded()) {
-                transactionService.reconcileSucceeded(
-                        operationId, result.resultJson(), result.businessReference(),
-                        workerId, result.evidence());
-                return true;
+                return reliableCommandService.reconcileSucceeded(
+                        operation, result.resultJson(), result.businessReference(), result.evidence());
             }
             scheduleNext(operation, result.evidence());
             return false;
@@ -172,7 +174,7 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
             // 查询失败不改变真实业务事实，返回 UNKNOWN 后按退避时间继续只读查询。
             scheduleNext(operation, "QUERY_ERROR:" + exception.getClass().getSimpleName());
             log.warn("业务操作只读对账失败，operationId={}, operationType={}",
-                    operationId, operation.getOperationType(), exception);
+                    operation.key().commandId(), operation.commandType(), exception);
             return false;
         } finally {
             // HTTP 手动触发场景需要恢复原线程身份；后台任务原本没有身份则直接清理。
@@ -209,8 +211,8 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
      * @param operation 已领取的对账记录
      * @return 不包含第三方交易凭证的恢复结果
      */
-    private RecoveryResult queryDownstream(BusinessOperationDO operation) {
-        return switch (operation.getOperationType()) {
+    private RecoveryResult queryDownstream(ReliableCommandRecord operation) {
+        return switch (operation.commandType()) {
             case PURCHASE_OPERATION_TYPE -> queryPurchase(operation);
             case CANCELLATION_OPERATION_TYPE -> queryCancellation(operation);
             case REFUND_OPERATION_TYPE -> queryRefund(operation);
@@ -224,8 +226,8 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
      * @param operation 购票操作记录
      * @return 购票恢复结果
      */
-    private RecoveryResult queryPurchase(BusinessOperationDO operation) {
-        String commandId = operation.getOperationId() + ":create-order";
+    private RecoveryResult queryPurchase(ReliableCommandRecord operation) {
+        String commandId = operation.key().commandId() + ":create-order";
         Result<OrderCommandStatusRespDTO> response = orderRemoteService.queryCommandStatus(commandId);
         OrderCommandStatusRespDTO status = successfulData(response);
         if (!"SUCCEEDED".equals(status.getStatus())) {
@@ -247,18 +249,18 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
      * @param operation 取消操作记录
      * @return 取消恢复结果
      */
-    private RecoveryResult queryCancellation(BusinessOperationDO operation) {
-        if (operation.getBusinessReference() == null) {
+    private RecoveryResult queryCancellation(ReliableCommandRecord operation) {
+        if (operation.businessReference() == null) {
             return RecoveryResult.pending("ORDER_REFERENCE_MISSING");
         }
         Result<TicketOrderDetailRespDTO> response = orderRemoteService
-                .querySelfTicketOrderByOrderSn(operation.getBusinessReference());
+                .querySelfTicketOrderByOrderSn(operation.businessReference());
         TicketOrderDetailRespDTO order = successfulData(response);
         if (!Integer.valueOf(ORDER_STATUS_CLOSED).equals(order.getStatus())) {
             return RecoveryResult.pending("ORDER_STATUS:" + order.getStatus());
         }
         return RecoveryResult.succeeded(
-                JSON.toJSONString(Boolean.TRUE), operation.getBusinessReference(), "ORDER_STATUS:CLOSED");
+                JSON.toJSONString(Boolean.TRUE), operation.businessReference(), "ORDER_STATUS:CLOSED");
     }
 
     /**
@@ -267,8 +269,8 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
      * @param operation 退票操作记录
      * @return 退票恢复结果
      */
-    private RecoveryResult queryRefund(BusinessOperationDO operation) {
-        String commandId = operation.getOperationId() + ":refund-payment";
+    private RecoveryResult queryRefund(ReliableCommandRecord operation) {
+        String commandId = operation.key().commandId() + ":refund-payment";
         Result<RefundCommandStatusRespDTO> response = payRemoteService.queryRefundCommandStatus(commandId);
         RefundCommandStatusRespDTO status = successfulData(response);
         if (!"SUCCEEDED".equals(status.getStatus())) {
@@ -277,7 +279,7 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
 
         // 只重建 Agent 对账需要的白名单字段，tradeNo 不进入票务恢复表和审计日志。
         RefundTicketRespDTO result = new RefundTicketRespDTO();
-        result.setRequestId(operation.getOperationId());
+        result.setRequestId(operation.key().commandId());
         result.setOrderSn(status.getOrderSn());
         result.setRefundAmount(status.getRefundAmount());
         result.setStatus(1);
@@ -305,10 +307,20 @@ public class BusinessOperationRecoveryServiceImpl implements BusinessOperationRe
      * @param operation 当前对账记录
      * @param evidence 安全证据摘要
      */
-    private void scheduleNext(BusinessOperationDO operation, String evidence) {
-        transactionService.reconciliationPending(
-                operation, workerId, evidence,
-                new Date(System.currentTimeMillis() + retryDelayMillis), maxAttempts);
+    private void scheduleNext(ReliableCommandRecord operation, String evidence) {
+        boolean exhausted = operation.reconcileAttemptCount() >= maxAttempts;
+        ReliableCommandStatus targetStatus = exhausted
+                ? ReliableCommandStatus.MANUAL_REVIEW
+                : ReliableCommandStatus.UNKNOWN;
+        Instant nextReconcileAt = exhausted ? null : Instant.now().plusMillis(retryDelayMillis);
+        // 达到上限后停止自动查询并保留人工证据，否则按固定退避回到 UNKNOWN。
+        reliableCommandService.finishReconciliation(
+                operation,
+                targetStatus,
+                exhausted ? "RECONCILIATION_EXHAUSTED" : "RECONCILIATION_PENDING",
+                evidence,
+                evidence,
+                nextReconcileAt);
     }
 
     /**

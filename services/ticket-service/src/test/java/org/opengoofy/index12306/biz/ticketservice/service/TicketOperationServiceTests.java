@@ -21,18 +21,22 @@ import com.alibaba.fastjson2.JSON;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.biz.ticketservice.dao.entity.BusinessOperationDO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.CancelTicketOrderReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.RefundTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketRespDTO;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandClaim;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandDefinition;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandLease;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandMode;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandService;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 
+import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.Date;
-import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationLeaseService.OperationLease;
 import static org.mockito.ArgumentMatchers.anyString;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,8 +53,7 @@ import static org.mockito.Mockito.when;
 class TicketOperationServiceTests {
 
     private TicketService ticketService;
-    private BusinessOperationTransactionService transactionService;
-    private BusinessOperationLeaseService leaseService;
+    private ReliableCommandService reliableCommandService;
     private TicketOperationService ticketOperationService;
 
     /**
@@ -60,13 +63,10 @@ class TicketOperationServiceTests {
     void setUp() {
         // 每个用例使用独立 Mock，避免操作状态在测试之间泄漏。
         ticketService = mock(TicketService.class);
-        transactionService = mock(BusinessOperationTransactionService.class);
-        leaseService = mock(BusinessOperationLeaseService.class);
-        when(leaseService.create(anyString())).thenAnswer(invocation -> new OperationLease(
-                invocation.getArgument(0), "worker-1", 1L, new Date(0), new Date(120000)));
+        reliableCommandService = mock(ReliableCommandService.class);
         ticketOperationService = new TicketOperationService(
                 ticketService,
-                new BusinessOperationCoordinator(transactionService, leaseService));
+                new BusinessOperationCoordinator(reliableCommandService));
         UserContext.setUser(UserInfoDTO.builder()
                 .userId("user-1")
                 .username("alice")
@@ -93,7 +93,7 @@ class TicketOperationServiceTests {
         ticketOperationService.cancelTicketOrder(request);
 
         verify(ticketService).cancelTicketOrder(request);
-        verify(transactionService, never()).tryClaim(any());
+        verify(reliableCommandService, never()).claim(any());
     }
 
     /**
@@ -102,14 +102,18 @@ class TicketOperationServiceTests {
     @Test
     void claimsCancellationAndPersistsSuccess() {
         CancelTicketOrderReqDTO request = new CancelTicketOrderReqDTO(" action-1 ", "order-1");
-        when(transactionService.tryClaim(any())).thenReturn(true);
+        ReliableCommandRecord claimed = operation(
+                "action-1", "CANCEL_TICKET_ORDER", "user-1", "fingerprint-1",
+                ReliableCommandStatus.PROCESSING, null, "order-1", true);
+        when(reliableCommandService.claim(any())).thenReturn(
+                new ReliableCommandClaim(ReliableCommandClaim.Outcome.ACQUIRED, claimed));
+        when(reliableCommandService.markSucceeded(any(), anyString(), anyString())).thenReturn(true);
 
         // 只有获得 operationId 执行权的请求可以进入真实取消链。
         ticketOperationService.cancelTicketOrder(request);
 
         verify(ticketService).cancelTicketOrder(request);
-        verify(transactionService).markSucceeded(
-                "action-1", "worker-1", 1L, "true", "order-1");
+        verify(reliableCommandService).markSucceeded(claimed, "true", "order-1");
     }
 
     /**
@@ -118,19 +122,13 @@ class TicketOperationServiceTests {
     @Test
     void replaysSuccessfulCancellationWithoutSecondExecution() {
         CancelTicketOrderReqDTO request = new CancelTicketOrderReqDTO("action-1", "order-1");
-        AtomicReference<BusinessOperationDO> attempted = new AtomicReference<>();
-        when(transactionService.tryClaim(any())).thenAnswer(invocation -> {
-            attempted.set(invocation.getArgument(0));
-            return false;
+        when(reliableCommandService.claim(any())).thenAnswer(invocation -> {
+            ReliableCommandDefinition definition = invocation.getArgument(0);
+            ReliableCommandRecord existing = operation(
+                    "action-1", "CANCEL_TICKET_ORDER", "user-1", definition.requestFingerprint(),
+                    ReliableCommandStatus.SUCCEEDED, "true", "order-1", false);
+            return new ReliableCommandClaim(ReliableCommandClaim.Outcome.REPLAY_SUCCEEDED, existing);
         });
-        when(transactionService.findById("action-1")).thenAnswer(ignored -> BusinessOperationDO.builder()
-                .operationId("action-1")
-                .operationType("CANCEL_TICKET_ORDER")
-                .userId("user-1")
-                .requestFingerprint(attempted.get().getRequestFingerprint())
-                .status(BusinessOperationTransactionService.STATUS_SUCCEEDED)
-                .resultJson("true")
-                .build());
 
         // 已成功记录直接重放内部布尔结果，不再次调用取消订单服务。
         ticketOperationService.cancelTicketOrder(request);
@@ -145,7 +143,12 @@ class TicketOperationServiceTests {
     void usesOperationIdAsRefundRequestIdAndPersistsResult() {
         RefundTicketReqDTO request = refundRequest("action-1", null);
         RefundTicketRespDTO expected = refundResult("action-1");
-        when(transactionService.tryClaim(any())).thenReturn(true);
+        ReliableCommandRecord claimed = operation(
+                "action-1", "REFUND_TICKET", "user-1", "fingerprint-1",
+                ReliableCommandStatus.PROCESSING, null, "order-1", true);
+        when(reliableCommandService.claim(any())).thenReturn(
+                new ReliableCommandClaim(ReliableCommandClaim.Outcome.ACQUIRED, claimed));
+        when(reliableCommandService.markSucceeded(any(), anyString(), anyString())).thenReturn(true);
         when(ticketService.commonTicketRefund(request)).thenReturn(expected);
 
         // 票务操作认领前先规范化支付退款请求标识，确保整个调用链使用同一键。
@@ -153,8 +156,8 @@ class TicketOperationServiceTests {
 
         assertThat(actual).isSameAs(expected);
         assertThat(request.getRequestId()).isEqualTo("action-1");
-        verify(transactionService).markSucceeded(
-                "action-1", "worker-1", 1L, JSON.toJSONString(expected), "order-1");
+        verify(reliableCommandService).markSucceeded(
+                claimed, JSON.toJSONString(expected), "order-1");
     }
 
     /**
@@ -169,7 +172,57 @@ class TicketOperationServiceTests {
                 .isInstanceOf(ServiceException.class)
                 .hasMessageContaining("标识不一致");
         verify(ticketService, never()).commonTicketRefund(any());
-        verify(transactionService, never()).tryClaim(any());
+        verify(reliableCommandService, never()).claim(any());
+    }
+
+    /**
+     * 构造取消和退票场景使用的可靠命令记录。
+     *
+     * @param operationId 操作标识
+     * @param operationType 操作类型
+     * @param userId 所属用户
+     * @param fingerprint 请求摘要
+     * @param status 当前状态
+     * @param resultPayload 可重放结果
+     * @param businessReference 订单号等安全引用
+     * @param leased 是否携带执行租约
+     * @return 测试命令记录
+     */
+    private ReliableCommandRecord operation(
+            String operationId,
+            String operationType,
+            String userId,
+            String fingerprint,
+            ReliableCommandStatus status,
+            String resultPayload,
+            String businessReference,
+            boolean leased) {
+        Instant now = Instant.EPOCH;
+        ReliableCommandLease lease = leased
+                ? new ReliableCommandLease("worker-1", now.plusSeconds(120), 1L)
+                : null;
+        // 只填充业务协调器进行重复判定和结果保存需要的字段。
+        return new ReliableCommandRecord(
+                BusinessOperationCoordinator.commandKey(operationId),
+                operationType,
+                ReliableCommandMode.REMOTE_EFFECT,
+                userId,
+                fingerprint,
+                "ticket-v1",
+                status,
+                resultPayload,
+                null,
+                null,
+                businessReference,
+                lease == null ? null : lease.owner(),
+                lease == null ? null : lease.until(),
+                lease == null ? 1L : lease.fencingToken(),
+                now,
+                1,
+                null,
+                0,
+                now,
+                now);
     }
 
     /**

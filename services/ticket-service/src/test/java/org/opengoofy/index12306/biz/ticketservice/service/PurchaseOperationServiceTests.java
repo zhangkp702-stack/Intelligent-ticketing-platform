@@ -21,18 +21,23 @@ import com.alibaba.fastjson2.JSON;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.biz.ticketservice.dao.entity.BusinessOperationDO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandClaim;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandDefinition;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandLease;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandMode;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandService;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 
+import java.time.Instant;
 import java.util.Date;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
-import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationLeaseService.OperationLease;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,8 +54,7 @@ import static org.mockito.Mockito.when;
 class PurchaseOperationServiceTests {
 
     private TicketService ticketService;
-    private BusinessOperationTransactionService transactionService;
-    private BusinessOperationLeaseService leaseService;
+    private ReliableCommandService reliableCommandService;
     private PurchaseOperationService purchaseOperationService;
 
     /**
@@ -60,13 +64,10 @@ class PurchaseOperationServiceTests {
     void setUp() {
         // 每个用例使用独立 Mock，避免操作认领状态在测试之间泄漏。
         ticketService = mock(TicketService.class);
-        transactionService = mock(BusinessOperationTransactionService.class);
-        leaseService = mock(BusinessOperationLeaseService.class);
-        when(leaseService.create(anyString())).thenAnswer(invocation -> new OperationLease(
-                invocation.getArgument(0), "worker-1", 1L, new Date(0), new Date(120000)));
+        reliableCommandService = mock(ReliableCommandService.class);
         purchaseOperationService = new PurchaseOperationService(
                 ticketService,
-                new BusinessOperationCoordinator(transactionService, leaseService));
+                new BusinessOperationCoordinator(reliableCommandService));
         UserContext.setUser(UserInfoDTO.builder()
                 .userId("user-1")
                 .username("alice")
@@ -95,7 +96,7 @@ class PurchaseOperationServiceTests {
         TicketPurchaseRespDTO actual = purchaseOperationService.purchaseTicketsV2(request);
 
         assertThat(actual).isSameAs(expected);
-        verify(transactionService, never()).tryClaim(any());
+        verify(reliableCommandService, never()).claim(any());
     }
 
     /**
@@ -105,15 +106,20 @@ class PurchaseOperationServiceTests {
     void claimsOperationBeforePurchaseAndPersistsSuccess() {
         PurchaseTicketReqDTO request = request(" action-1 ");
         TicketPurchaseRespDTO expected = result("order-1");
-        when(transactionService.tryClaim(any())).thenReturn(true);
+        ReliableCommandRecord claimed = operation(
+                "action-1", "PURCHASE_TICKET", "user-1", "fingerprint-1",
+                ReliableCommandStatus.PROCESSING, null, true);
+        when(reliableCommandService.claim(any())).thenReturn(
+                new ReliableCommandClaim(ReliableCommandClaim.Outcome.ACQUIRED, claimed));
+        when(reliableCommandService.markSucceeded(any(), anyString(), anyString())).thenReturn(true);
         when(ticketService.purchaseTicketsV2(request)).thenReturn(expected);
 
         // 操作标识会先规范化，再进入真实 V2 购票链。
         TicketPurchaseRespDTO actual = purchaseOperationService.purchaseTicketsV2(request);
 
         assertThat(actual).isSameAs(expected);
-        verify(transactionService).markSucceeded(
-                "action-1", "worker-1", 1L, JSON.toJSONString(expected), "order-1");
+        verify(reliableCommandService).markSucceeded(
+                claimed, JSON.toJSONString(expected), "order-1");
         verify(ticketService).purchaseTicketsV2(request);
     }
 
@@ -124,19 +130,13 @@ class PurchaseOperationServiceTests {
     void replaysPersistedResultForDuplicateSuccessfulOperation() {
         PurchaseTicketReqDTO request = request("action-1");
         TicketPurchaseRespDTO expected = result("order-1");
-        AtomicReference<BusinessOperationDO> attempted = new AtomicReference<>();
-        when(transactionService.tryClaim(any())).thenAnswer(invocation -> {
-            attempted.set(invocation.getArgument(0));
-            return false;
+        when(reliableCommandService.claim(any())).thenAnswer(invocation -> {
+            ReliableCommandDefinition definition = invocation.getArgument(0);
+            ReliableCommandRecord existing = operation(
+                    "action-1", "PURCHASE_TICKET", "user-1", definition.requestFingerprint(),
+                    ReliableCommandStatus.SUCCEEDED, JSON.toJSONString(expected), false);
+            return new ReliableCommandClaim(ReliableCommandClaim.Outcome.REPLAY_SUCCEEDED, existing);
         });
-        when(transactionService.findById("action-1")).thenAnswer(ignored -> BusinessOperationDO.builder()
-                .operationId("action-1")
-                .operationType("PURCHASE_TICKET")
-                .userId("user-1")
-                .requestFingerprint(attempted.get().getRequestFingerprint())
-                .status(BusinessOperationTransactionService.STATUS_SUCCEEDED)
-                .resultJson(JSON.toJSONString(expected))
-                .build());
 
         // 重复请求读取首次成功结果，不进入票务扣减链。
         TicketPurchaseRespDTO actual = purchaseOperationService.purchaseTicketsV2(request);
@@ -151,15 +151,11 @@ class PurchaseOperationServiceTests {
     @Test
     void rejectsOperationIdReusedWithDifferentPayload() {
         PurchaseTicketReqDTO request = request("action-1");
-        when(transactionService.tryClaim(any())).thenReturn(false);
-        when(transactionService.findById("action-1")).thenReturn(BusinessOperationDO.builder()
-                .operationId("action-1")
-                .operationType("PURCHASE_TICKET")
-                .userId("user-1")
-                .requestFingerprint("different-fingerprint")
-                .status(BusinessOperationTransactionService.STATUS_SUCCEEDED)
-                .resultJson(JSON.toJSONString(result("order-1")))
-                .build());
+        ReliableCommandRecord existing = operation(
+                "action-1", "PURCHASE_TICKET", "user-1", "different-fingerprint",
+                ReliableCommandStatus.SUCCEEDED, JSON.toJSONString(result("order-1")), false);
+        when(reliableCommandService.claim(any())).thenReturn(
+                new ReliableCommandClaim(ReliableCommandClaim.Outcome.PAYLOAD_MISMATCH, existing));
 
         // 参数摘要不一致时拒绝重放，不能把旧订单当作本次结果。
         assertThatThrownBy(() -> purchaseOperationService.purchaseTicketsV2(request))
@@ -175,17 +171,70 @@ class PurchaseOperationServiceTests {
     void persistsFailedStateWithoutReplacingBusinessException() {
         PurchaseTicketReqDTO request = request("action-1");
         ServiceException failure = new ServiceException("列车站点已无余票");
-        when(transactionService.tryClaim(any())).thenReturn(true);
+        ReliableCommandRecord claimed = operation(
+                "action-1", "PURCHASE_TICKET", "user-1", "fingerprint-1",
+                ReliableCommandStatus.PROCESSING, null, true);
+        when(reliableCommandService.claim(any())).thenReturn(
+                new ReliableCommandClaim(ReliableCommandClaim.Outcome.ACQUIRED, claimed));
         when(ticketService.purchaseTicketsV2(request)).thenThrow(failure);
 
         // 相同操作标识后续不能再次进入扣票链，调用方需要创建新的操作。
         assertThatThrownBy(() -> purchaseOperationService.purchaseTicketsV2(request))
                 .isSameAs(failure);
-        verify(transactionService).markUnknown(
-                "action-1", "worker-1", 1L, "列车站点已无余票", "DOWNSTREAM_RESULT_UNKNOWN");
-        verify(transactionService, never()).markSucceeded(
-                anyString(), anyString(), org.mockito.ArgumentMatchers.anyLong(),
-                anyString(), org.mockito.ArgumentMatchers.nullable(String.class));
+        verify(reliableCommandService).markUnknown(
+                org.mockito.ArgumentMatchers.eq(claimed),
+                org.mockito.ArgumentMatchers.eq("DOWNSTREAM_RESULT_UNKNOWN"),
+                org.mockito.ArgumentMatchers.eq("列车站点已无余票"),
+                any(Instant.class));
+        verify(reliableCommandService, never()).markSucceeded(any(), anyString(), anyString());
+    }
+
+    /**
+     * 构造 Ticket 可靠命令测试记录。
+     *
+     * @param operationId 操作标识
+     * @param operationType 操作类型
+     * @param userId 所属用户
+     * @param fingerprint 请求摘要
+     * @param status 当前状态
+     * @param resultPayload 可重放结果
+     * @param leased 是否携带执行租约
+     * @return 测试命令记录
+     */
+    private ReliableCommandRecord operation(
+            String operationId,
+            String operationType,
+            String userId,
+            String fingerprint,
+            ReliableCommandStatus status,
+            String resultPayload,
+            boolean leased) {
+        Instant now = Instant.EPOCH;
+        ReliableCommandLease lease = leased
+                ? new ReliableCommandLease("worker-1", now.plusSeconds(120), 1L)
+                : null;
+        // 只为当前用例填充命令认领和结果重放所需字段。
+        return new ReliableCommandRecord(
+                BusinessOperationCoordinator.commandKey(operationId),
+                operationType,
+                ReliableCommandMode.REMOTE_EFFECT,
+                userId,
+                fingerprint,
+                "ticket-v1",
+                status,
+                resultPayload,
+                null,
+                null,
+                null,
+                lease == null ? null : lease.owner(),
+                lease == null ? null : lease.until(),
+                lease == null ? 1L : lease.fencingToken(),
+                now,
+                1,
+                null,
+                0,
+                now,
+                now);
     }
 
     /**
