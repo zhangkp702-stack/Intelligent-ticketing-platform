@@ -65,14 +65,35 @@ index12306:
       response-timeout: 60s
       read-task-timeout: 25s
       task-max-concurrency: 4
+    turn:
+      submission-secret: ${TICKET_AGENT_TURN_SECRET:${TICKET_AGENT_CONFIRMATION_SECRET:${TICKET_MCP_INTERNAL_SECRET:}}}
+      submission-ttl: 10m
+      execution-lease: 2m
+      recovery-enabled: true
+      recovery-interval-millis: 5000
+    stream:
+      event-retention: 24h
+      cleanup-enabled: true
+      cleanup-batch-size: 1000
+      cleanup-interval-millis: 60000
     action:
       confirmation-secret: ${TICKET_AGENT_CONFIRMATION_SECRET:${TICKET_MCP_INTERNAL_SECRET:}}
       confirmation-ttl: 5m
+      reconciliation:
+        max-attempts: 5
+        retry-delay: 30s
+        lease-duration: 2m
+        mq:
+          enabled: ${AGENT_ACTION_RECONCILIATION_MQ_ENABLED:true}
+          topic: index12306_agent_action_reconciliation_topic${unique-name:}
+          tag: RECONCILE
+          consumer-group: index12306_agent_action_reconciliation_cg${unique-name:}
+          send-timeout-millis: 2000
+          publish-interval-millis: 1000
     mcp:
       internal-secret: ${TICKET_MCP_INTERNAL_SECRET:}
     memory:
-      recent-turn-limit: 6
-      context-token-budget: 12000
+      recent-turn-limit: 3
       summary-trigger-message-count: 12
       summary-max-attempts: 3
       summary-retry-delay: 30s
@@ -155,6 +176,9 @@ index12306:
           - siliconflow-answer-secondary
           - siliconflow-answer-tertiary
           - bailian-flash
+        QUESTION_REWRITE:
+          - bailian-flash
+          - siliconflow-summary-primary
         TASK_PLANNING:
           - bailian-flash
           - siliconflow-summary-primary
