@@ -6,6 +6,9 @@ import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedPurchaseExec
 import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedTicketOperationExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.mcp.TicketOperationPreviewExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
+import org.opengoofy.index12306.ai.agentservice.action.service.ActionReconciliationService;
+import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionReconciliationEntity;
+import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionReconciliationRepository;
 import org.opengoofy.index12306.ai.agentservice.action.validation.PurchaseDraftRevalidator;
 import org.opengoofy.index12306.ai.agentservice.action.service.TicketOperationActionService;
 import org.junit.jupiter.api.Test;
@@ -32,6 +35,9 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.time.Instant;
 
 import java.util.List;
 import java.util.UUID;
@@ -77,6 +83,12 @@ class PurchaseActionPersistenceTests {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private ActionReconciliationService reconciliationService;
+
+    @Autowired
+    private ActionReconciliationRepository reconciliationRepository;
 
     /**
      * 清理共享 Spring 测试上下文中的执行器调用记录。
@@ -213,7 +225,7 @@ class PurchaseActionPersistenceTests {
     }
 
     /**
-     * 验证网络超时仍记录 UNKNOWN，避免下游已经创建订单时允许用户重复提交。
+     * 验证网络超时创建持久化对账事件，并可用下游权威结果恢复为成功。
      */
     @Test
     void purchaseTimeoutRemainsUnknown() {
@@ -240,6 +252,36 @@ class PurchaseActionPersistenceTests {
         assertThat(counterValue(
                 "agent.action.executions", "TICKET_PURCHASE", "outcome", "UNKNOWN"))
                 .isEqualTo(unknownBefore + 1);
+
+        // UNKNOWN 与 Outbox 必须同事务存在，消费者领取后只查询相同 actionId 的权威状态。
+        ActionReconciliationEntity event = reconciliationRepository
+                .findByActionId(confirmation.actionId())
+                .orElseThrow();
+        ActionReconciliationService.WorkItem workItem = reconciliationService
+                .claim(event.getId(), event.getEventVersion(), "test-worker")
+                .orElseThrow();
+        assertThat(workItem.actionId()).isEqualTo(confirmation.actionId());
+
+        // 模拟消费者领取后宕机，租约恢复必须让事件、草案和执行审计一起回到可再次领取状态。
+        ActionReconciliationEntity running = reconciliationRepository.selectById(event.getId());
+        ReflectionTestUtils.setField(running, "leaseUntil", Instant.EPOCH);
+        reconciliationRepository.updateById(running);
+        assertThat(reconciliationService.recoverExpired()).isEqualTo(1);
+        assertThat(reconciliationService.claim(
+                event.getId(), event.getEventVersion(), "recovered-worker")).isPresent();
+
+        // 模拟原购票响应丢失但 ticket-service 已持久化成功，三个状态在一个事务中收口。
+        boolean terminal = reconciliationService.complete(event.getId(),
+                new ActionReconciliationService.DownstreamResult(
+                        confirmation.actionId(), "PURCHASE_TICKET",
+                        ActionReconciliationService.DownstreamStatus.SUCCEEDED,
+                        "{\"orderSn\":\"order-recovered\",\"tickets\":[]}", null));
+        ActionStatusView recovered = purchaseActionService.getStatus(fixture.userId(), confirmation.actionId());
+        assertThat(terminal).isTrue();
+        assertThat(recovered.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
+        assertThat(recovered.orderSn()).isEqualTo("order-recovered");
+        assertThat(reconciliationRepository.selectById(event.getId()).getStatus().name())
+                .isEqualTo("SUCCEEDED");
     }
 
     /**
@@ -346,14 +388,16 @@ class PurchaseActionPersistenceTests {
      */
     private Fixture createRunningTurn() {
         String userId = unique("user");
-        String requestId = unique("request");
         ConversationEntity conversation = conversationMemoryService.createConversation(userId, "购票确认测试");
-        // 草案只能在当前运行轮次内创建，因此先启动可信轮次。
+        // 草案只能在当前运行轮次内创建，因此先由服务端预创建并启动可信轮次。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
         ConversationMemoryService.StartedTurn turn = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
-                        userId, conversation.getId(), requestId, requestId, "购买测试车票", 5));
+                        userId, conversation.getId(), preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "alice", "购买测试车票", 5));
         AgentRequestContext context = new AgentRequestContext(
-                requestId, userId, "alice", conversation.getId(), turn.turnId());
+                turn.turnId(), userId, "alice", conversation.getId(), turn.turnId());
         return new Fixture(userId, turn.turnId(), context);
     }
 

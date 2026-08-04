@@ -22,6 +22,10 @@ import com.alibaba.fastjson2.JSON;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.BusinessOperationDO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.BusinessOperationStatusRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketOrderDetailRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.springframework.stereotype.Service;
@@ -30,6 +34,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
 
@@ -47,6 +52,9 @@ public class BusinessOperationCoordinator {
 
     private static final int OPERATION_ID_MAX_LENGTH = 64;
     private static final int FAILURE_MESSAGE_MAX_LENGTH = 500;
+    private static final String PURCHASE_OPERATION_TYPE = "PURCHASE_TICKET";
+    private static final String CANCELLATION_OPERATION_TYPE = "CANCEL_TICKET_ORDER";
+    private static final String REFUND_OPERATION_TYPE = "REFUND_TICKET";
 
     private final BusinessOperationTransactionService operationTransactionService;
 
@@ -121,6 +129,100 @@ public class BusinessOperationCoordinator {
         // 写操作提交后在独立事务中固化结果，供相同操作标识安全重放。
         operationTransactionService.markSucceeded(operationId, JSON.toJSONString(result));
         return result;
+    }
+
+    /**
+     * 查询当前用户稳定操作标识对应的下游持久化状态。
+     *
+     * @param operationId 调用方生成的操作标识
+     * @return 不包含证件号和第三方交易凭证的操作状态
+     */
+    public BusinessOperationStatusRespDTO getStatus(String operationId) {
+        String normalized = normalizeOperationId(operationId);
+        if (normalized == null) {
+            throw new ServiceException("业务操作标识不能为空");
+        }
+
+        // 状态查询仍按当前网关身份校验归属，禁止通过 actionId 探测其他用户订单。
+        BusinessOperationDO operation = operationTransactionService.findById(normalized);
+        if (operation == null || !requireCurrentUserId().equals(operation.getUserId())) {
+            throw new ServiceException("业务操作不存在");
+        }
+        return BusinessOperationStatusRespDTO.builder()
+                .operationId(operation.getOperationId())
+                .operationType(operation.getOperationType())
+                .status(statusName(operation.getStatus()))
+                .safeResultJson(safeResultJson(operation))
+                .failureMessage(operation.getFailureMessage())
+                .build();
+    }
+
+    /**
+     * 将数据库状态码转换为稳定协议值。
+     *
+     * @param status 数据库存储状态
+     * @return 对账接口状态名称
+     */
+    private String statusName(Integer status) {
+        if (Objects.equals(status, STATUS_PROCESSING)) {
+            return "PROCESSING";
+        }
+        if (Objects.equals(status, STATUS_SUCCEEDED)) {
+            return "SUCCEEDED";
+        }
+        if (Objects.equals(status, STATUS_FAILED)) {
+            return "FAILED";
+        }
+        throw new ServiceException("业务操作状态无效");
+    }
+
+    /**
+     * 根据业务类型从原始成功响应中生成最小白名单结果。
+     *
+     * @param operation 已校验归属的操作记录
+     * @return 成功操作的脱敏 JSON，非成功状态返回 null
+     */
+    private String safeResultJson(BusinessOperationDO operation) {
+        if (!Objects.equals(operation.getStatus(), STATUS_SUCCEEDED)) {
+            return null;
+        }
+        if (StrUtil.isBlank(operation.getResultJson())) {
+            throw new ServiceException("业务操作成功结果缺失");
+        }
+
+        // 购票结果显式重建车票白名单，证件类型和证件号不会进入对账响应。
+        return switch (operation.getOperationType()) {
+            case PURCHASE_OPERATION_TYPE -> {
+                TicketPurchaseRespDTO result = JSON.parseObject(
+                        operation.getResultJson(), TicketPurchaseRespDTO.class);
+                List<SafePurchasedTicket> tickets = result.getTicketOrderDetails() == null
+                        ? List.of()
+                        : result.getTicketOrderDetails().stream().map(this::safeTicket).toList();
+                yield JSON.toJSONString(new SafePurchaseResult(result.getOrderSn(), tickets));
+            }
+            case CANCELLATION_OPERATION_TYPE -> JSON.toJSONString(
+                    new SafeCancellationResult(Boolean.TRUE));
+            case REFUND_OPERATION_TYPE -> {
+                RefundTicketRespDTO result = JSON.parseObject(
+                        operation.getResultJson(), RefundTicketRespDTO.class);
+                yield JSON.toJSONString(new SafeRefundResult(
+                        result.getRequestId(), result.getOrderSn(), result.getType(),
+                        result.getRefundAmount(), result.getStatus()));
+            }
+            default -> throw new ServiceException("业务操作类型无效");
+        };
+    }
+
+    /**
+     * 将购票明细转换为不含证件字段的对账结果。
+     *
+     * @param detail 原始购票明细
+     * @return 白名单车票明细
+     */
+    private SafePurchasedTicket safeTicket(TicketOrderDetailRespDTO detail) {
+        return new SafePurchasedTicket(
+                detail.getSeatType(), detail.getCarriageNumber(), detail.getSeatNumber(),
+                detail.getRealName(), detail.getTicketType(), detail.getAmount());
     }
 
     /**
@@ -229,5 +331,45 @@ public class BusinessOperationCoordinator {
         return message.length() <= FAILURE_MESSAGE_MAX_LENGTH
                 ? message
                 : message.substring(0, FAILURE_MESSAGE_MAX_LENGTH);
+    }
+
+    /**
+     * 购票对账白名单结果。
+     *
+     * @param orderSn 订单号
+     * @param tickets 不含证件信息的车票明细
+     */
+    private record SafePurchaseResult(String orderSn, List<SafePurchasedTicket> tickets) {
+    }
+
+    /**
+     * 购票对账白名单车票明细。
+     */
+    private record SafePurchasedTicket(
+            Integer seatType,
+            String carriageNumber,
+            String seatNumber,
+            String realName,
+            Integer ticketType,
+            Integer amount) {
+    }
+
+    /**
+     * 取消订单对账白名单结果，订单号由 Agent 不可变草案恢复。
+     *
+     * @param cancelled 是否已经成功取消
+     */
+    private record SafeCancellationResult(Boolean cancelled) {
+    }
+
+    /**
+     * 退票对账白名单结果，不包含第三方退款交易凭证。
+     */
+    private record SafeRefundResult(
+            String requestId,
+            String orderSn,
+            Integer type,
+            Integer refundAmount,
+            Integer status) {
     }
 }

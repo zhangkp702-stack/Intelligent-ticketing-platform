@@ -32,4 +32,13 @@ public interface ActionExecutionRepository extends BaseMapper<ActionExecutionEnt
      */
     @Select("SELECT * FROM t_agent_action_execution WHERE idempotency_key = #{idempotencyKey}")
     Optional<ActionExecutionEntity> findByIdempotencyKey(@Param("idempotencyKey") String idempotencyKey);
+
+    /**
+     * 加写锁读取执行记录，保护 UNKNOWN 对账状态迁移。
+     *
+     * @param executionId 执行记录标识
+     * @return 锁定执行记录
+     */
+    @Select("SELECT * FROM t_agent_action_execution WHERE id = #{executionId} FOR UPDATE")
+    Optional<ActionExecutionEntity> findLockedById(@Param("executionId") String executionId);
 }

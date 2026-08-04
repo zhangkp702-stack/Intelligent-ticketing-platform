@@ -17,6 +17,7 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainStop;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedCancellationResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedActionStatus;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefundResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -392,6 +393,35 @@ public class TicketQueryTools {
 
         // 支付状态查询前由票务服务验证订单归属，避免订单号越权探测。
         return businessClient.queryPaymentStatus(orderSn.trim(), identity);
+    }
+
+    /**
+     * 查询已经消费确认令牌的业务操作结果，不重新执行任何写操作。
+     *
+     * @param actionId 已确认草案标识
+     * @param meta Agent 签名且包含原草案指纹的 MCP 元数据
+     * @return ticket-service 持久化的脱敏操作状态
+     */
+    @McpTool(
+            name = "query_confirmed_action_status",
+            description = "仅供 Agent UNKNOWN 对账任务查询已确认写操作结果，不允许回答模型直接调用。",
+            generateOutputSchema = true,
+            annotations = @McpTool.McpAnnotations(
+                    title = "核对已确认操作",
+                    readOnlyHint = true,
+                    destructiveHint = false,
+                    idempotentHint = true,
+                    openWorldHint = false))
+    public ConfirmedActionStatus queryConfirmedActionStatus(
+            @McpToolParam(description = "已消费确认令牌的草案 ID") String actionId,
+            McpMeta meta) {
+        requirePattern(actionId, "actionId", TRAIN_ID_PATTERN);
+        McpCallerIdentity identity = authenticator.authenticate(meta);
+        logInvocation("query_confirmed_action_status", "queryConfirmedActionStatus", identity);
+
+        // actionId 必须同时匹配工具输入和 HMAC 元数据，避免后台任务查询其他操作。
+        Assert.isTrue(actionId.equals(identity.actionId()), "actionId does not match signed metadata");
+        return businessClient.queryConfirmedActionStatus(identity);
     }
 
     /**

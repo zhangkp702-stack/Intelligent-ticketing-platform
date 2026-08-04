@@ -21,32 +21,74 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ActionDraftEntity extends AgentBaseEntity {
 
+    /**
+     * 操作草案所属的用户标识。
+     */
     private String userId;
 
+    /**
+     * 操作草案所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 创建操作草案的问答轮次标识。
+     */
     private String turnId;
 
+    /**
+     * 需要用户确认的高风险操作类型。
+     */
     private AgentActionType actionType;
 
+    /**
+     * 操作草案当前状态。
+     */
     private AgentActionStatus status;
 
+    /**
+     * 经服务端规范化且不含敏感信息的操作参数 JSON。
+     */
     private String payloadJson;
 
+    /**
+     * 操作参数指纹，用于校验确认内容未被替换。
+     */
     private String payloadHash;
 
+    /**
+     * 用户确认操作的截止时间。
+     */
     private Instant confirmationExpiresAt;
 
+    /**
+     * 确认机会被成功消费的时间。
+     */
     private Instant confirmationConsumedAt;
 
+    /**
+     * 确认后创建的操作执行记录标识。
+     */
     private String executionId;
 
+    /**
+     * 操作成功后保存的脱敏结果 JSON。
+     */
     private String resultJson;
 
+    /**
+     * 订单号等可安全展示的业务结果引用。
+     */
     private String resultReference;
 
+    /**
+     * 操作失败或结果不确定时记录的稳定分类。
+     */
     private String failureCategory;
 
+    /**
+     * 操作进入明确终态的时间。
+     */
     private Instant finishedAt;
 
     private ActionDraftEntity(
@@ -187,7 +229,65 @@ public class ActionDraftEntity extends AgentBaseEntity {
         // 网络或超时后禁止自动重试购票，避免下游已成功时生成重复订单。
         this.failureCategory = Objects.requireNonNull(category, "category");
         this.status = AgentActionStatus.UNKNOWN;
+        this.finishedAt = null;
+        touch(now);
+    }
+
+    /**
+     * 在 MQ 消费者获得持久化领取权后进入对账状态。
+     *
+     * @param now 领取时间
+     */
+    public void beginReconciliation(Instant now) {
+        if (status != AgentActionStatus.UNKNOWN) {
+            throw new IllegalStateException("只有 UNKNOWN 操作可以开始对账");
+        }
+        // RECONCILING 只表示查询下游事实，不允许再次调用真实写接口。
+        this.status = AgentActionStatus.RECONCILING;
+        touch(now);
+    }
+
+    /**
+     * 使用下游持久化结果完成对账成功状态。
+     *
+     * @param safeResultJson 脱敏结果 JSON
+     * @param reference 订单号等业务引用
+     * @param now 完成时间
+     */
+    public void reconcileSucceeded(String safeResultJson, String reference, Instant now) {
+        requireReconciling();
+        // 对账结果来自 ticket-service 操作事实表，不接受原网络调用的迟到正文。
+        this.resultJson = Objects.requireNonNull(safeResultJson, "safeResultJson");
+        this.resultReference = reference;
+        this.failureCategory = null;
+        this.status = AgentActionStatus.SUCCEEDED;
         this.finishedAt = now;
+        touch(now);
+    }
+
+    /**
+     * 使用下游明确失败状态结束对账。
+     *
+     * @param category 稳定失败分类
+     * @param now 完成时间
+     */
+    public void reconcileFailed(String category, Instant now) {
+        requireReconciling();
+        this.failureCategory = Objects.requireNonNull(category, "category");
+        this.status = AgentActionStatus.FAILED;
+        this.finishedAt = now;
+        touch(now);
+    }
+
+    /**
+     * 查询暂未得到确定结果时回到 UNKNOWN 等待下一次对账。
+     *
+     * @param now 本次查询结束时间
+     */
+    public void reconciliationPending(Instant now) {
+        requireReconciling();
+        this.status = AgentActionStatus.UNKNOWN;
+        this.finishedAt = null;
         touch(now);
     }
 
@@ -210,6 +310,15 @@ public class ActionDraftEntity extends AgentBaseEntity {
     private void requireExecuting() {
         if (status != AgentActionStatus.EXECUTING) {
             throw new IllegalStateException("操作草案不处于执行状态");
+        }
+    }
+
+    /**
+     * 校验只有已经被 MQ 消费者领取的操作能够提交对账结果。
+     */
+    private void requireReconciling() {
+        if (status != AgentActionStatus.RECONCILING) {
+            throw new IllegalStateException("操作草案不处于对账状态");
         }
     }
 }

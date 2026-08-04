@@ -23,12 +23,14 @@ import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.RefundTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.TicketPageQueryReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.BusinessOperationStatusRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.OrderOperationPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.PurchaseOperationService;
+import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationCoordinator;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketOperationService;
 import org.opengoofy.index12306.framework.starter.captcha.annotation.RiskGuard;
@@ -37,6 +39,7 @@ import org.opengoofy.index12306.framework.starter.ratelimiter.annotation.RateLim
 import org.opengoofy.index12306.framework.starter.ratelimiter.enums.RateLimitDimensionEnum;
 import org.opengoofy.index12306.framework.starter.web.Results;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -53,6 +56,7 @@ public class TicketController {
     private final TicketService ticketService;
     private final PurchaseOperationService purchaseOperationService;
     private final TicketOperationService ticketOperationService;
+    private final BusinessOperationCoordinator businessOperationCoordinator;
 
     /**
      * 根据条件查询车票
@@ -132,6 +136,19 @@ public class TicketController {
     public Result<RefundTicketRespDTO> commonTicketRefund(@RequestBody RefundTicketReqDTO requestParam) {
         // Agent 请求统一使用 operationId 认领票务操作并作为下游退款幂等键。
         return Results.success(ticketOperationService.refundTicket(requestParam));
+    }
+
+    /**
+     * 查询 Agent 已确认写操作的持久化执行结果。
+     *
+     * @param operationId Agent 服务端生成的稳定 actionId
+     * @return 当前用户可见的处理状态和脱敏结果
+     */
+    @GetMapping("/api/ticket-service/ticket/operations/{operationId}")
+    public Result<BusinessOperationStatusRespDTO> queryBusinessOperation(
+            @PathVariable String operationId) {
+        // 对账只读取票务服务事实表，不会重新触发购票、取消或退票写操作。
+        return Results.success(businessOperationCoordinator.getStatus(operationId));
     }
 
     /**

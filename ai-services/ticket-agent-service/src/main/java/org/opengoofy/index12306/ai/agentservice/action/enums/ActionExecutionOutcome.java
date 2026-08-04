@@ -8,5 +8,6 @@ public enum ActionExecutionOutcome {
     STARTED,
     SUCCEEDED,
     FAILED,
-    UNKNOWN
+    UNKNOWN,
+    RECONCILING
 }

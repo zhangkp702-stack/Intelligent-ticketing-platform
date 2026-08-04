@@ -18,6 +18,7 @@ import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.TrainTicket;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchasePassenger;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedPurchaseResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedCancellationResult;
+import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedActionStatus;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.ConfirmedRefundResult;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.PurchasedTicketView;
 import org.opengoofy.index12306.ai.mcpserver.tool.TicketToolResult.RefundableTicketView;
@@ -415,6 +416,28 @@ public class TicketBusinessClient {
                 integer(data, "totalAmount"),
                 integer(data, "status"),
                 text(data, "gmtPayment"));
+    }
+
+    /**
+     * 按已确认 actionId 查询票务服务持久化的业务操作状态。
+     *
+     * @param identity 已验证且包含操作证明的调用者身份
+     * @return 不触发写操作的脱敏对账结果
+     */
+    public ConfirmedActionStatus queryConfirmedActionStatus(McpCallerIdentity identity) {
+        // 只向票务服务查询 operationId 主键记录，用户归属由票务服务再次校验。
+        JsonNode root = ticketClient.get()
+                .uri("/api/ticket-service/ticket/operations/{operationId}", identity.actionId())
+                .headers(headers -> addIdentity(headers, identity))
+                .retrieve()
+                .body(JsonNode.class);
+        JsonNode data = requireData(root);
+        return new ConfirmedActionStatus(
+                text(data, "operationId"),
+                text(data, "operationType"),
+                text(data, "status"),
+                text(data, "safeResultJson"),
+                text(data, "failureMessage"));
     }
 
     /**

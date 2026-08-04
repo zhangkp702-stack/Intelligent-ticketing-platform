@@ -12,6 +12,7 @@ import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionDraftRepository;
 import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionExecutionRepository;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService;
+import org.opengoofy.index12306.ai.agentservice.action.service.ActionReconciliationService;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.TurnEntity;
@@ -38,6 +39,7 @@ public class ActionStateServiceImpl implements ActionStateService {
     private final TurnRepository turnRepository;
     private final ConfirmationTokenService tokenService;
     private final AgentActionMetrics actionMetrics;
+    private final ActionReconciliationService reconciliationService;
     private final Clock clock;
 
     /**
@@ -49,6 +51,7 @@ public class ActionStateServiceImpl implements ActionStateService {
      * @param turnRepository 轮次仓储
      * @param tokenService 确认令牌校验服务
      * @param actionMetrics 高风险操作指标记录器
+     * @param reconciliationService UNKNOWN 操作对账服务
      * @param clock 统一时钟
      */
     public ActionStateServiceImpl(
@@ -58,6 +61,7 @@ public class ActionStateServiceImpl implements ActionStateService {
             TurnRepository turnRepository,
             ConfirmationTokenService tokenService,
             AgentActionMetrics actionMetrics,
+            ActionReconciliationService reconciliationService,
             Clock clock) {
         this.actionRepository = actionRepository;
         this.executionRepository = executionRepository;
@@ -65,6 +69,7 @@ public class ActionStateServiceImpl implements ActionStateService {
         this.turnRepository = turnRepository;
         this.tokenService = tokenService;
         this.actionMetrics = actionMetrics;
+        this.reconciliationService = reconciliationService;
         this.clock = clock;
     }
 
@@ -311,6 +316,8 @@ public class ActionStateServiceImpl implements ActionStateService {
         execution.markUnknown(category, exceptionType, now);
         actionRepository.updateById(action);
         executionRepository.updateById(execution);
+        // 与 UNKNOWN 状态同事务创建 Outbox 事件，避免状态已提交但恢复任务丢失。
+        reconciliationService.request(actionId);
     }
 
     /**

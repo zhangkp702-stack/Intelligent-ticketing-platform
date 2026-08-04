@@ -317,6 +317,21 @@ public final class TicketToolResult {
     }
 
     /**
+     * @param actionId 已确认操作标识
+     * @param operationType 下游业务操作类型
+     * @param status PROCESSING、SUCCEEDED 或 FAILED
+     * @param safeResultJson 成功时的脱敏结果 JSON
+     * @param failureMessage 明确失败时的安全原因摘要
+     */
+    public record ConfirmedActionStatus(
+            String actionId,
+            String operationType,
+            String status,
+            String safeResultJson,
+            String failureMessage) {
+    }
+
+    /**
      * @param seatType 席别编码
      * @param carriageNumber 车厢号
      * @param seatNumber 座位号

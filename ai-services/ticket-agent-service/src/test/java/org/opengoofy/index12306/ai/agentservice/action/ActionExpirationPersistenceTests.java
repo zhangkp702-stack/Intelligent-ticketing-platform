@@ -58,13 +58,16 @@ class ActionExpirationPersistenceTests {
     @Test
     void claimPersistsExpirationBeforeReturningConflict() {
         String userId = unique("user");
-        String requestId = unique("request");
         ConversationEntity conversation = conversationMemoryService.createConversation(userId, "确认过期测试");
+        // 先由服务端创建可信轮次，再使用签发的提交令牌启动该轮次。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
         ConversationMemoryService.StartedTurn turn = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
-                        userId, conversation.getId(), requestId, requestId, "取消测试订单", 5));
+                        userId, conversation.getId(), preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "alice", "取消测试订单", 5));
         AgentRequestContext context = new AgentRequestContext(
-                requestId, userId, "alice", conversation.getId(), turn.turnId());
+                turn.turnId(), userId, "alice", conversation.getId(), turn.turnId());
         ActionDraftEntity action = stateStore.createDraft(
                 context,
                 AgentActionType.TICKET_CANCEL,

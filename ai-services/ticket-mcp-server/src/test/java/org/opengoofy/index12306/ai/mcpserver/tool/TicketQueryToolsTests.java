@@ -36,7 +36,7 @@ import static org.mockito.Mockito.when;
 class TicketQueryToolsTests {
 
     /**
-     * 验证九个只读工具和三个受保护写工具都由 MCP 服务提供。
+     * 验证业务只读工具、内部对账工具和三个受保护写工具都由 MCP 服务提供。
      */
     @Test
     void registersOnlyExpectedReadOnlyTools() {
@@ -58,6 +58,7 @@ class TicketQueryToolsTests {
                 "preview_order_cancellation",
                 "preview_ticket_refund",
                 "query_pay_status",
+                "query_confirmed_action_status",
                 "execute_confirmed_ticket_purchase",
                 "execute_confirmed_order_cancellation",
                 "execute_confirmed_ticket_refund");

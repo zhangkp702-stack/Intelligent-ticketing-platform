@@ -10,6 +10,7 @@ public enum AgentActionStatus {
     SUCCEEDED,
     FAILED,
     UNKNOWN,
+    RECONCILING,
     EXPIRED,
     CANCELLED
 }
