@@ -20,12 +20,14 @@ package org.opengoofy.index12306.biz.ticketservice.remote;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.RefundReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.RefundRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.remote.dto.RefundCommandStatusRespDTO;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.PathVariable;
 
 /**
  * 支付单远程调用服务
@@ -45,4 +47,14 @@ public interface PayRemoteService {
      */
     @PostMapping("/api/pay-service/common/refund")
     Result<RefundRespDTO> commonRefund(@RequestBody RefundReqDTO requestParam);
+
+    /**
+     * 查询当前用户退款命令的权威状态。
+     *
+     * @param commandId 稳定退款命令标识
+     * @return 命令状态和安全退款引用
+     */
+    @GetMapping("/api/pay-service/operations/{commandId}")
+    Result<RefundCommandStatusRespDTO> queryRefundCommandStatus(
+            @PathVariable("commandId") String commandId);
 }

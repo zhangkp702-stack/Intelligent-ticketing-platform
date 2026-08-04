@@ -31,6 +31,9 @@ import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.Date;
+import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationLeaseService.OperationLease;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -47,6 +50,7 @@ class TicketOperationServiceTests {
 
     private TicketService ticketService;
     private BusinessOperationTransactionService transactionService;
+    private BusinessOperationLeaseService leaseService;
     private TicketOperationService ticketOperationService;
 
     /**
@@ -57,9 +61,12 @@ class TicketOperationServiceTests {
         // 每个用例使用独立 Mock，避免操作状态在测试之间泄漏。
         ticketService = mock(TicketService.class);
         transactionService = mock(BusinessOperationTransactionService.class);
+        leaseService = mock(BusinessOperationLeaseService.class);
+        when(leaseService.create(anyString())).thenAnswer(invocation -> new OperationLease(
+                invocation.getArgument(0), "worker-1", 1L, new Date(0), new Date(120000)));
         ticketOperationService = new TicketOperationService(
                 ticketService,
-                new BusinessOperationCoordinator(transactionService));
+                new BusinessOperationCoordinator(transactionService, leaseService));
         UserContext.setUser(UserInfoDTO.builder()
                 .userId("user-1")
                 .username("alice")
@@ -101,7 +108,8 @@ class TicketOperationServiceTests {
         ticketOperationService.cancelTicketOrder(request);
 
         verify(ticketService).cancelTicketOrder(request);
-        verify(transactionService).markSucceeded("action-1", "true");
+        verify(transactionService).markSucceeded(
+                "action-1", "worker-1", 1L, "true", "order-1");
     }
 
     /**
@@ -145,7 +153,8 @@ class TicketOperationServiceTests {
 
         assertThat(actual).isSameAs(expected);
         assertThat(request.getRequestId()).isEqualTo("action-1");
-        verify(transactionService).markSucceeded("action-1", JSON.toJSONString(expected));
+        verify(transactionService).markSucceeded(
+                "action-1", "worker-1", 1L, JSON.toJSONString(expected), "order-1");
     }
 
     /**

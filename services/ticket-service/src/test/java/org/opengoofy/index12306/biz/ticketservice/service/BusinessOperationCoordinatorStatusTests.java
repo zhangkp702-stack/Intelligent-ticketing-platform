@@ -46,7 +46,8 @@ class BusinessOperationCoordinatorStatusTests {
     void setUp() {
         // 状态查询只依赖操作事实表，使用 Mock 排除真实数据库影响。
         transactionService = mock(BusinessOperationTransactionService.class);
-        coordinator = new BusinessOperationCoordinator(transactionService);
+        coordinator = new BusinessOperationCoordinator(
+                transactionService, mock(BusinessOperationLeaseService.class));
         UserContext.setUser(UserInfoDTO.builder().userId("user-1").username("alice").build());
     }
 

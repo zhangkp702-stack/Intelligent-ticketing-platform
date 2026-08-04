@@ -90,6 +90,14 @@ feign:
     enabled: true
 
 index12306:
+  ticket:
+    operation:
+      lease-duration-millis: 120000
+      heartbeat-interval-millis: 30000
+      recovery-interval-millis: 5000
+      reconcile-max-attempts: 5
+      reconcile-retry-delay-millis: 30000
+      reconcile-lease-millis: 120000
   ratelimiter:
     # 是否信任 X-Forwarded-For，仅当前面有可信反向代理会清洗重写该头时才能开启，否则可被伪造绕过限流
     trust-forwarded-header: false

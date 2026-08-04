@@ -18,49 +18,16 @@
 package org.opengoofy.index12306.biz.ticketservice.remote.dto;
 
 import lombok.Data;
-import org.opengoofy.index12306.biz.ticketservice.common.enums.RefundTypeEnum;
-
-import java.util.List;
 
 /**
- * 退款请求入参数实体
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 支付服务返回的稳定退款命令状态。
  */
 @Data
-public class RefundReqDTO {
+public class RefundCommandStatusRespDTO {
 
-    /**
-     * Agent 真实交易意图标识；普通退款请求可以不传。
-     */
-    private String actionId;
-
-    /**
-     * 支付退款步骤的稳定命令标识。
-     */
     private String commandId;
-
-    /**
-     * 幂等退款请求标识
-     */
-    private String requestId;
-
-    /**
-     * 订单号
-     */
+    private String actionId;
+    private String status;
     private String orderSn;
-
-    /**
-     * 退款类型枚举
-     */
-    private RefundTypeEnum refundTypeEnum;
-
-    /**
-     * 退款金额
-     */
     private Integer refundAmount;
-
-    /**
-     * 部分退款车票详情集合
-     */
-    private List<TicketOrderPassengerDetailRespDTO> refundDetailReqDTOList;
 }

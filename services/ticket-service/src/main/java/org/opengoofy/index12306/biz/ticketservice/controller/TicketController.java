@@ -31,6 +31,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.PurchaseOperationService;
 import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationCoordinator;
+import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationRecoveryService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketOperationService;
 import org.opengoofy.index12306.framework.starter.captcha.annotation.RiskGuard;
@@ -57,6 +58,7 @@ public class TicketController {
     private final PurchaseOperationService purchaseOperationService;
     private final TicketOperationService ticketOperationService;
     private final BusinessOperationCoordinator businessOperationCoordinator;
+    private final BusinessOperationRecoveryService businessOperationRecoveryService;
 
     /**
      * 根据条件查询车票
@@ -149,6 +151,18 @@ public class TicketController {
             @PathVariable String operationId) {
         // 对账只读取票务服务事实表，不会重新触发购票、取消或退票写操作。
         return Results.success(businessOperationCoordinator.getStatus(operationId));
+    }
+
+    /**
+     * 为当前用户结果未知的操作立即触发一次下游权威状态查询。
+     *
+     * @param operationId Agent 服务端生成的稳定 actionId
+     * @return 对账后的最新状态
+     */
+    @PostMapping("/api/ticket-service/ticket/operations/{operationId}/reconcile")
+    public Result<String> reconcileBusinessOperation(@PathVariable String operationId) {
+        // 接口只触发订单或退款状态查询，不会重新执行任何票务写操作。
+        return Results.success(businessOperationRecoveryService.reconcileNow(operationId));
     }
 
     /**

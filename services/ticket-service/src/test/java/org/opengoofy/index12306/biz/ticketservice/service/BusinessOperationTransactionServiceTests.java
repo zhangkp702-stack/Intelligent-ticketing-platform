@@ -20,6 +20,7 @@ package org.opengoofy.index12306.biz.ticketservice.service;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.BusinessOperationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.BusinessOperationMapper;
+import org.opengoofy.index12306.biz.ticketservice.dao.mapper.BusinessOperationAuditMapper;
 import org.springframework.dao.DuplicateKeyException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,7 +38,8 @@ class BusinessOperationTransactionServiceTests {
     @Test
     void returnsFalseWhenAnotherInstanceAlreadyClaimedOperation() {
         BusinessOperationMapper mapper = mock(BusinessOperationMapper.class);
-        BusinessOperationTransactionService service = new BusinessOperationTransactionService(mapper);
+        BusinessOperationTransactionService service = new BusinessOperationTransactionService(
+                mapper, mock(BusinessOperationAuditMapper.class));
         BusinessOperationDO operation = BusinessOperationDO.builder()
                 .operationId("action-1")
                 .status(BusinessOperationTransactionService.STATUS_PROCESSING)

@@ -15,44 +15,62 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.ticketservice.dto.resp;
+package org.opengoofy.index12306.biz.ticketservice.dao.entity;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import org.opengoofy.index12306.framework.starter.database.base.BaseDO;
 
 /**
- * 返回当前用户业务操作的持久化状态和脱敏结果。
+ * 保存业务操作自动恢复和人工处置的不可变审计记录。
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class BusinessOperationStatusRespDTO {
+@EqualsAndHashCode(callSuper = true)
+@TableName("t_business_operation_audit")
+public class BusinessOperationAuditDO extends BaseDO {
 
     /**
-     * 调用方生成的稳定操作标识。
+     * 审计记录标识。
+     */
+    @TableId(type = IdType.ASSIGN_ID)
+    private Long id;
+
+    /**
+     * 被处置的业务操作标识。
      */
     private String operationId;
 
     /**
-     * 购票、取消或退票操作类型。
+     * 自动恢复器或人工操作人标识。
      */
-    private String operationType;
+    private String operatorId;
 
     /**
-     * PROCESSING、SUCCEEDED、FAILED、UNKNOWN、RECONCILING 或 MANUAL_REVIEW。
+     * 状态迁移前状态。
      */
-    private String status;
+    private Integer oldStatus;
 
     /**
-     * 成功时可返回 Agent 的白名单结果 JSON。
+     * 状态迁移后状态。
      */
-    private String safeResultJson;
+    private Integer newStatus;
 
     /**
-     * 明确失败时的限长原因摘要。
+     * 状态迁移原因。
      */
-    private String failureMessage;
+    private String reason;
+
+    /**
+     * 下游命令状态等安全证据摘要。
+     */
+    private String evidence;
 }

@@ -27,6 +27,8 @@ import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 import org.opengoofy.index12306.framework.starter.database.base.BaseDO;
 
+import java.util.Date;
+
 /**
  * 保存跨服务业务操作的认领状态和成功结果，避免同一操作重复执行。
  */
@@ -60,7 +62,7 @@ public class BusinessOperationDO extends BaseDO {
     private String requestFingerprint;
 
     /**
-     * 执行状态：0 处理中，1 已成功，2 已失败。
+     * 执行状态：0 处理中，1 已成功，2 已失败，3 结果未知，4 对账中，5 人工处理。
      */
     private Integer status;
 
@@ -73,4 +75,44 @@ public class BusinessOperationDO extends BaseDO {
      * 失败原因摘要，不保存完整异常堆栈。
      */
     private String failureMessage;
+
+    /**
+     * 当前同步执行线程所属的服务实例。
+     */
+    private String leaseOwner;
+
+    /**
+     * 当前执行租约截止时间。
+     */
+    private Date leaseUntil;
+
+    /**
+     * 每次执行权迁移时递增的隔离版本。
+     */
+    private Long executionEpoch;
+
+    /**
+     * 最近一次执行租约心跳时间。
+     */
+    private Date lastHeartbeatAt;
+
+    /**
+     * 可用于只读下游查询的订单号等安全业务引用。
+     */
+    private String businessReference;
+
+    /**
+     * 下一次允许执行只读对账的时间。
+     */
+    private Date nextReconcileAt;
+
+    /**
+     * 已执行的只读对账次数。
+     */
+    private Integer reconcileAttemptCount;
+
+    /**
+     * 稳定失败或未知分类。
+     */
+    private String failureCategory;
 }

@@ -67,6 +67,7 @@ public class PurchaseOperationService {
                 operationId,
                 PURCHASE_OPERATION_TYPE,
                 fingerprintPayload,
+                null,
                 TicketPurchaseRespDTO.class,
                 () -> ticketService.purchaseTicketsV2(requestParam));
     }

@@ -32,6 +32,7 @@ import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationLeaseService.OperationLease;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,6 +50,7 @@ class PurchaseOperationServiceTests {
 
     private TicketService ticketService;
     private BusinessOperationTransactionService transactionService;
+    private BusinessOperationLeaseService leaseService;
     private PurchaseOperationService purchaseOperationService;
 
     /**
@@ -59,9 +61,12 @@ class PurchaseOperationServiceTests {
         // 每个用例使用独立 Mock，避免操作认领状态在测试之间泄漏。
         ticketService = mock(TicketService.class);
         transactionService = mock(BusinessOperationTransactionService.class);
+        leaseService = mock(BusinessOperationLeaseService.class);
+        when(leaseService.create(anyString())).thenAnswer(invocation -> new OperationLease(
+                invocation.getArgument(0), "worker-1", 1L, new Date(0), new Date(120000)));
         purchaseOperationService = new PurchaseOperationService(
                 ticketService,
-                new BusinessOperationCoordinator(transactionService));
+                new BusinessOperationCoordinator(transactionService, leaseService));
         UserContext.setUser(UserInfoDTO.builder()
                 .userId("user-1")
                 .username("alice")
@@ -107,7 +112,8 @@ class PurchaseOperationServiceTests {
         TicketPurchaseRespDTO actual = purchaseOperationService.purchaseTicketsV2(request);
 
         assertThat(actual).isSameAs(expected);
-        verify(transactionService).markSucceeded("action-1", JSON.toJSONString(expected));
+        verify(transactionService).markSucceeded(
+                "action-1", "worker-1", 1L, JSON.toJSONString(expected), "order-1");
         verify(ticketService).purchaseTicketsV2(request);
     }
 
@@ -175,8 +181,11 @@ class PurchaseOperationServiceTests {
         // 相同操作标识后续不能再次进入扣票链，调用方需要创建新的操作。
         assertThatThrownBy(() -> purchaseOperationService.purchaseTicketsV2(request))
                 .isSameAs(failure);
-        verify(transactionService).markFailed("action-1", "列车站点已无余票");
-        verify(transactionService, never()).markSucceeded(anyString(), anyString());
+        verify(transactionService).markUnknown(
+                "action-1", "worker-1", 1L, "列车站点已无余票", "DOWNSTREAM_RESULT_UNKNOWN");
+        verify(transactionService, never()).markSucceeded(
+                anyString(), anyString(), org.mockito.ArgumentMatchers.anyLong(),
+                anyString(), org.mockito.ArgumentMatchers.nullable(String.class));
     }
 
     /**

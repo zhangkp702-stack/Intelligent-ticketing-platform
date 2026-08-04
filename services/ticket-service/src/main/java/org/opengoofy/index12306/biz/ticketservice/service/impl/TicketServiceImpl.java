@@ -544,6 +544,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             TrainStationRelationDO trainStationRelationDO = trainStationRelationMapper.selectOne(queryWrapper);
             // 组装整个订单请求参数
             TicketOrderCreateRemoteReqDTO orderCreateRemoteReqDTO = TicketOrderCreateRemoteReqDTO.builder()
+                    .actionId(requestParam.getOperationId())
+                    .commandId(downstreamCommand(requestParam.getOperationId(), "create-order"))
                     .departure(requestParam.getDeparture())
                     .arrival(requestParam.getArrival())
                     .orderTime(new Date())
@@ -626,6 +628,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         if (!Boolean.TRUE.equals(ticketOrderDetail.getCanCancel())) {
             throw new ServiceException("当前订单状态不允许取消");
         }
+        // Agent 取消请求必须把同一 actionId 派生的稳定命令传到订单服务。
+        requestParam.setCommandId(downstreamCommand(requestParam.getOperationId(), "cancel-order"));
         Result<Void> cancelOrderResult = ticketOrderRemoteService.cancelTicketOrder(requestParam);
         if (!cancelOrderResult.isSuccess()) {
             throw new ServiceException("取消订单失败");
@@ -693,7 +697,11 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         // 请求标识优先采用调用方提供值，缺失时按用户、订单和退票范围生成稳定标识。
         String requestId = normalizeRefundRequestId(requestParam, plan.items());
         RefundReqDTO refundReqDTO = new RefundReqDTO();
-        refundReqDTO.setRequestId(requestId);
+        refundReqDTO.setActionId(requestParam.getOperationId());
+        String refundCommandId = downstreamCommand(requestParam.getOperationId(), "refund-payment");
+        refundReqDTO.setCommandId(refundCommandId);
+        // Agent 退款由下游步骤命令作为支付层幂等键，普通退款继续复用原请求标识。
+        refundReqDTO.setRequestId(refundCommandId == null ? requestId : refundCommandId);
         refundReqDTO.setRefundTypeEnum(RefundTypeEnum.PARTIAL_REFUND.getType().equals(requestParam.getType())
                 ? RefundTypeEnum.PARTIAL_REFUND : RefundTypeEnum.FULL_REFUND);
         refundReqDTO.setRefundDetailReqDTOList(plan.items());
@@ -707,13 +715,30 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
 
         // 票务服务只返回退款跟踪所需字段，不暴露支付渠道内部请求。
         RefundTicketRespDTO response = new RefundTicketRespDTO();
-        response.setRequestId(payResult.getRequestId());
+        // 对外仍返回 actionId；下游 commandId 只用于步骤级幂等，不泄漏为业务请求标识。
+        response.setRequestId(StrUtil.isBlank(requestParam.getOperationId())
+                ? payResult.getRequestId() : requestParam.getOperationId().trim());
         response.setOrderSn(payResult.getOrderSn());
         response.setType(requestParam.getType());
         response.setRefundAmount(payResult.getRefundAmount());
         response.setStatus(payResult.getStatus());
         response.setTradeNo(payResult.getTradeNo());
         return response;
+    }
+
+    /**
+     * 由服务端操作标识派生下游稳定命令标识。
+     *
+     * @param actionId Agent 真实交易意图标识
+     * @param stepName 下游业务步骤名称
+     * @return 普通请求返回 null，Agent 请求返回 actionId 加步骤名称
+     */
+    private String downstreamCommand(String actionId, String stepName) {
+        if (StrUtil.isBlank(actionId)) {
+            return null;
+        }
+        // 命令标识只由可信票务服务派生，前端不能为同一 action 切换下游命令。
+        return actionId.trim() + ":" + stepName;
     }
 
     /**

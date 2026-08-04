@@ -22,6 +22,7 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.openfeign.EnableFeignClients;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 购票服务应用启动器
@@ -29,6 +30,7 @@ import org.springframework.cloud.openfeign.EnableFeignClients;
  */
 @SpringBootApplication
 @EnableDynamicThreadPool
+@EnableScheduling
 @MapperScan("org.opengoofy.index12306.biz.ticketservice.dao.mapper")
 @EnableFeignClients("org.opengoofy.index12306.biz.ticketservice.remote")
 public class TicketServiceApplication {

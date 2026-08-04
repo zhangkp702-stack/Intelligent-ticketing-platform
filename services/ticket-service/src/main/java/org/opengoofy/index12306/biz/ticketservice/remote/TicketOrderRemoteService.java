@@ -22,6 +22,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.req.TicketOrderItemQueryRe
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.remote.dto.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.cloud.openfeign.SpringQueryMap;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.PathVariable;
 import java.util.List;
 
 /**
@@ -72,6 +74,16 @@ public interface TicketOrderRemoteService {
      */
     @PostMapping("/api/order-service/order/ticket/create")
     Result<String> createTicketOrder(@RequestBody TicketOrderCreateRemoteReqDTO requestParam);
+
+    /**
+     * 查询当前用户订单命令的权威状态。
+     *
+     * @param commandId 稳定订单命令标识
+     * @return 命令状态和原订单号
+     */
+    @GetMapping("/api/order-service/operations/{commandId}")
+    Result<OrderCommandStatusRespDTO> queryCommandStatus(
+            @PathVariable("commandId") String commandId);
 
     /**
      * 车票订单关闭

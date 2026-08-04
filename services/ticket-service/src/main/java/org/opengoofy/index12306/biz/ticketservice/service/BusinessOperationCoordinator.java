@@ -37,10 +37,14 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationLeaseService.OperationLease;
 
 import static org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationTransactionService.STATUS_FAILED;
 import static org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationTransactionService.STATUS_PROCESSING;
 import static org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationTransactionService.STATUS_SUCCEEDED;
+import static org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationTransactionService.STATUS_UNKNOWN;
+import static org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationTransactionService.STATUS_RECONCILING;
+import static org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationTransactionService.STATUS_MANUAL_REVIEW;
 
 /**
  * 统一协调票务写操作的数据库认领、结果重放和终态持久化。
@@ -57,6 +61,7 @@ public class BusinessOperationCoordinator {
     private static final String REFUND_OPERATION_TYPE = "REFUND_TICKET";
 
     private final BusinessOperationTransactionService operationTransactionService;
+    private final BusinessOperationLeaseService operationLeaseService;
 
     /**
      * 清理并校验调用方提供的操作标识。
@@ -81,6 +86,7 @@ public class BusinessOperationCoordinator {
      * @param operationId 已规范化的操作标识
      * @param operationType 稳定业务操作类型
      * @param fingerprintPayload 不包含操作标识的业务参数
+     * @param initialBusinessReference 取消或退票已知的订单号，购票时为空
      * @param resultType 结果反序列化类型
      * @param operation 只有获得执行权后才允许调用的真实写操作
      * @return 首次执行结果，或重复成功操作保存的原结果
@@ -90,6 +96,7 @@ public class BusinessOperationCoordinator {
             String operationId,
             String operationType,
             Object fingerprintPayload,
+            String initialBusinessReference,
             Class<T> resultType,
             Supplier<T> operation) {
         Objects.requireNonNull(operationId, "操作标识不能为空");
@@ -101,12 +108,19 @@ public class BusinessOperationCoordinator {
         // 操作记录同时绑定用户、业务类型和参数摘要，禁止跨用户或跨业务复用操作标识。
         String userId = requireCurrentUserId();
         String requestFingerprint = fingerprint(fingerprintPayload);
+        OperationLease lease = operationLeaseService.create(operationId);
         BusinessOperationDO operationRecord = BusinessOperationDO.builder()
                 .operationId(operationId)
                 .operationType(operationType)
                 .userId(userId)
                 .requestFingerprint(requestFingerprint)
                 .status(STATUS_PROCESSING)
+                .leaseOwner(lease.owner())
+                .leaseUntil(lease.leaseUntil())
+                .executionEpoch(lease.epoch())
+                .lastHeartbeatAt(lease.heartbeatAt())
+                .businessReference(initialBusinessReference)
+                .reconcileAttemptCount(0)
                 .build();
         if (!operationTransactionService.tryClaim(operationRecord)) {
             return resolveExistingOperation(
@@ -117,18 +131,24 @@ public class BusinessOperationCoordinator {
                     resultType);
         }
 
-        T result;
+        operationLeaseService.activate(lease);
         try {
             // 只有成功认领唯一键的请求可以进入真实票务写链路。
-            result = Objects.requireNonNull(operation.get(), "业务操作结果不能为空");
-        } catch (RuntimeException exception) {
-            markFailed(operationId, exception);
-            throw exception;
-        }
+            T result = Objects.requireNonNull(operation.get(), "业务操作结果不能为空");
+            String resultReference = resultReference(result, initialBusinessReference);
 
-        // 写操作提交后在独立事务中固化结果，供相同操作标识安全重放。
-        operationTransactionService.markSucceeded(operationId, JSON.toJSONString(result));
-        return result;
+            // 成功终态必须匹配当前实例和 epoch；租约失效的迟到响应不能覆盖恢复状态。
+            operationTransactionService.markSucceeded(
+                    operationId, lease.owner(), lease.epoch(),
+                    JSON.toJSONString(result), resultReference);
+            return result;
+        } catch (RuntimeException exception) {
+            markUnknown(lease, exception);
+            throw exception;
+        } finally {
+            // 无论成功或异常都停止 JVM 内心跳，后续恢复完全由数据库状态驱动。
+            operationLeaseService.deactivate(lease);
+        }
     }
 
     /**
@@ -172,6 +192,15 @@ public class BusinessOperationCoordinator {
         }
         if (Objects.equals(status, STATUS_FAILED)) {
             return "FAILED";
+        }
+        if (Objects.equals(status, STATUS_UNKNOWN)) {
+            return "UNKNOWN";
+        }
+        if (Objects.equals(status, STATUS_RECONCILING)) {
+            return "RECONCILING";
+        }
+        if (Objects.equals(status, STATUS_MANUAL_REVIEW)) {
+            return "MANUAL_REVIEW";
         }
         throw new ServiceException("业务操作状态无效");
     }
@@ -262,6 +291,11 @@ public class BusinessOperationCoordinator {
         if (Objects.equals(existing.getStatus(), STATUS_FAILED)) {
             throw new ServiceException("该业务操作此前执行失败，请使用新的操作标识重试");
         }
+        if (Objects.equals(existing.getStatus(), STATUS_UNKNOWN)
+                || Objects.equals(existing.getStatus(), STATUS_RECONCILING)
+                || Objects.equals(existing.getStatus(), STATUS_MANUAL_REVIEW)) {
+            throw new ServiceException("业务操作结果正在核对，请勿使用新的操作标识重复提交");
+        }
         throw new ServiceException("业务操作状态无效");
     }
 
@@ -271,14 +305,33 @@ public class BusinessOperationCoordinator {
      * @param operationId 操作标识
      * @param exception 原业务异常
      */
-    private void markFailed(String operationId, RuntimeException exception) {
+    private void markUnknown(OperationLease lease, RuntimeException exception) {
         try {
-            // 失败摘要只用于运维定位，不持久化完整异常堆栈或请求敏感字段。
-            operationTransactionService.markFailed(operationId, safeFailureMessage(exception));
+            // 异常发生点可能位于下游提交之后，保守进入 UNKNOWN 才能避免二次扣票或退款。
+            operationTransactionService.markUnknown(
+                    lease.operationId(), lease.owner(), lease.epoch(),
+                    safeFailureMessage(exception), "DOWNSTREAM_RESULT_UNKNOWN");
         } catch (RuntimeException persistenceException) {
-            log.error("业务操作失败状态持久化异常，operationId={}", operationId, persistenceException);
+            log.error("业务操作未知状态持久化异常，operationId={}", lease.operationId(), persistenceException);
             exception.addSuppressed(persistenceException);
         }
+    }
+
+    /**
+     * 从成功结果中提取恢复和审计所需的最小业务引用。
+     *
+     * @param result 已确认成功的业务结果
+     * @param fallback 调用前已知的订单号
+     * @return 订单号等安全引用
+     */
+    private String resultReference(Object result, String fallback) {
+        if (result instanceof TicketPurchaseRespDTO purchaseResult) {
+            return purchaseResult.getOrderSn();
+        }
+        if (result instanceof RefundTicketRespDTO refundResult) {
+            return refundResult.getOrderSn();
+        }
+        return fallback;
     }
 
     /**

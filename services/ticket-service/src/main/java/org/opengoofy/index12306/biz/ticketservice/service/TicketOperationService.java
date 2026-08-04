@@ -61,6 +61,7 @@ public class TicketOperationService {
                 operationId,
                 CANCELLATION_OPERATION_TYPE,
                 new CancellationFingerprintPayload(requestParam.getOrderSn()),
+                requestParam.getOrderSn(),
                 Boolean.class,
                 () -> {
                     ticketService.cancelTicketOrder(requestParam);
@@ -97,6 +98,7 @@ public class TicketOperationService {
                 operationId,
                 REFUND_OPERATION_TYPE,
                 fingerprintPayload,
+                requestParam.getOrderSn(),
                 RefundTicketRespDTO.class,
                 () -> ticketService.commonTicketRefund(requestParam));
     }

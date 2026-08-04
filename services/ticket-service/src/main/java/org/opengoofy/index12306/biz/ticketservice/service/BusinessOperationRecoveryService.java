@@ -15,44 +15,25 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.ticketservice.dto.resp;
-
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+package org.opengoofy.index12306.biz.ticketservice.service;
 
 /**
- * 返回当前用户业务操作的持久化状态和脱敏结果。
+ * 只通过下游权威查询恢复结果未知的票务业务操作。
  */
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-public class BusinessOperationStatusRespDTO {
+public interface BusinessOperationRecoveryService {
 
     /**
-     * 调用方生成的稳定操作标识。
+     * 扫描过期租约并处理当前到期的 UNKNOWN 操作。
+     *
+     * @return 本轮成功收敛为终态的操作数量
      */
-    private String operationId;
+    int recoverDueOperations();
 
     /**
-     * 购票、取消或退票操作类型。
+     * 为当前用户指定操作触发一次只读对账。
+     *
+     * @param operationId 业务操作标识
+     * @return 对账后最新状态
      */
-    private String operationType;
-
-    /**
-     * PROCESSING、SUCCEEDED、FAILED、UNKNOWN、RECONCILING 或 MANUAL_REVIEW。
-     */
-    private String status;
-
-    /**
-     * 成功时可返回 Agent 的白名单结果 JSON。
-     */
-    private String safeResultJson;
-
-    /**
-     * 明确失败时的限长原因摘要。
-     */
-    private String failureMessage;
+    String reconcileNow(String operationId);
 }
