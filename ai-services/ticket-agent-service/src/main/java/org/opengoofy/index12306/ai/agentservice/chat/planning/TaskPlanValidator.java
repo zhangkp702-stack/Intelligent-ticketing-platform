@@ -1,7 +1,11 @@
 package org.opengoofy.index12306.ai.agentservice.chat.planning;
 
 import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.ClassifiedTask;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.PlannedTask;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.QuestionResolutionPlan;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.ResolvedTask;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskClassificationPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskSlots;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TrainSelectionPolicy;
@@ -50,6 +54,58 @@ public class TaskPlanValidator {
     }
 
     /**
+     * 校验并规范化第一阶段的任务拆分和问题补全结果。
+     *
+     * @param plan 问题解析模型返回的原始结果
+     * @return 任务标识、顺序和文本均已规范化的问题解析结果
+     */
+    public QuestionResolutionPlan validateQuestionResolution(QuestionResolutionPlan plan) {
+        if (plan == null || plan.tasks() == null || plan.tasks().isEmpty()) {
+            throw invalid("问题解析结果不能为空");
+        }
+        if (plan.tasks().size() > MAX_TASKS) {
+            throw invalid("单轮任务数量不能超过 " + MAX_TASKS);
+        }
+
+        // 第一阶段只校验任务边界和文本，不允许提前混入业务意图或槽位。
+        List<ResolvedTask> normalizedTasks = plan.tasks().stream()
+                .map(this::normalizeResolvedTask)
+                .sorted(Comparator.comparingInt(ResolvedTask::sequence))
+                .toList();
+        validateResolvedTaskIdentity(normalizedTasks);
+        return new QuestionResolutionPlan(List.copyOf(normalizedTasks));
+    }
+
+    /**
+     * 校验第二阶段分类是否与第一阶段任务一一对应，供候选模型失败降级使用。
+     *
+     * @param resolutionPlan 已通过校验的问题解析结果
+     * @param classificationPlan 业务规划模型返回的分类结果
+     * @return 原始分类结果；完整规范化在两个阶段合并时执行
+     */
+    public TaskClassificationPlan validateClassificationOutput(
+            QuestionResolutionPlan resolutionPlan,
+            TaskClassificationPlan classificationPlan) {
+        // 尝试合并并执行模型输出边界校验，使缺任务、越权改标识和非法槽位触发候选模型降级。
+        validateModelOutput(mergePlans(resolutionPlan, classificationPlan));
+        return classificationPlan;
+    }
+
+    /**
+     * 按服务端任务标识合并两个模型阶段，并执行最终业务边界校验。
+     *
+     * @param resolutionPlan 已通过校验的问题解析结果
+     * @param classificationPlan 已通过结构校验的业务分类结果
+     * @return 可持久化和调度的完整任务计划
+     */
+    public TaskPlan mergeAndValidate(
+            QuestionResolutionPlan resolutionPlan,
+            TaskClassificationPlan classificationPlan) {
+        // 最终校验额外限制单轮交易数量，避免模型拆分绕过服务端交易边界。
+        return validate(mergePlans(resolutionPlan, classificationPlan));
+    }
+
+    /**
      * 校验模型输出结构、字段和依赖图，供结构化调用在候选模型尝试内部使用。
      *
      * @param plan 结构化模型返回的原始任务计划
@@ -71,6 +127,92 @@ public class TaskPlanValidator {
         validateTaskIdentity(normalizedTasks);
         validateDependencies(normalizedTasks);
         return new TaskPlan(List.copyOf(normalizedTasks));
+    }
+
+    /**
+     * 规范化第一阶段单个任务的标识、文本和未解析指代。
+     *
+     * @param task 问题解析模型返回的原始任务
+     * @return 已规范化的问题解析任务
+     */
+    private ResolvedTask normalizeResolvedTask(ResolvedTask task) {
+        if (task == null) {
+            throw invalid("问题解析结果中不能包含空任务");
+        }
+        return new ResolvedTask(
+                requiredText(task.taskId(), "任务标识"),
+                task.sequence(),
+                requiredText(task.originalClause(), "任务原文"),
+                requiredText(task.standaloneQuestion(), "独立问题"),
+                normalizeList(task.unresolvedReferences(), "未解析指代"));
+    }
+
+    /**
+     * 校验第一阶段任务标识唯一且顺序从 1 连续递增。
+     *
+     * @param tasks 已按顺序排列的问题解析任务
+     */
+    private void validateResolvedTaskIdentity(List<ResolvedTask> tasks) {
+        Set<String> taskIds = new HashSet<>();
+        for (int index = 0; index < tasks.size(); index++) {
+            ResolvedTask task = tasks.get(index);
+            if (!taskIds.add(task.taskId())) {
+                throw invalid("任务标识不能重复: " + task.taskId());
+            }
+            if (task.sequence() != index + 1) {
+                throw invalid("任务顺序必须从 1 开始且连续");
+            }
+        }
+    }
+
+    /**
+     * 将第二阶段业务字段附加到第一阶段确定的问题文本上。
+     *
+     * @param resolutionPlan 已校验的问题解析结果
+     * @param classificationPlan 待校验的业务分类结果
+     * @return 尚未规范化的完整任务计划
+     */
+    private TaskPlan mergePlans(
+            QuestionResolutionPlan resolutionPlan,
+            TaskClassificationPlan classificationPlan) {
+        QuestionResolutionPlan normalizedResolution = validateQuestionResolution(resolutionPlan);
+        if (classificationPlan == null
+                || classificationPlan.tasks() == null
+                || classificationPlan.tasks().size() != normalizedResolution.tasks().size()) {
+            throw invalid("业务分类必须与问题解析任务一一对应");
+        }
+
+        // 只允许第二阶段通过第一阶段分配的 taskId 关联，禁止覆盖原文和独立问题。
+        Map<String, ClassifiedTask> classificationByTaskId = new HashMap<>();
+        for (ClassifiedTask task : classificationPlan.tasks()) {
+            if (task == null) {
+                throw invalid("业务分类结果中不能包含空任务");
+            }
+            String taskId = requiredText(task.taskId(), "任务标识");
+            if (classificationByTaskId.putIfAbsent(taskId, task) != null) {
+                throw invalid("任务标识不能重复: " + taskId);
+            }
+        }
+
+        List<PlannedTask> mergedTasks = new ArrayList<>();
+        for (ResolvedTask resolvedTask : normalizedResolution.tasks()) {
+            ClassifiedTask classifiedTask = classificationByTaskId.get(resolvedTask.taskId());
+            if (classifiedTask == null || classifiedTask.sequence() != resolvedTask.sequence()) {
+                throw invalid("业务分类任务与问题解析任务不一致: " + resolvedTask.taskId());
+            }
+            mergedTasks.add(new PlannedTask(
+                    resolvedTask.taskId(),
+                    resolvedTask.sequence(),
+                    classifiedTask.intent(),
+                    resolvedTask.originalClause(),
+                    resolvedTask.standaloneQuestion(),
+                    classifiedTask.slots(),
+                    List.of(),
+                    classifiedTask.dependsOn(),
+                    classifiedTask.workflowRelation(),
+                    resolvedTask.unresolvedReferences()));
+        }
+        return new TaskPlan(List.copyOf(mergedTasks));
     }
 
     /**

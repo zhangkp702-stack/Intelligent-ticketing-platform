@@ -2,7 +2,11 @@ package org.opengoofy.index12306.ai.agentservice.chat.planning;
 
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.ClassifiedTask;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.PlannedTask;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.QuestionResolutionPlan;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.ResolvedTask;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskClassificationPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskSlots;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TrainSelectionPolicy;
@@ -45,6 +49,54 @@ class TaskPlanValidatorTests {
         assertThat(result.tasks().get(1).missingFields()).containsExactly("departureDate");
         assertThat(result.tasks().get(1).slots().passengerNames()).containsExactly("万重山");
         assertThat(result.tasks().get(2).missingFields()).isEmpty();
+    }
+
+    /**
+     * 验证两阶段结果按服务端任务标识合并，第二阶段不能覆盖第一阶段问题文本。
+     */
+    @Test
+    void mergesQuestionResolutionWithBusinessClassification() {
+        QuestionResolutionPlan resolutionPlan = new QuestionResolutionPlan(List.of(
+                new ResolvedTask(
+                        "task-1", 1, "查明天的票", "查询2026-07-30北京到上海的车票", List.of())));
+        TaskClassificationPlan classificationPlan = new TaskClassificationPlan(List.of(
+                new ClassifiedTask(
+                        "task-1",
+                        1,
+                        AgentIntent.TRAIN_QUERY,
+                        completeTrainQuerySlots(),
+                        List.of(),
+                        WorkflowRelation.INDEPENDENT)));
+
+        // 最终任务的问题文本完全来自第一阶段，业务分类只附加受控字段。
+        TaskPlan result = validator.mergeAndValidate(resolutionPlan, classificationPlan);
+
+        assertThat(result.tasks()).singleElement().satisfies(task -> {
+            assertThat(task.originalClause()).isEqualTo("查明天的票");
+            assertThat(task.standaloneQuestion()).isEqualTo("查询2026-07-30北京到上海的车票");
+            assertThat(task.intent()).isEqualTo(AgentIntent.TRAIN_QUERY);
+        });
+    }
+
+    /**
+     * 验证第二阶段缺失或篡改第一阶段任务标识时被拒绝。
+     */
+    @Test
+    void rejectsClassificationForUnknownResolvedTask() {
+        QuestionResolutionPlan resolutionPlan = new QuestionResolutionPlan(List.of(
+                new ResolvedTask("task-1", 1, "查询车票", "查询北京到上海的车票", List.of())));
+        TaskClassificationPlan classificationPlan = new TaskClassificationPlan(List.of(
+                new ClassifiedTask(
+                        "task-9",
+                        1,
+                        AgentIntent.TRAIN_QUERY,
+                        completeTrainQuerySlots(),
+                        List.of(),
+                        WorkflowRelation.INDEPENDENT)));
+
+        assertThatThrownBy(() -> validator.mergeAndValidate(resolutionPlan, classificationPlan))
+                .isInstanceOf(InvalidModelOutputException.class)
+                .hasMessageContaining("业务分类任务与问题解析任务不一致");
     }
 
     /**

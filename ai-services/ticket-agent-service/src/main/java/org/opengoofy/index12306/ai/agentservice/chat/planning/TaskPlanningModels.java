@@ -16,6 +16,58 @@ public final class TaskPlanningModels {
     }
 
     /**
+     * 第一阶段完成任务拆分和上下文补全后的结果。
+     *
+     * @param tasks 按用户表达顺序排列的已解析任务
+     */
+    public record QuestionResolutionPlan(List<ResolvedTask> tasks) {
+    }
+
+    /**
+     * 第一阶段输出的单个独立问题，不包含业务意图和槽位。
+     *
+     * @param taskId 当前解析结果内唯一任务标识
+     * @param sequence 用户原始表达中的任务顺序，从 1 开始
+     * @param originalClause 当前任务对应的用户原文片段
+     * @param standaloneQuestion 补全明确上下文后的独立问题
+     * @param unresolvedReferences 仍无法从可信上下文解析的指代表达
+     */
+    public record ResolvedTask(
+            String taskId,
+            int sequence,
+            String originalClause,
+            String standaloneQuestion,
+            List<String> unresolvedReferences) {
+    }
+
+    /**
+     * 第二阶段针对已解析问题生成的业务分类结果。
+     *
+     * @param tasks 与第一阶段任务一一对应的业务分类
+     */
+    public record TaskClassificationPlan(List<ClassifiedTask> tasks) {
+    }
+
+    /**
+     * 第二阶段输出的单个任务业务属性，不允许覆盖第一阶段的问题文本。
+     *
+     * @param taskId 第一阶段分配的任务标识
+     * @param sequence 第一阶段确定的任务顺序
+     * @param intent 受控业务意图
+     * @param slots 从独立问题提取的业务字段
+     * @param dependsOn 当前任务依赖的其他任务标识
+     * @param workflowRelation 当前任务与活动工作流的关系
+     */
+    public record ClassifiedTask(
+            String taskId,
+            int sequence,
+            AgentIntent intent,
+            TaskSlots slots,
+            List<String> dependsOn,
+            WorkflowRelation workflowRelation) {
+    }
+
+    /**
      * 当前用户问题拆分后的完整任务计划。
      *
      * @param tasks 按用户表达顺序排列的子任务
