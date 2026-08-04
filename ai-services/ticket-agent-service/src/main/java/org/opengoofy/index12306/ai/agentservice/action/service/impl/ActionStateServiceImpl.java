@@ -2,17 +2,12 @@ package org.opengoofy.index12306.ai.agentservice.action.service.impl;
 
 import org.opengoofy.index12306.ai.agentservice.action.observability.AgentActionMetrics;
 import org.opengoofy.index12306.ai.agentservice.action.security.ConfirmationTokenService;
-
-
 import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionDraftEntity;
-import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionExecutionEntity;
 import org.opengoofy.index12306.ai.agentservice.action.dto.ClaimedAction;
 import org.opengoofy.index12306.ai.agentservice.action.config.AgentActionProperties;
-import org.opengoofy.index12306.ai.agentservice.action.enums.ActionExecutionOutcome;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionDraftRepository;
-import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionExecutionRepository;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService.ExecutionLease;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionReconciliationService;
@@ -22,13 +17,21 @@ import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.TurnEnti
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.TurnRepository;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandClaim;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandDefinition;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandMode;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
+import org.opengoofy.index12306.framework.starter.reliablecommand.store.ReliableCommandStore;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * 在短数据库事务中维护操作草案和执行记录，外部 MCP 调用不占用数据库锁。
@@ -36,8 +39,11 @@ import java.util.Optional;
 @Service
 public class ActionStateServiceImpl implements ActionStateService {
 
+    private static final String FINGERPRINT_VERSION = "agent-action-v1";
+    private static final int RECOVERY_BATCH_SIZE = 100;
+
     private final ActionDraftRepository actionRepository;
-    private final ActionExecutionRepository executionRepository;
+    private final ReliableCommandStore reliableCommandStore;
     private final ConversationRepository conversationRepository;
     private final TurnRepository turnRepository;
     private final ConfirmationTokenService tokenService;
@@ -45,12 +51,13 @@ public class ActionStateServiceImpl implements ActionStateService {
     private final ActionReconciliationService reconciliationService;
     private final AgentActionProperties actionProperties;
     private final Clock clock;
+    private final String workerId = "agent-action-worker-" + UUID.randomUUID();
 
     /**
      * 创建高风险操作事务状态存储服务。
      *
      * @param actionRepository 操作草案仓储
-     * @param executionRepository 执行记录仓储
+     * @param reliableCommandStore 通用可靠命令仓储
      * @param conversationRepository 会话仓储
      * @param turnRepository 轮次仓储
      * @param tokenService 确认令牌校验服务
@@ -61,7 +68,7 @@ public class ActionStateServiceImpl implements ActionStateService {
      */
     public ActionStateServiceImpl(
             ActionDraftRepository actionRepository,
-            ActionExecutionRepository executionRepository,
+            ReliableCommandStore reliableCommandStore,
             ConversationRepository conversationRepository,
             TurnRepository turnRepository,
             ConfirmationTokenService tokenService,
@@ -70,7 +77,7 @@ public class ActionStateServiceImpl implements ActionStateService {
             AgentActionProperties actionProperties,
             Clock clock) {
         this.actionRepository = actionRepository;
-        this.executionRepository = executionRepository;
+        this.reliableCommandStore = reliableCommandStore;
         this.conversationRepository = conversationRepository;
         this.turnRepository = turnRepository;
         this.tokenService = tokenService;
@@ -234,58 +241,65 @@ public class ActionStateServiceImpl implements ActionStateService {
         if (!tokenService.matches(action, confirmationToken)) {
             throw new SecurityException("操作确认令牌无效");
         }
-        ActionExecutionEntity idempotentExecution = executionRepository
-                .findByIdempotencyKey(idempotencyKey)
-                .orElse(null);
-        if (idempotentExecution != null) {
-            throw new IllegalStateException("确认幂等键已经被使用");
+        Objects.requireNonNull(requestId, "requestId");
+        Objects.requireNonNull(idempotencyKey, "idempotencyKey");
+
+        // 服务端 actionId 是真实写操作的稳定身份；确认令牌消费与命令认领加入同一本地事务。
+        ReliableCommandDefinition definition = new ReliableCommandDefinition(
+                ActionStateService.commandKey(action.getId()),
+                action.getActionType().name(),
+                ReliableCommandMode.REMOTE_EFFECT,
+                action.getUserId(),
+                action.getPayloadHash(),
+                FINGERPRINT_VERSION,
+                action.getId());
+        ReliableCommandClaim commandClaim = reliableCommandStore.claim(
+                definition, workerId, now, now.plus(actionProperties.executionLease()));
+        if (!commandClaim.acquired()) {
+            throw new IllegalStateException("操作可靠命令已经被认领");
         }
 
-        // 确认事务只创建 QUEUED 记录；事务提交后还必须再次领取有期限的真实写执行权。
-        ActionExecutionEntity execution = ActionExecutionEntity.queue(
-                action.getId(), requestId, idempotencyKey, now);
-        executionRepository.insert(execution);
-        action.queueExecution(execution.getId(), now);
-        // 确认消费后显式保存排队状态，保证令牌消费与执行记录在同一事务内提交。
+        // 草案只保存通用命令标识，不再创建第二套 Action 执行实体。
+        action.queueExecution(action.getId(), now);
         actionRepository.updateById(action);
         return new ClaimedAction(
-                action.getId(), execution.getId(), requestId, action.getActionType(),
+                action.getId(), action.getId(), requestId, action.getActionType(),
                 action.getUserId(), action.getConversationId(),
                 action.getTurnId(), action.getPayloadJson(), action.getPayloadHash());
     }
 
     /**
-     * 锁定草案和执行记录，为当前实例签发新的 fencing token。
+     * 锁定草案并读取确认事务已经取得的通用可靠命令租约。
      *
      * @param actionId 草案标识
-     * @param executionId 执行记录标识
-     * @param owner 执行实例标识
+     * @param executionId 草案绑定的命令标识
      * @return 本次数据库租约
      */
     @Transactional
     @Override
-    public ExecutionLease startExecution(String actionId, String executionId, String owner) {
+    public ExecutionLease startExecution(String actionId, String executionId) {
         ActionDraftEntity action = actionRepository.findLockedById(actionId)
                 .orElseThrow(() -> new IllegalStateException("操作草案不存在"));
-        ActionExecutionEntity execution = executionRepository.findLockedById(executionId)
-                .orElseThrow(() -> new IllegalStateException("操作执行记录不存在"));
-        if (!execution.getActionId().equals(actionId)
-                || !executionId.equals(action.getExecutionId())) {
-            throw new IllegalStateException("操作草案与执行记录不匹配");
+        if (!executionId.equals(action.getExecutionId())) {
+            throw new IllegalStateException("操作草案与可靠命令不匹配");
         }
 
-        // 同一事务同步迁移草案和执行审计，只有拿到租约的实例才可以调用下游写接口。
+        // 确认事务已经创建 PROCESSING 和围栏租约，执行前再次读取权威状态并检查租约未过期。
         Instant now = clock.instant();
-        long fencingToken = execution.claim(
-                owner, now.plus(actionProperties.executionLease()), now);
+        ReliableCommandRecord command = requireCommand(action.getId());
+        if (command.status() != ReliableCommandStatus.PROCESSING
+                || command.lease() == null
+                || command.leaseUntil() == null
+                || !now.isBefore(command.leaseUntil())) {
+            throw new IllegalStateException("操作执行权已经失效");
+        }
         action.beginExecution(now);
-        executionRepository.updateById(execution);
         actionRepository.updateById(action);
-        return new ExecutionLease(actionId, executionId, owner, fencingToken);
+        return new ExecutionLease(actionId, executionId, command.key(), command.lease());
     }
 
     /**
-     * 使用执行记录行锁校验 fencing token 并延长租约。
+     * 使用通用命令的 owner 和 fencing token 延长真实写租约。
      *
      * @param lease 当前执行租约
      * @return 成功续租返回 true，旧执行者或终态记录返回 false
@@ -293,22 +307,11 @@ public class ActionStateServiceImpl implements ActionStateService {
     @Transactional
     @Override
     public boolean heartbeat(ExecutionLease lease) {
-        ActionExecutionEntity execution = executionRepository.findLockedById(lease.executionId())
-                .orElse(null);
-        if (execution == null
-                || execution.getOutcome() != ActionExecutionOutcome.STARTED
-                || !lease.owner().equals(execution.getLeaseOwner())
-                || lease.fencingToken() != execution.getFencingToken()) {
-            return false;
-        }
-
-        // 只有数据库中仍生效的执行者可以续租，避免旧实例延长新实例的执行窗口。
         Instant now = clock.instant();
-        execution.heartbeat(
-                lease.owner(), lease.fencingToken(),
-                now.plus(actionProperties.executionLease()), now);
-        executionRepository.updateById(execution);
-        return true;
+        // 通用仓储通过状态、owner 和 fencing token 三重条件拒绝旧实例续租。
+        return reliableCommandStore.heartbeat(
+                lease.commandKey(), lease.commandLease(),
+                now, now.plus(actionProperties.executionLease()));
     }
 
     /**
@@ -317,26 +320,26 @@ public class ActionStateServiceImpl implements ActionStateService {
      * @param lease 当前执行租约
      * @param safeResultJson 脱敏结果 JSON
      * @param resultReference 订单号
-     * @param responseFingerprint 响应指纹
      */
     @Transactional
     @Override
     public void succeed(
             ExecutionLease lease,
             String safeResultJson,
-            String resultReference,
-            String responseFingerprint) {
+            String resultReference) {
         ActionDraftEntity action = actionRepository.findLockedById(lease.actionId())
                 .orElseThrow(() -> new IllegalStateException("操作草案不存在"));
-        ActionExecutionEntity execution = requireLeasedExecution(action, lease);
+        requireLeasedCommand(action, lease);
         Instant now = clock.instant();
 
-        // 草案状态和独立执行审计必须在同一事务中完成，避免一边成功一边仍为运行中。
+        // 通用命令结果与用户可见草案在同一本地事务提交，避免镜像状态不一致。
+        boolean saved = reliableCommandStore.markSucceeded(
+                lease.commandKey(), lease.commandLease(), safeResultJson, resultReference, now);
+        if (!saved) {
+            throw new IllegalStateException("操作执行权已经失效");
+        }
         action.succeed(safeResultJson, resultReference, now);
-        execution.succeed(
-                lease.owner(), lease.fencingToken(), resultReference, responseFingerprint, now);
         actionRepository.updateById(action);
-        executionRepository.updateById(execution);
     }
 
     /**
@@ -351,14 +354,17 @@ public class ActionStateServiceImpl implements ActionStateService {
     public void fail(ExecutionLease lease, String category, String exceptionType) {
         ActionDraftEntity action = actionRepository.findLockedById(lease.actionId())
                 .orElseThrow(() -> new IllegalStateException("操作草案不存在"));
-        ActionExecutionEntity execution = requireLeasedExecution(action, lease);
+        requireLeasedCommand(action, lease);
         Instant now = clock.instant();
 
-        // 明确业务拒绝同时结束草案和执行审计，避免前端误显示为结果待核对。
+        // 明确业务拒绝同时结束通用命令和草案，允许用户修正参数后生成新动作。
+        boolean saved = reliableCommandStore.markFailed(
+                lease.commandKey(), lease.commandLease(), category, exceptionType, now);
+        if (!saved) {
+            throw new IllegalStateException("操作执行权已经失效");
+        }
         action.fail(category, now);
-        execution.fail(lease.owner(), lease.fencingToken(), category, exceptionType, now);
         actionRepository.updateById(action);
-        executionRepository.updateById(execution);
     }
 
     /**
@@ -373,14 +379,17 @@ public class ActionStateServiceImpl implements ActionStateService {
     public void markUnknown(ExecutionLease lease, String category, String exceptionType) {
         ActionDraftEntity action = actionRepository.findLockedById(lease.actionId())
                 .orElseThrow(() -> new IllegalStateException("操作草案不存在"));
-        ActionExecutionEntity execution = requireLeasedExecution(action, lease);
+        requireLeasedCommand(action, lease);
         Instant now = clock.instant();
 
-        // 超时或网络异常可能发生在下游已经创建订单之后，只能等待订单查询核对。
+        // 超时或网络异常可能发生在下游提交之后，通用命令和草案必须原子转入 UNKNOWN。
+        boolean saved = reliableCommandStore.markUnknown(
+                lease.commandKey(), lease.commandLease(), category, exceptionType, now, now);
+        if (!saved) {
+            throw new IllegalStateException("操作执行权已经失效");
+        }
         action.markUnknown(category, now);
-        execution.markUnknown(lease.owner(), lease.fencingToken(), category, exceptionType, now);
         actionRepository.updateById(action);
-        executionRepository.updateById(execution);
         // 与 UNKNOWN 状态同事务创建 Outbox 事件，避免状态已提交但恢复任务丢失。
         reconciliationService.request(lease.actionId());
     }
@@ -396,40 +405,47 @@ public class ActionStateServiceImpl implements ActionStateService {
         Instant now = clock.instant();
         int recovered = 0;
         Instant queueDeadline = now.minus(actionProperties.executionLease());
-        for (ActionExecutionEntity candidate : executionRepository.findAbandonedQueued(queueDeadline)) {
-            // 与正常领取保持草案、执行记录的固定加锁顺序，避免恢复器和确认线程形成死锁。
-            ActionDraftEntity action = actionRepository.findLockedById(candidate.getActionId())
-                    .orElseThrow(() -> new IllegalStateException("操作草案不存在"));
-            ActionExecutionEntity execution = executionRepository.findLockedById(candidate.getId()).orElse(null);
-            if (execution == null || execution.getOutcome() != ActionExecutionOutcome.QUEUED) {
+        for (ActionDraftEntity candidate : actionRepository.findAbandonedQueued(queueDeadline)) {
+            // QUEUED 尚未开始远程调用，先于统一租约恢复明确结束为 FAILED。
+            ActionDraftEntity action = actionRepository.findLockedById(candidate.getId()).orElse(null);
+            if (action == null || action.getStatus() != AgentActionStatus.QUEUED) {
                 continue;
             }
-            // QUEUED 从未取得下游写权限，因此可以结束为明确失败而不创建对账任务。
+            ReliableCommandRecord command = requireCommand(action.getId());
+            if (command.status() != ReliableCommandStatus.PROCESSING || command.lease() == null) {
+                continue;
+            }
+            boolean saved = reliableCommandStore.markFailed(
+                    command.key(), command.lease(),
+                    "ACTION_EXECUTION_NOT_STARTED", "QUEUE_LEASE_EXPIRED", now);
+            if (!saved) {
+                continue;
+            }
             action.failQueued("ACTION_EXECUTION_NOT_STARTED", now);
-            execution.abandonQueued("ACTION_EXECUTION_NOT_STARTED", now);
             actionRepository.updateById(action);
-            executionRepository.updateById(execution);
             recovered++;
         }
-        for (ActionExecutionEntity candidate : executionRepository.findExpiredStarted(now)) {
-            // 候选快照可能已被处理；仍按草案、执行记录顺序加锁后再次校验租约。
-            ActionDraftEntity action = actionRepository.findLockedById(candidate.getActionId())
-                    .orElseThrow(() -> new IllegalStateException("操作草案不存在"));
-            ActionExecutionEntity execution = executionRepository.findLockedById(candidate.getId()).orElse(null);
-            if (execution == null
-                    || execution.getOutcome() != ActionExecutionOutcome.STARTED
-                    || execution.getLeaseUntil() == null
-                    || now.isBefore(execution.getLeaseUntil())) {
+
+        // 统一恢复器只把过期 PROCESSING/RECONCILING 转 UNKNOWN，不会重新调用真实写接口。
+        reliableCommandStore.recoverExpiredLeases(
+                COMMAND_NAMESPACE, now, workerId, RECOVERY_BATCH_SIZE);
+        for (ReliableCommandRecord command : reliableCommandStore.findDueReconciliations(
+                COMMAND_NAMESPACE, now, RECOVERY_BATCH_SIZE)) {
+            ActionDraftEntity action = actionRepository.findLockedById(command.key().commandId()).orElse(null);
+            if (action == null) {
                 continue;
             }
-
-            // 宕机后无法证明下游没有成功，禁止自动重放，只创建同事务对账任务。
-            action.markUnknown("ACTION_EXECUTION_LEASE_EXPIRED", now);
-            execution.recoverExpired("ACTION_EXECUTION_LEASE_EXPIRED", now);
-            actionRepository.updateById(action);
-            executionRepository.updateById(execution);
-            reconciliationService.request(action.getId());
-            recovered++;
+            if (action.getStatus() == AgentActionStatus.QUEUED
+                    || action.getStatus() == AgentActionStatus.EXECUTING) {
+                // 无法证明租约过期前是否已发出请求时保守进入 UNKNOWN。
+                action.recoverUnknown("ACTION_EXECUTION_LEASE_EXPIRED", now);
+                actionRepository.updateById(action);
+                recovered++;
+            }
+            if (action.getStatus() == AgentActionStatus.UNKNOWN) {
+                // 幂等创建 Outbox，也能修复命令已 UNKNOWN 但事件尚未写入的历史窗口。
+                reconciliationService.request(action.getId());
+            }
         }
         return recovered;
     }
@@ -475,34 +491,34 @@ public class ActionStateServiceImpl implements ActionStateService {
     }
 
     /**
-     * 读取草案关联的唯一执行记录。
+     * 读取动作对应的唯一可靠命令记录。
      *
-     * @param action 草案实体
-     * @return 执行记录
+     * @param actionId 服务端动作标识
+     * @return 当前权威命令记录
      */
-    private ActionExecutionEntity requireExecution(ActionDraftEntity action) {
-        if (action.getExecutionId() == null) {
-            throw new IllegalStateException("操作草案缺少执行记录");
-        }
-        return Optional.ofNullable(executionRepository.selectById(action.getExecutionId()))
-                .orElseThrow(() -> new IllegalStateException("操作执行记录不存在"));
+    private ReliableCommandRecord requireCommand(String actionId) {
+        return reliableCommandStore.find(ActionStateService.commandKey(actionId))
+                .orElseThrow(() -> new IllegalStateException("操作可靠命令不存在"));
     }
 
     /**
-     * 读取执行记录并校验它与本次租约属于同一草案和同一执行标识。
+     * 校验草案、执行标识和通用命令租约属于同一次执行。
      *
      * @param action 已锁定草案
      * @param lease 当前执行租约
-     * @return 与租约绑定的执行记录
      */
-    private ActionExecutionEntity requireLeasedExecution(
+    private void requireLeasedCommand(
             ActionDraftEntity action,
             ExecutionLease lease) {
-        ActionExecutionEntity execution = requireExecution(action);
-        if (!execution.getId().equals(lease.executionId())) {
-            throw new IllegalStateException("操作执行记录与租约不匹配");
+        if (!Objects.equals(action.getExecutionId(), lease.executionId())
+                || !ActionStateService.commandKey(action.getId()).equals(lease.commandKey())) {
+            throw new IllegalStateException("操作草案与可靠命令租约不匹配");
         }
-        return execution;
+        ReliableCommandRecord command = requireCommand(action.getId());
+        if (command.status() != ReliableCommandStatus.PROCESSING
+                || !Objects.equals(command.lease(), lease.commandLease())) {
+            throw new IllegalStateException("操作执行权已经失效");
+        }
     }
 
     /**

@@ -11,7 +11,6 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
-import java.util.UUID;
 import java.util.function.Supplier;
 
 /**
@@ -21,7 +20,6 @@ import java.util.function.Supplier;
 public class ActionExecutionLeaseCoordinatorImpl implements ActionExecutionLeaseCoordinator {
 
     private final ActionStateService actionStateService;
-    private final String workerId = "action-worker-" + UUID.randomUUID();
     private final long heartbeatIntervalMillis;
 
     /**
@@ -46,8 +44,8 @@ public class ActionExecutionLeaseCoordinatorImpl implements ActionExecutionLease
      */
     @Override
     public ExecutionLease start(ClaimedAction action) {
-        // 服务实例标识和递增 fencing token 一起构成不可伪造的执行权。
-        return actionStateService.startExecution(action.actionId(), action.executionId(), workerId);
+        // 确认事务已经在通用命令表取得 owner 和 fencing token，此处只让草案进入执行态。
+        return actionStateService.startExecution(action.actionId(), action.executionId());
     }
 
     /**

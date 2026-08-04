@@ -265,6 +265,23 @@ public class ActionDraftEntity extends AgentBaseEntity {
     }
 
     /**
+     * 在执行租约过期恢复时把排队或执行中的草案保守转为未知状态。
+     *
+     * @param category 稳定恢复分类
+     * @param now 恢复时间
+     */
+    public void recoverUnknown(String category, Instant now) {
+        if (status != AgentActionStatus.QUEUED && status != AgentActionStatus.EXECUTING) {
+            throw new IllegalStateException("操作草案不处于可恢复执行状态");
+        }
+        // 无法证明真实写调用是否已经开始时选择 UNKNOWN，禁止恢复器重放业务写请求。
+        this.failureCategory = Objects.requireNonNull(category, "category");
+        this.status = AgentActionStatus.UNKNOWN;
+        this.finishedAt = null;
+        touch(now);
+    }
+
+    /**
      * 在 MQ 消费者获得持久化领取权后进入对账状态。
      *
      * @param now 领取时间
@@ -317,6 +334,38 @@ public class ActionDraftEntity extends AgentBaseEntity {
      */
     public void reconciliationPending(Instant now) {
         requireReconciling();
+        this.status = AgentActionStatus.UNKNOWN;
+        this.finishedAt = null;
+        touch(now);
+    }
+
+    /**
+     * 自动对账达到上限时持久化人工处理状态。
+     *
+     * @param category 稳定人工处理分类
+     * @param now 状态迁移时间
+     */
+    public void requireManualReview(String category, Instant now) {
+        requireReconciling();
+        // 人工处理是显式非终态，不允许前端把它误解为明确失败后重新提交。
+        this.failureCategory = Objects.requireNonNull(category, "category");
+        this.status = AgentActionStatus.MANUAL_REVIEW;
+        this.finishedAt = null;
+        touch(now);
+    }
+
+    /**
+     * 由受权人工重新开启同一动作的只读对账，不会回到真实写执行状态。
+     *
+     * @param category 稳定人工处置分类
+     * @param now 重新调度时间
+     */
+    public void resumeManualReview(String category, Instant now) {
+        if (status != AgentActionStatus.MANUAL_REVIEW) {
+            throw new IllegalStateException("操作草案不处于人工复核状态");
+        }
+        // 人工恢复只让消息消费者再次查询下游操作事实，禁止重新调用购票、取消或退款写接口。
+        this.failureCategory = Objects.requireNonNull(category, "category");
         this.status = AgentActionStatus.UNKNOWN;
         this.finishedAt = null;
         touch(now);

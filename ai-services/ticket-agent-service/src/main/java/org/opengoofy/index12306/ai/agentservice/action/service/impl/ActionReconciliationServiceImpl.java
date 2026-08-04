@@ -6,23 +6,33 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opengoofy.index12306.ai.agentservice.action.config.ActionReconciliationProperties;
 import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionDraftEntity;
-import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionExecutionEntity;
-import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionReconciliationEntity;
 import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionDraftRepository;
-import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionExecutionRepository;
-import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionReconciliationRepository;
-import org.opengoofy.index12306.ai.agentservice.action.enums.ActionReconciliationStatus;
+import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionType;
+import org.opengoofy.index12306.ai.agentservice.action.mq.ActionReconciliationMessage;
+import org.opengoofy.index12306.ai.agentservice.action.mq.ReconciliationMessageContractException;
+import org.opengoofy.index12306.ai.agentservice.action.observability.ActionReconciliationMetrics;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionReconciliationService;
+import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandLease;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableConsumptionResult;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventDefinition;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventKey;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventLease;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableInboxKey;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableInboxRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableInboxStatus;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableOutboxRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.store.ReliableCommandStore;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -33,38 +43,44 @@ import java.util.Optional;
 @Service
 public class ActionReconciliationServiceImpl implements ActionReconciliationService {
 
-    private static final String CONSUMER_NAME = "agent-action-reconciliation-v1";
+    private static final String EVENT_TYPE = "ACTION_RECONCILIATION_REQUESTED";
+    private static final Duration PUBLISH_RETRY_DELAY = Duration.ofSeconds(1);
+    private static final int BATCH_SIZE = 100;
 
     private final ActionReconciliationProperties properties;
-    private final ActionReconciliationRepository reconciliationRepository;
+    private final ReliableEventStore reliableEventStore;
     private final ActionDraftRepository actionRepository;
-    private final ActionExecutionRepository executionRepository;
+    private final ReliableCommandStore reliableCommandStore;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final ActionReconciliationMetrics reconciliationMetrics;
 
     /**
      * 创建动作对账事务服务。
      *
      * @param properties 对账重试配置
-     * @param reconciliationRepository 对账事件仓储
+     * @param reliableEventStore 通用可靠 Outbox 和 Inbox 存储
      * @param actionRepository 操作草案仓储
-     * @param executionRepository 执行审计仓储
+     * @param reliableCommandStore 通用可靠命令仓储
      * @param objectMapper JSON 解析器
      * @param clock 统一时钟
+     * @param reconciliationMetrics 对账生命周期指标记录器
      */
     public ActionReconciliationServiceImpl(
             ActionReconciliationProperties properties,
-            ActionReconciliationRepository reconciliationRepository,
+            ReliableEventStore reliableEventStore,
             ActionDraftRepository actionRepository,
-            ActionExecutionRepository executionRepository,
+            ReliableCommandStore reliableCommandStore,
             ObjectMapper objectMapper,
-            Clock clock) {
+            Clock clock,
+            ActionReconciliationMetrics reconciliationMetrics) {
         this.properties = properties;
-        this.reconciliationRepository = reconciliationRepository;
+        this.reliableEventStore = reliableEventStore;
         this.actionRepository = actionRepository;
-        this.executionRepository = executionRepository;
+        this.reliableCommandStore = reliableCommandStore;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.reconciliationMetrics = reconciliationMetrics;
     }
 
     /**
@@ -75,45 +91,63 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
     @Transactional
     @Override
     public void request(String actionId) {
-        // 唯一 actionId 已存在时直接复用，避免网络异常处理本身产生重复事件。
-        if (reconciliationRepository.findByActionId(actionId).isPresent()) {
-            return;
-        }
-        reconciliationRepository.insert(ActionReconciliationEntity.pending(
-                actionId, properties.maxAttempts(), clock.instant()));
+        // actionId 同时作为事件标识和业务去重键，重复异常处理只会复用同一 Outbox。
+        ReliableEventDefinition definition = new ReliableEventDefinition(
+                eventKey(actionId), actionId, EVENT_TYPE, actionId, actionId, 1L);
+        reliableEventStore.enqueue(definition, clock.instant());
     }
 
     /**
-     * 查询本轮可发布的数据库 Outbox 事件。
+     * 使用通用发布租约领取本轮可发送的 Outbox 事件。
      *
+     * @param publisherId 发布实例标识
      * @return 最多一百条待发布事件
      */
     @Override
-    public List<PendingEvent> pendingEvents() {
-        // 发布器只读取 PENDING，不在发送 MQ 期间持有数据库事务和行锁。
-        return reconciliationRepository.findTop100ByStatusOrderByUpdatedAtAsc(ActionReconciliationStatus.PENDING)
+    public List<PendingEvent> claimPendingEvents(String publisherId) {
+        Instant now = clock.instant();
+        // 发布租约只覆盖 MQ 发送窗口，发送期间不持有数据库事务和行锁。
+        return reliableEventStore.claimPublishable(
+                EVENT_NAMESPACE, publisherId, now, now.plus(properties.leaseDuration()), BATCH_SIZE)
                 .stream()
-                .map(entity -> new PendingEvent(entity.getId(), entity.getActionId(), entity.getEventVersion()))
+                .map(event -> new PendingEvent(
+                        event.key().eventId(), event.aggregateId(), event.eventVersion(),
+                        event.createdAt(), event.lease()))
                 .toList();
     }
 
     /**
      * 在 MQ 确认接收后持久化消息标识。
      *
-     * @param eventId 事件标识
-     * @param eventVersion 事件版本
+     * @param event 已领取事件
      * @param messageId MQ 消息标识
      */
-    @Transactional
     @Override
-    public void markPublished(String eventId, long eventVersion, String messageId) {
-        ActionReconciliationEntity event = requireEvent(eventId);
-        // 迟到的发布确认不能覆盖已经恢复或消费的新状态。
-        if (event.getEventVersion() != eventVersion) {
-            return;
+    public void markPublished(PendingEvent event, String messageId) {
+        // owner 和 fencing token 共同拒绝租约恢复后的迟到发布确认。
+        boolean saved = reliableEventStore.markPublished(
+                eventKey(event.eventId()), event.lease(), event.eventVersion(), messageId, clock.instant());
+        if (!saved) {
+            throw new IllegalStateException("动作对账事件发布权已经失效");
         }
-        event.published(messageId, clock.instant());
-        reconciliationRepository.updateById(event);
+    }
+
+    /**
+     * 释放失败发布租约并安排短延迟重试。
+     *
+     * @param event 已领取事件
+     * @param category 稳定失败分类
+     * @param safeMessage 安全失败摘要
+     */
+    @Override
+    public void markPublishFailed(PendingEvent event, String category, String safeMessage) {
+        Instant now = clock.instant();
+        boolean saved = reliableEventStore.markPublishFailed(
+                eventKey(event.eventId()), event.lease(), event.eventVersion(),
+                category, safeMessage, now.plus(PUBLISH_RETRY_DELAY), now);
+        if (!saved) {
+            throw new IllegalStateException("动作对账事件发布权已经失效");
+        }
     }
 
     /**
@@ -125,26 +159,37 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
     @Override
     public int recoverExpired() {
         Instant now = clock.instant();
-        List<ActionReconciliationEntity> candidates = reconciliationRepository.findExpiredRunning(
-                ActionReconciliationStatus.RUNNING, now);
-        candidates.addAll(reconciliationRepository.findDueRetries(ActionReconciliationStatus.RETRY_WAIT, now));
-        int recovered = 0;
-        // 查询已在同一事务内加锁，逐条状态迁移不会被其他实例重复恢复。
-        for (ActionReconciliationEntity event : candidates) {
-            boolean abandonedRunningAttempt = event.getStatus() == ActionReconciliationStatus.RUNNING;
-            if (event.recoverForRepublish(now)) {
-                if (abandonedRunningAttempt) {
-                    // 消费者可能在查询或提交结果前宕机，租约恢复时三份状态必须一起退回可重试状态。
-                    ActionDraftEntity action = requireAction(event.getActionId());
-                    ActionExecutionEntity execution = requireExecution(action);
-                    action.reconciliationPending(now);
-                    execution.reconciliationPending(now);
-                    actionRepository.updateById(action);
-                    executionRepository.updateById(execution);
-                }
-                reconciliationRepository.updateById(event);
-                recovered++;
+        // 发布进程在发送前宕机时释放过期发布围栏；发送确认丢失允许产生可去重的重复消息。
+        int recovered = reliableEventStore.recoverExpiredPublications(
+                EVENT_NAMESPACE, now, BATCH_SIZE);
+        // 先由通用状态机回收过期 PROCESSING/RECONCILING，绝不重新调用真实写接口。
+        reliableCommandStore.recoverExpiredLeases(
+                ActionStateService.COMMAND_NAMESPACE, now, CONSUMER_NAME, 100);
+        List<ReliableInboxRecord> candidates = reliableEventStore.findExpiredConsumptions(
+                EVENT_NAMESPACE, CONSUMER_NAME, now, BATCH_SIZE);
+        // 只有通用命令也已回到 UNKNOWN，才允许释放 Inbox 消费围栏并重新发布只读查询。
+        for (ReliableInboxRecord inbox : candidates) {
+            ReliableOutboxRecord event = requireEvent(inbox.key().eventKey().eventId());
+            ActionDraftEntity action = requireAction(event.aggregateId());
+            if (requireCommand(action).status() != ReliableCommandStatus.UNKNOWN) {
+                // 通用命令租约尚未到期时继续等待，不能只恢复 Outbox 而提前释放围栏。
+                continue;
             }
+            Optional<ReliableConsumptionResult> recoveredConsumption = reliableEventStore.retryConsumption(
+                    inbox.key(), requireInboxLease(inbox), "CONSUMER_LEASE_EXPIRED",
+                    "动作对账消费者租约已过期", now, now);
+            if (recoveredConsumption.isEmpty()) {
+                // 其他实例已经恢复当前 Inbox 时跳过，不能让一次围栏竞争回滚整批任务。
+                continue;
+            }
+            ReliableConsumptionResult result = recoveredConsumption.get();
+            if (result.retryScheduled()) {
+                action.reconciliationPending(now);
+            } else {
+                moveToManualReview(action, now, "RECONCILIATION_EXHAUSTED");
+            }
+            actionRepository.updateById(action);
+            recovered++;
         }
         return recovered;
     }
@@ -152,31 +197,34 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
     /**
      * 以数据库行锁幂等领取消息，并把操作和执行审计一起转入 RECONCILING。
      *
-     * @param eventId 事件标识
-     * @param eventVersion 事件版本
+     * @param message 已反序列化的对账消息
      * @param workerId 消费实例标识
      * @return 成功领取时的不可变工作项
      */
     @Transactional
     @Override
-    public Optional<WorkItem> claim(String eventId, long eventVersion, String workerId) {
-        ActionReconciliationEntity event = requireEvent(eventId);
+    public Optional<WorkItem> claim(ActionReconciliationMessage message, String workerId) {
+        ReliableOutboxRecord event = requireEvent(message.eventId());
+        // 在创建 Inbox 前验证消息的所有业务定位字段，防止错误主题或篡改载荷领取其他动作。
+        assertMatchesPersistedEvent(message, event);
         Instant now = clock.instant();
-        if (!event.claim(eventVersion, workerId, CONSUMER_NAME, now, properties.leaseDuration())) {
-            reconciliationRepository.updateById(event);
+        Optional<ReliableInboxRecord> claimed = reliableEventStore.claimConsumption(
+                event.key(), message.eventVersion(), CONSUMER_NAME, workerId,
+                now, now.plus(properties.leaseDuration()), properties.maxAttempts());
+        if (claimed.isEmpty()) {
             return Optional.empty();
         }
 
-        // 对账事件、草案和执行记录在同一事务进入运行态，崩溃后由租约恢复。
-        ActionDraftEntity action = requireAction(event.getActionId());
-        ActionExecutionEntity execution = requireExecution(action);
+        // Inbox、草案和通用命令在同一事务进入运行态，后续提交必须同时通过两类围栏。
+        ActionDraftEntity action = requireAction(event.aggregateId());
+        reliableCommandStore.claimReconciliation(
+                ActionStateService.commandKey(action.getId()), workerId,
+                now, now.plus(properties.leaseDuration()))
+                .orElseThrow(() -> new IllegalStateException("操作可靠命令无法领取对账权"));
         action.beginReconciliation(now);
-        execution.beginReconciliation(now);
-        reconciliationRepository.updateById(event);
         actionRepository.updateById(action);
-        executionRepository.updateById(execution);
         return Optional.of(new WorkItem(
-                event.getId(), event.getEventVersion(), action.getId(), action.getActionType(),
+                event.key().eventId(), event.eventVersion(), action.getId(), action.getActionType(),
                 action.getUserId(), action.getConversationId(), action.getTurnId(),
                 action.getPayloadJson(), action.getPayloadHash()));
     }
@@ -191,36 +239,49 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
     @Transactional
     @Override
     public boolean complete(String eventId, DownstreamResult result) {
-        ActionReconciliationEntity event = requireEvent(eventId);
-        ActionDraftEntity action = requireAction(event.getActionId());
-        ActionExecutionEntity execution = requireExecution(action);
+        ReliableOutboxRecord event = requireEvent(eventId);
+        ReliableInboxRecord inbox = requireProcessingInbox(event.key());
+        ActionDraftEntity action = requireAction(event.aggregateId());
+        ReliableCommandRecord command = requireCommand(action);
         Instant now = clock.instant();
         assertSameOperation(action, result);
 
         if (result.status() == DownstreamStatus.PROCESSING) {
-            // 下游仍在处理中不代表失败，恢复 UNKNOWN 并通过相同 Outbox 事件延迟查询。
-            action.reconciliationPending(now);
-            execution.reconciliationPending(now);
-            event.retry("DOWNSTREAM_PROCESSING", "下游操作仍在处理中", now, properties.retryDelay());
-            updateAll(event, action, execution);
+            // 下游仍在处理中不代表失败，通过相同 Outbox 事件延迟查询或转人工。
+            Instant nextRetryAt = now.plus(properties.retryDelay().multipliedBy(inbox.attemptCount()));
+            ReliableConsumptionResult consumption = reliableEventStore.retryConsumption(
+                    inbox.key(), requireInboxLease(inbox), "DOWNSTREAM_PROCESSING",
+                    "下游操作仍在处理中", nextRetryAt, now)
+                    .orElseThrow(() -> new IllegalStateException("动作对账 Inbox 执行权已经失效"));
+            finishPendingOrManual(command, action, consumption.retryScheduled(),
+                    "DOWNSTREAM_PROCESSING", "下游操作仍在处理中", nextRetryAt, now);
+            actionRepository.updateById(action);
             return false;
         }
         if (result.status() == DownstreamStatus.FAILED) {
             // 只有下游操作事实表明确失败，Agent 才允许结束为 FAILED。
+            boolean saved = reliableCommandStore.reconcileFailed(
+                    command.key(), requireLease(command),
+                    "DOWNSTREAM_CONFIRMED_FAILED", result.failureMessage(),
+                    "DOWNSTREAM_STATUS:FAILED", now);
+            requireSaved(saved);
             action.reconcileFailed("DOWNSTREAM_CONFIRMED_FAILED", now);
-            execution.reconcileFailed("DOWNSTREAM_CONFIRMED_FAILED", now);
-            event.succeed(now);
-            updateAll(event, action, execution);
+            requireInboxSaved(reliableEventStore.completeConsumption(
+                    inbox.key(), requireInboxLease(inbox), now));
+            actionRepository.updateById(action);
             return true;
         }
 
         // 成功结果必须重新按动作类型白名单化，不能直接保存任意下游 JSON。
         NormalizedResult normalized = normalizeSuccess(action, result.safeResultJson());
-        String fingerprint = sha256(normalized.safeResultJson());
+        boolean saved = reliableCommandStore.reconcileSucceeded(
+                command.key(), requireLease(command), normalized.safeResultJson(),
+                normalized.reference(), "DOWNSTREAM_STATUS:SUCCEEDED", now);
+        requireSaved(saved);
         action.reconcileSucceeded(normalized.safeResultJson(), normalized.reference(), now);
-        execution.reconcileSucceeded(normalized.reference(), fingerprint, now);
-        event.succeed(now);
-        updateAll(event, action, execution);
+        requireInboxSaved(reliableEventStore.completeConsumption(
+                inbox.key(), requireInboxLease(inbox), now));
+        actionRepository.updateById(action);
         return true;
     }
 
@@ -235,17 +296,64 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
     @Transactional
     @Override
     public boolean fail(String eventId, String category, String safeMessage) {
-        ActionReconciliationEntity event = requireEvent(eventId);
-        ActionDraftEntity action = requireAction(event.getActionId());
-        ActionExecutionEntity execution = requireExecution(action);
+        ReliableOutboxRecord event = requireEvent(eventId);
+        ReliableInboxRecord inbox = requireProcessingInbox(event.key());
+        ActionDraftEntity action = requireAction(event.aggregateId());
+        ReliableCommandRecord command = requireCommand(action);
         Instant now = clock.instant();
 
-        // 查询失败不得重放真实写请求，草案恢复 UNKNOWN 供下次只读对账。
-        action.reconciliationPending(now);
-        execution.reconciliationPending(now);
-        boolean retry = event.retry(category, safeMessage, now, properties.retryDelay());
-        updateAll(event, action, execution);
-        return retry;
+        // 查询失败不得重放真实写请求，只能安排下一次只读对账或人工处理。
+        Instant nextRetryAt = now.plus(properties.retryDelay().multipliedBy(inbox.attemptCount()));
+        ReliableConsumptionResult consumption = reliableEventStore.retryConsumption(
+                inbox.key(), requireInboxLease(inbox), category, safeMessage, nextRetryAt, now)
+                .orElseThrow(() -> new IllegalStateException("动作对账 Inbox 执行权已经失效"));
+        finishPendingOrManual(command, action, consumption.retryScheduled(),
+                category, safeMessage, nextRetryAt, now);
+        actionRepository.updateById(action);
+        return consumption.retryScheduled();
+    }
+
+    /**
+     * 将人工复核中的动作重新投递为同一条只读对账任务，并保存操作员审计。
+     *
+     * @param actionId 操作草案标识
+     * @param operatorId 人工操作员标识
+     * @param reason 人工重新核对原因
+     * @return 重新调度后的动作摘要
+     */
+    @Transactional
+    @Override
+    public ManualReviewResumeResult resumeManualReview(String actionId, String operatorId, String reason) {
+        ActionDraftEntity action = requireAction(actionId);
+        if (action.getStatus() != AgentActionStatus.MANUAL_REVIEW) {
+            throw new IllegalStateException("操作不处于人工复核状态");
+        }
+        ReliableOutboxRecord event = requireEvent(actionId);
+        if (!action.getId().equals(event.aggregateId())) {
+            throw new IllegalStateException("人工复核事件与操作草案不匹配");
+        }
+        ReliableCommandRecord command = requireCommand(action);
+        if (command.status() != ReliableCommandStatus.MANUAL_REVIEW) {
+            throw new IllegalStateException("可靠命令不处于人工复核状态");
+        }
+        Instant now = clock.instant();
+
+        // 先重启通用命令调度并写入操作员审计，原始写命令的指纹、归属和结果均不可修改。
+        requireSaved(reliableCommandStore.resumeManualReview(
+                command.key(), operatorId, reason, now, now));
+        // 再重置同一事件的失败 Inbox，Outbox 会由发布器重新发送，消费者仍只调用权威查询工具。
+        boolean resumed = reliableEventStore.resumeFailedConsumption(
+                new ReliableInboxKey(event.key(), CONSUMER_NAME),
+                "MANUAL_RECONCILIATION_REQUEUED", reason, now, now);
+        if (!resumed) {
+            throw new IllegalStateException("动作对账 Inbox 不处于可人工恢复状态");
+        }
+        action.resumeManualReview("MANUAL_RECONCILIATION_REQUEUED", now);
+        actionRepository.updateById(action);
+        // 只统计受权人工重启次数，完整操作员和原因已由可靠命令审计持久化。
+        reconciliationMetrics.recordManualReview(
+                action.getActionType(), ActionReconciliationMetrics.ManualReviewOutcome.RESUMED);
+        return new ManualReviewResumeResult(action.getId(), action.getStatus(), now);
     }
 
     /**
@@ -258,6 +366,26 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
         if (!action.getId().equals(result.actionId())
                 || !expectedOperationType(action.getActionType()).equals(result.operationType())) {
             throw new IllegalStateException("下游对账结果与原操作不一致");
+        }
+    }
+
+    /**
+     * 校验 MQ 消息与本地权威 Outbox 是否描述同一条对账事件。
+     *
+     * @param message Broker 传入的消息契约
+     * @param event 数据库中的权威 Outbox 记录
+     */
+    private void assertMatchesPersistedEvent(
+            ActionReconciliationMessage message,
+            ReliableOutboxRecord event) {
+        // 事件 ID 命中后仍必须比较业务域、类型、聚合、版本，避免仅凭一个字符串跨域误消费。
+        if (!EVENT_NAMESPACE.equals(message.eventNamespace())
+                || !EVENT_NAMESPACE.equals(event.key().namespace())
+                || !ActionReconciliationMessage.EVENT_TYPE.equals(message.eventType())
+                || !ActionReconciliationMessage.EVENT_TYPE.equals(event.eventType())
+                || !event.aggregateId().equals(message.actionId())
+                || event.eventVersion() != message.eventVersion()) {
+            throw new ReconciliationMessageContractException("Reconciliation message does not match persisted outbox event");
         }
     }
 
@@ -327,14 +455,40 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
     }
 
     /**
-     * 锁定读取对账事件。
+     * 读取通用 Outbox 对账事件。
      *
      * @param eventId 事件标识
-     * @return 对账事件
+     * @return Outbox 事件
      */
-    private ActionReconciliationEntity requireEvent(String eventId) {
-        return reconciliationRepository.findLockedById(eventId)
+    private ReliableOutboxRecord requireEvent(String eventId) {
+        return reliableEventStore.findEvent(eventKey(eventId))
                 .orElseThrow(() -> new IllegalStateException("对账事件不存在"));
+    }
+
+    /**
+     * 创建动作对账事件主键。
+     *
+     * @param eventId 事件标识
+     * @return 通用事件主键
+     */
+    private ReliableEventKey eventKey(String eventId) {
+        return new ReliableEventKey(EVENT_NAMESPACE, eventId);
+    }
+
+    /**
+     * 读取当前消费者已经领取的 PROCESSING Inbox。
+     *
+     * @param eventKey 事件主键
+     * @return 当前运行中的 Inbox
+     */
+    private ReliableInboxRecord requireProcessingInbox(ReliableEventKey eventKey) {
+        ReliableInboxRecord inbox = reliableEventStore.findConsumption(
+                new ReliableInboxKey(eventKey, CONSUMER_NAME))
+                .orElseThrow(() -> new IllegalStateException("动作对账 Inbox 不存在"));
+        if (inbox.status() != ReliableInboxStatus.PROCESSING) {
+            throw new IllegalStateException("动作对账 Inbox 不处于运行状态");
+        }
+        return inbox;
     }
 
     /**
@@ -349,44 +503,118 @@ public class ActionReconciliationServiceImpl implements ActionReconciliationServ
     }
 
     /**
-     * 锁定读取草案关联的执行审计。
+     * 读取草案关联的通用可靠命令。
      *
      * @param action 操作草案
-     * @return 执行审计
+     * @return 当前权威命令记录
      */
-    private ActionExecutionEntity requireExecution(ActionDraftEntity action) {
-        return executionRepository.findLockedById(action.getExecutionId())
-                .orElseThrow(() -> new IllegalStateException("操作执行记录不存在"));
+    private ReliableCommandRecord requireCommand(ActionDraftEntity action) {
+        return reliableCommandStore.find(ActionStateService.commandKey(action.getId()))
+                .orElseThrow(() -> new IllegalStateException("操作可靠命令不存在"));
     }
 
     /**
-     * 原子写回对账事件、操作草案和执行审计。
+     * 提取对账记录当前持有的围栏租约。
      *
-     * @param event 对账事件
-     * @param action 操作草案
-     * @param execution 执行审计
+     * @param command 已领取的对账命令
+     * @return owner 和 fencing token
      */
-    private void updateAll(
-            ActionReconciliationEntity event,
+    private ReliableCommandLease requireLease(ReliableCommandRecord command) {
+        return Objects.requireNonNull(command.lease(), "对账命令缺少租约");
+    }
+
+    /**
+     * 提取 Inbox 当前持有的消费围栏租约。
+     *
+     * @param inbox 已领取 Inbox
+     * @return owner 和 fencing token
+     */
+    private ReliableEventLease requireInboxLease(ReliableInboxRecord inbox) {
+        return Objects.requireNonNull(inbox.lease(), "动作对账 Inbox 缺少租约");
+    }
+
+    /**
+     * 将无结论查询安排为下一次只读对账，达到上限时显式转人工处理。
+     *
+     * @param command 已领取的对账命令
+     * @param action 当前对账草案
+     * @param retry 是否继续自动查询
+     * @param category 稳定分类
+     * @param message 安全失败摘要
+     * @param nextRetryAt 下一次查询时间
+     * @param now 当前时间
+     */
+    private void finishPendingOrManual(
+            ReliableCommandRecord command,
             ActionDraftEntity action,
-            ActionExecutionEntity execution) {
-        reconciliationRepository.updateById(event);
-        actionRepository.updateById(action);
-        executionRepository.updateById(execution);
+            boolean retry,
+            String category,
+            String message,
+            Instant nextRetryAt,
+            Instant now) {
+        ReliableCommandStatus target = retry
+                ? ReliableCommandStatus.UNKNOWN : ReliableCommandStatus.MANUAL_REVIEW;
+        boolean saved = reliableCommandStore.finishReconciliation(
+                command.key(), requireLease(command), target, category, message, category,
+                retry ? Objects.requireNonNull(nextRetryAt, "nextRetryAt") : null, now);
+        requireSaved(saved);
+        if (retry) {
+            action.reconciliationPending(now);
+        } else {
+            action.requireManualReview("RECONCILIATION_EXHAUSTED", now);
+            // 自动对账耗尽后只记录低基数生命周期事件，操作员和失败细节保留在审计表。
+            reconciliationMetrics.recordManualReview(
+                    action.getActionType(), ActionReconciliationMetrics.ManualReviewOutcome.ENTERED);
+        }
     }
 
     /**
-     * 生成持久化结果指纹。
+     * 将已经没有自动重试机会的 UNKNOWN 操作转为人工处理。
      *
-     * @param value 脱敏结果 JSON
-     * @return SHA-256 十六进制摘要
+     * @param action 操作草案
+     * @param now 当前时间
+     * @param category 稳定人工处理分类
      */
-    private String sha256(String value) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("当前运行环境不支持 SHA-256", exception);
+    private void moveToManualReview(
+            ActionDraftEntity action,
+            Instant now,
+            String category) {
+        ReliableCommandRecord command = reliableCommandStore.claimReconciliation(
+                ActionStateService.commandKey(action.getId()), CONSUMER_NAME,
+                now, now.plus(properties.leaseDuration()))
+                .orElseThrow(() -> new IllegalStateException("操作可靠命令无法转人工处理"));
+        boolean saved = reliableCommandStore.finishReconciliation(
+                command.key(), requireLease(command), ReliableCommandStatus.MANUAL_REVIEW,
+                category, category, category, null, now);
+        requireSaved(saved);
+        if (action.getStatus() == AgentActionStatus.UNKNOWN) {
+            action.beginReconciliation(now);
+        }
+        action.requireManualReview(category, now);
+        // 租约恢复发现重试已耗尽时，同样需要暴露人工复核入口量。
+        reconciliationMetrics.recordManualReview(
+                action.getActionType(), ActionReconciliationMetrics.ManualReviewOutcome.ENTERED);
+    }
+
+    /**
+     * 校验通用命令围栏更新成功。
+     *
+     * @param saved 围栏状态迁移结果
+     */
+    private void requireSaved(boolean saved) {
+        if (!saved) {
+            throw new IllegalStateException("操作对账执行权已经失效");
+        }
+    }
+
+    /**
+     * 校验 Inbox 围栏更新成功。
+     *
+     * @param saved Inbox 状态迁移结果
+     */
+    private void requireInboxSaved(boolean saved) {
+        if (!saved) {
+            throw new IllegalStateException("动作对账 Inbox 执行权已经失效");
         }
     }
 

@@ -43,6 +43,18 @@ class TicketAgentServiceApplicationTests {
     }
 
     /**
+     * 验证 Prometheus 抓取端点已显式开放，监控系统可以读取低基数可靠性指标。
+     *
+     * @throws Exception 抓取端点请求执行失败时抛出
+     */
+    @Test
+    void prometheusEndpointIsAvailable() throws Exception {
+        // 仅验证端点可达；具体指标值由各业务链路测试和指标单元测试覆盖。
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk());
+    }
+
+    /**
      * 验证多平台候选模型和各角色降级链能够从 YAML 完整绑定。
      */
     @Test

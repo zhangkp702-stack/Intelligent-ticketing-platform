@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -57,4 +58,14 @@ public interface ActionDraftRepository extends BaseMapper<ActionDraftEntity> {
      */
     @Select("SELECT * FROM t_agent_action_draft WHERE id = #{actionId} FOR UPDATE")
     Optional<ActionDraftEntity> findLockedById(@Param("actionId") String actionId);
+
+    /**
+     * 查询确认后长期未进入真实执行的排队草案。
+     *
+     * @param deadline 最晚允许排队时间
+     * @return 最多一百条排队候选
+     */
+    @Select("SELECT * FROM t_agent_action_draft WHERE status = 'QUEUED' "
+            + "AND updated_at <= #{deadline} ORDER BY updated_at ASC LIMIT 100")
+    List<ActionDraftEntity> findAbandonedQueued(@Param("deadline") Instant deadline);
 }

@@ -266,8 +266,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
             if (!StringUtils.hasText(orderSn)) {
                 throw new IllegalStateException("操作结果缺少订单号");
             }
-            stateStore.succeed(
-                    executionLease, safeResultJson, orderSn, fingerprint(safeResultJson));
+            stateStore.succeed(executionLease, safeResultJson, orderSn);
             actionMetrics.recordExecution(
                     claimed.actionType(), AgentActionStatus.SUCCEEDED, executionStartedNanos);
             LOGGER.info(

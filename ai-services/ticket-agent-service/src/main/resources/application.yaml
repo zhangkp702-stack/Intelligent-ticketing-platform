@@ -51,13 +51,19 @@ rocketmq:
     send-message-timeout: 2000
 
 management:
+  prometheus:
+    metrics:
+      export:
+        enabled: true
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when_authorized
+    prometheus:
+      access: read-only
 
 index12306:
   agent:
@@ -86,6 +92,8 @@ index12306:
         max-attempts: 5
         retry-delay: 30s
         lease-duration: 2m
+        observability:
+          backlog-refresh-interval-millis: 15000
         mq:
           enabled: ${AGENT_ACTION_RECONCILIATION_MQ_ENABLED:true}
           topic: index12306_agent_action_reconciliation_topic${unique-name:}

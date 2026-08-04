@@ -98,9 +98,13 @@ public class AgentActionMetrics {
      * 确认在真实写调用前终止的固定分类。
      */
     public enum ConfirmationRejection {
+        /** 确认令牌或草案已经过期。 */
         EXPIRED,
+        /** 下游预览结果已变化。 */
         PREVIEW_CHANGED,
+        /** 确认令牌无效。 */
         INVALID_TOKEN,
+        /** 草案当前状态不允许确认。 */
         NOT_CONFIRMABLE
     }
 }

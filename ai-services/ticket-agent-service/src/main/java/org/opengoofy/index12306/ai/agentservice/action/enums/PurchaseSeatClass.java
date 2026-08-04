@@ -8,20 +8,35 @@ import java.util.Arrays;
  */
 public enum PurchaseSeatClass {
 
+    /** 商务座。 */
     BUSINESS_CLASS(0, "商务座"),
+    /** 一等座。 */
     FIRST_CLASS(1, "一等座"),
+    /** 二等座。 */
     SECOND_CLASS(2, "二等座"),
+    /** 二等包座。 */
     SECOND_CLASS_CABIN_SEAT(3, "二等包座"),
+    /** 一等卧。 */
     FIRST_SLEEPER(4, "一等卧"),
+    /** 二等卧。 */
     SECOND_SLEEPER(5, "二等卧"),
+    /** 软卧。 */
     SOFT_SLEEPER(6, "软卧"),
+    /** 硬卧。 */
     HARD_SLEEPER(7, "硬卧"),
+    /** 硬座。 */
     HARD_SEAT(8, "硬座"),
+    /** 高级软卧。 */
     DELUXE_SOFT_SLEEPER(9, "高级软卧"),
+    /** 动卧。 */
     DINING_CAR_SLEEPER(10, "动卧"),
+    /** 软座。 */
     SOFT_SEAT(11, "软座"),
+    /** 特等座。 */
     FIRST_CLASS_SEAT(12, "特等座"),
+    /** 无座。 */
     NO_SEAT_SLEEPER(13, "无座"),
+    /** 其他未细分席别。 */
     OTHER(14, "其他");
 
     private final int code;

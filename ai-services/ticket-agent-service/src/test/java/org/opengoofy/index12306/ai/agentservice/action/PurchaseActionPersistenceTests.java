@@ -7,8 +7,8 @@ import org.opengoofy.index12306.ai.agentservice.action.mcp.ConfirmedTicketOperat
 import org.opengoofy.index12306.ai.agentservice.action.mcp.TicketOperationPreviewExecutor;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionReconciliationService;
-import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionReconciliationEntity;
-import org.opengoofy.index12306.ai.agentservice.action.dao.repository.ActionReconciliationRepository;
+import org.opengoofy.index12306.ai.agentservice.action.mq.ActionReconciliationMessage;
+import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService;
 import org.opengoofy.index12306.ai.agentservice.action.validation.PurchaseDraftRevalidator;
 import org.opengoofy.index12306.ai.agentservice.action.service.TicketOperationActionService;
 import org.junit.jupiter.api.Test;
@@ -26,16 +26,22 @@ import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.chat.exception.AgentChatException;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableInboxKey;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableInboxStatus;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableOutboxRecord;
+import org.opengoofy.index12306.framework.starter.reliablecommand.store.ReliableCommandStore;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 
@@ -88,7 +94,13 @@ class PurchaseActionPersistenceTests {
     private ActionReconciliationService reconciliationService;
 
     @Autowired
-    private ActionReconciliationRepository reconciliationRepository;
+    private ReliableEventStore reliableEventStore;
+
+    @Autowired
+    private ReliableCommandStore reliableCommandStore;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     /**
      * 清理共享 Spring 测试上下文中的执行器调用记录。
@@ -125,6 +137,8 @@ class PurchaseActionPersistenceTests {
         assertThat(first.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
         assertThat(first.orderSn()).isEqualTo("order-1001");
         assertThat(retried).isEqualTo(first);
+        assertThat(reliableCommandStore.find(ActionStateService.commandKey(confirmation.actionId()))
+                .orElseThrow().status()).isEqualTo(ReliableCommandStatus.SUCCEEDED);
         assertThat(counterValue(
                 "agent.action.executions", "TICKET_PURCHASE", "outcome", "SUCCEEDED"))
                 .isEqualTo(executionsBefore + 1);
@@ -249,29 +263,44 @@ class PurchaseActionPersistenceTests {
         ActionStatusView status = purchaseActionService.getStatus(fixture.userId(), confirmation.actionId());
         assertThat(status.status()).isEqualTo(AgentActionStatus.UNKNOWN);
         assertThat(status.failureCategory()).isEqualTo("PURCHASE_RESULT_UNKNOWN");
+        assertThat(reliableCommandStore.find(ActionStateService.commandKey(confirmation.actionId()))
+                .orElseThrow().status()).isEqualTo(ReliableCommandStatus.UNKNOWN);
         assertThat(counterValue(
                 "agent.action.executions", "TICKET_PURCHASE", "outcome", "UNKNOWN"))
                 .isEqualTo(unknownBefore + 1);
 
         // UNKNOWN 与 Outbox 必须同事务存在，消费者领取后只查询相同 actionId 的权威状态。
-        ActionReconciliationEntity event = reconciliationRepository
-                .findByActionId(confirmation.actionId())
+        ReliableOutboxRecord event = reliableEventStore
+                .findByDeduplicationKey(ActionReconciliationService.EVENT_NAMESPACE, confirmation.actionId())
                 .orElseThrow();
         ActionReconciliationService.WorkItem workItem = reconciliationService
-                .claim(event.getId(), event.getEventVersion(), "test-worker")
+                .claim(new ActionReconciliationMessage(
+                        ActionReconciliationMessage.CURRENT_CONTRACT_VERSION,
+                        event.key().eventId(), event.key().namespace(), event.eventType(),
+                        event.aggregateId(), event.eventVersion(), event.createdAt()), "test-worker")
                 .orElseThrow();
         assertThat(workItem.actionId()).isEqualTo(confirmation.actionId());
 
-        // 模拟消费者领取后宕机，租约恢复必须让事件、草案和执行审计一起回到可再次领取状态。
-        ActionReconciliationEntity running = reconciliationRepository.selectById(event.getId());
-        ReflectionTestUtils.setField(running, "leaseUntil", Instant.EPOCH);
-        reconciliationRepository.updateById(running);
+        // 模拟消费者领取后宕机，Outbox 与通用命令租约都到期后才能重新领取。
+        jdbcTemplate.update(
+                "UPDATE t_reliable_inbox_consumption SET lease_until = ? "
+                        + "WHERE namespace = ? AND event_id = ? AND consumer_name = ?",
+                java.sql.Timestamp.from(Instant.EPOCH), ActionReconciliationService.EVENT_NAMESPACE,
+                event.key().eventId(), ActionReconciliationService.CONSUMER_NAME);
+        jdbcTemplate.update(
+                "UPDATE t_reliable_command SET lease_until = ? WHERE namespace = ? AND command_id = ?",
+                java.sql.Timestamp.from(Instant.EPOCH),
+                ActionStateService.COMMAND_NAMESPACE, confirmation.actionId());
         assertThat(reconciliationService.recoverExpired()).isEqualTo(1);
         assertThat(reconciliationService.claim(
-                event.getId(), event.getEventVersion(), "recovered-worker")).isPresent();
+                new ActionReconciliationMessage(
+                        ActionReconciliationMessage.CURRENT_CONTRACT_VERSION,
+                        event.key().eventId(), event.key().namespace(), event.eventType(),
+                        event.aggregateId(), event.eventVersion(), event.createdAt()),
+                "recovered-worker")).isPresent();
 
-        // 模拟原购票响应丢失但 ticket-service 已持久化成功，三个状态在一个事务中收口。
-        boolean terminal = reconciliationService.complete(event.getId(),
+        // 模拟原购票响应丢失但 ticket-service 已持久化成功，命令和草案在一个事务中收口。
+        boolean terminal = reconciliationService.complete(event.key().eventId(),
                 new ActionReconciliationService.DownstreamResult(
                         confirmation.actionId(), "PURCHASE_TICKET",
                         ActionReconciliationService.DownstreamStatus.SUCCEEDED,
@@ -280,8 +309,11 @@ class PurchaseActionPersistenceTests {
         assertThat(terminal).isTrue();
         assertThat(recovered.status()).isEqualTo(AgentActionStatus.SUCCEEDED);
         assertThat(recovered.orderSn()).isEqualTo("order-recovered");
-        assertThat(reconciliationRepository.selectById(event.getId()).getStatus().name())
-                .isEqualTo("SUCCEEDED");
+        assertThat(reliableCommandStore.find(ActionStateService.commandKey(confirmation.actionId()))
+                .orElseThrow().status()).isEqualTo(ReliableCommandStatus.SUCCEEDED);
+        assertThat(reliableEventStore.findConsumption(new ReliableInboxKey(
+                event.key(), ActionReconciliationService.CONSUMER_NAME)).orElseThrow().status())
+                .isEqualTo(ReliableInboxStatus.SUCCEEDED);
     }
 
     /**

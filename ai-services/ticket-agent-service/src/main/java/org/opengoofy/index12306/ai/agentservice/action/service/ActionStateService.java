@@ -4,6 +4,8 @@ import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionDraftEnt
 import org.opengoofy.index12306.ai.agentservice.action.dto.ClaimedAction;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionType;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandKey;
+import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandLease;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -12,6 +14,19 @@ import java.util.Optional;
  * 定义高风险操作草案和执行记录的事务状态边界。
  */
 public interface ActionStateService {
+
+    /** Agent 高风险动作共享的可靠命令命名空间。 */
+    String COMMAND_NAMESPACE = "agent-action-execution";
+
+    /**
+     * 构造动作执行使用的稳定可靠命令键。
+     *
+     * @param actionId 服务端动作标识
+     * @return 以 actionId 同时作为业务命令和本库路由的命令键
+     */
+    static ReliableCommandKey commandKey(String actionId) {
+        return new ReliableCommandKey(COMMAND_NAMESPACE, actionId, actionId);
+    }
 
     /**
      * 在当前运行中轮次内幂等创建购票草案。
@@ -85,10 +100,9 @@ public interface ActionStateService {
      *
      * @param actionId 草案标识
      * @param executionId 执行记录标识
-     * @param owner 执行实例标识
      * @return 本次数据库租约及 fencing token
      */
-    ExecutionLease startExecution(String actionId, String executionId, String owner);
+    ExecutionLease startExecution(String actionId, String executionId);
 
     /**
      * 在 fencing token 仍有效时延长真实写执行租约。
@@ -104,13 +118,11 @@ public interface ActionStateService {
      * @param lease 当前执行租约
      * @param safeResultJson 脱敏结果 JSON
      * @param resultReference 业务结果引用
-     * @param responseFingerprint 响应指纹
      */
     void succeed(
             ExecutionLease lease,
             String safeResultJson,
-            String resultReference,
-            String responseFingerprint);
+            String resultReference);
 
     /**
      * 将明确失败的写调用记录为失败终态。
@@ -151,13 +163,13 @@ public interface ActionStateService {
      *
      * @param actionId 草案标识
      * @param executionId 执行记录标识
-     * @param owner 执行实例标识
-     * @param fencingToken 隔离令牌
+     * @param commandKey 通用可靠命令键
+     * @param commandLease 通用可靠命令围栏租约
      */
     record ExecutionLease(
             String actionId,
             String executionId,
-            String owner,
-            long fencingToken) {
+            ReliableCommandKey commandKey,
+            ReliableCommandLease commandLease) {
     }
 }
