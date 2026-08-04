@@ -166,12 +166,12 @@ public class ActionDraftEntity extends AgentBaseEntity {
     }
 
     /**
-     * 原子消费确认机会并进入执行状态。
+     * 原子消费确认机会并进入等待执行器领取的排队状态。
      *
      * @param confirmedExecutionId 执行记录标识
      * @param now 用户确认时间
      */
-    public void startExecution(String confirmedExecutionId, Instant now) {
+    public void queueExecution(String confirmedExecutionId, Instant now) {
         if (status != AgentActionStatus.AWAITING_CONFIRMATION) {
             throw new IllegalStateException("操作草案不处于待确认状态");
         }
@@ -182,7 +182,38 @@ public class ActionDraftEntity extends AgentBaseEntity {
         // 状态变化和确认消费时间在同一数据库锁内提交，保证令牌只能成功使用一次。
         this.executionId = Objects.requireNonNull(confirmedExecutionId, "confirmedExecutionId");
         this.confirmationConsumedAt = now;
+        this.status = AgentActionStatus.QUEUED;
+        touch(now);
+    }
+
+    /**
+     * 在执行记录成功取得数据库租约后进入执行中状态。
+     *
+     * @param now 领取执行权的时间
+     */
+    public void beginExecution(Instant now) {
+        if (status != AgentActionStatus.QUEUED) {
+            throw new IllegalStateException("操作草案不处于排队状态");
+        }
+        // 草案与执行审计在同一事务中迁移，避免页面状态领先于真实执行权。
         this.status = AgentActionStatus.EXECUTING;
+        touch(now);
+    }
+
+    /**
+     * 将确认事务后长期未被执行器领取的草案结束为明确失败。
+     *
+     * @param category 稳定失败分类
+     * @param now 恢复时间
+     */
+    public void failQueued(String category, Instant now) {
+        if (status != AgentActionStatus.QUEUED) {
+            throw new IllegalStateException("操作草案不处于排队状态");
+        }
+        // QUEUED 尚未取得真实写权限，可以明确结束并允许用户重新生成草案。
+        this.failureCategory = Objects.requireNonNull(category, "category");
+        this.status = AgentActionStatus.FAILED;
+        this.finishedAt = now;
         touch(now);
     }
 

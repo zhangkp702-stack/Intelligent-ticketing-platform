@@ -8,6 +8,8 @@ import org.apache.ibatis.annotations.Select;
 import org.opengoofy.index12306.ai.agentservice.action.dao.entity.ActionExecutionEntity;
 
 import java.util.Optional;
+import java.time.Instant;
+import java.util.List;
 
 /**
  * 真实业务写调用执行审计仓储。
@@ -41,4 +43,26 @@ public interface ActionExecutionRepository extends BaseMapper<ActionExecutionEnt
      */
     @Select("SELECT * FROM t_agent_action_execution WHERE id = #{executionId} FOR UPDATE")
     Optional<ActionExecutionEntity> findLockedById(@Param("executionId") String executionId);
+
+    /**
+     * 查询租约已经过期的执行中记录。
+     *
+     * @param now 当前时间
+     * @return 可由恢复器转入 UNKNOWN 的候选记录
+     */
+    @Select("SELECT * FROM t_agent_action_execution "
+            + "WHERE outcome = 'STARTED' AND lease_until <= #{now} "
+            + "ORDER BY lease_until ASC LIMIT 100")
+    List<ActionExecutionEntity> findExpiredStarted(@Param("now") Instant now);
+
+    /**
+     * 查询确认事务提交后长期没有执行器领取的排队记录。
+     *
+     * @param deadline 最晚允许排队时间
+     * @return 可安全结束为失败的候选记录
+     */
+    @Select("SELECT * FROM t_agent_action_execution "
+            + "WHERE outcome = 'QUEUED' AND created_at <= #{deadline} "
+            + "ORDER BY created_at ASC LIMIT 100")
+    List<ActionExecutionEntity> findAbandonedQueued(@Param("deadline") Instant deadline);
 }

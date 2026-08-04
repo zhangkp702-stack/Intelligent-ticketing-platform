@@ -11,9 +11,11 @@ import java.time.Duration;
  *
  * @param confirmationSecret 确认令牌 HMAC 密钥
  * @param confirmationTtl 高风险操作草案允许确认的时间窗口
+ * @param executionLease 真实写执行权的数据库租约时长
  */
 @ConfigurationProperties(prefix = "index12306.agent.action")
 public record AgentActionProperties(
         @DefaultValue("") String confirmationSecret,
-        @DefaultValue("5m") Duration confirmationTtl) {
+        @DefaultValue("5m") Duration confirmationTtl,
+        @DefaultValue("2m") Duration executionLease) {
 }

@@ -81,15 +81,33 @@ public interface ActionStateService {
             String idempotencyKey);
 
     /**
-     * 原子保存脱敏业务结果并结束执行记录。
+     * 为已入队执行记录领取有期限的真实写执行权。
      *
      * @param actionId 草案标识
+     * @param executionId 执行记录标识
+     * @param owner 执行实例标识
+     * @return 本次数据库租约及 fencing token
+     */
+    ExecutionLease startExecution(String actionId, String executionId, String owner);
+
+    /**
+     * 在 fencing token 仍有效时延长真实写执行租约。
+     *
+     * @param lease 当前执行租约
+     * @return 成功续租返回 true，执行权已经失效返回 false
+     */
+    boolean heartbeat(ExecutionLease lease);
+
+    /**
+     * 原子保存脱敏业务结果并结束执行记录。
+     *
+     * @param lease 当前执行租约
      * @param safeResultJson 脱敏结果 JSON
      * @param resultReference 业务结果引用
      * @param responseFingerprint 响应指纹
      */
     void succeed(
-            String actionId,
+            ExecutionLease lease,
             String safeResultJson,
             String resultReference,
             String responseFingerprint);
@@ -97,20 +115,27 @@ public interface ActionStateService {
     /**
      * 将明确失败的写调用记录为失败终态。
      *
-     * @param actionId 草案标识
+     * @param lease 当前执行租约
      * @param category 稳定失败分类
      * @param exceptionType 异常类型
      */
-    void fail(String actionId, String category, String exceptionType);
+    void fail(ExecutionLease lease, String category, String exceptionType);
 
     /**
      * 将结果不确定的真实写调用标记为待人工核对。
      *
-     * @param actionId 草案标识
+     * @param lease 当前执行租约
      * @param category 稳定失败分类
      * @param exceptionType 异常类型
      */
-    void markUnknown(String actionId, String category, String exceptionType);
+    void markUnknown(ExecutionLease lease, String category, String exceptionType);
+
+    /**
+     * 恢复未领取的 QUEUED 和租约过期但没有终态的 STARTED 执行。
+     *
+     * @return 本次成功恢复的执行数量
+     */
+    int recoverExpiredExecutions();
 
     /**
      * 读取并校验当前用户的操作草案。
@@ -120,4 +145,19 @@ public interface ActionStateService {
      * @return 操作草案
      */
     ActionDraftEntity get(String userId, String actionId);
+
+    /**
+     * 一次数据库执行权领取结果。
+     *
+     * @param actionId 草案标识
+     * @param executionId 执行记录标识
+     * @param owner 执行实例标识
+     * @param fencingToken 隔离令牌
+     */
+    record ExecutionLease(
+            String actionId,
+            String executionId,
+            String owner,
+            long fencingToken) {
+    }
 }

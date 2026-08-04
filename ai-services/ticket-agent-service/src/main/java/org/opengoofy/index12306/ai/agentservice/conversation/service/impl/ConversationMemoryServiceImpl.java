@@ -135,21 +135,26 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
     public StartedTurn startTurn(StartTurnCommand command) {
         // 首次提交和重复提交使用相同校验入口，关键参数不得为空。
         validateStartCommand(command);
+        // 获取用户问题
         String content = command.content().trim();
+        // 计算用户问题的指纹
         String payloadHash = fingerprint(content);
 
         // 先读取轮次定位会话，但所有写路径统一按“会话 -> 轮次”顺序加锁以避免删除死锁。
         TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(command.turnId()))
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        // 校验是否属于当前会话
         if (!observedTurn.getConversationId().equals(command.conversationId())) {
             throw new IllegalArgumentException("轮次不属于当前会话");
         }
 
-        // 锁定会话并校验所有权后再锁轮次，并发提交只能有一个请求迁移 DRAFT 状态。
+        // 校验会话是否属于当前用户
         ConversationEntity conversation = requireLockedConversation(
                 command.userId(), command.conversationId());
+        // 查找turn
         TurnEntity turn = turnRepository.findLockedById(command.turnId())
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        // 校验是否属于当前会话
         if (!turn.getConversationId().equals(conversation.getId())) {
             throw new IllegalArgumentException("轮次不属于当前会话");
         }

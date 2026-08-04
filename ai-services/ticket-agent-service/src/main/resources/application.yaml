@@ -79,6 +79,9 @@ index12306:
     action:
       confirmation-secret: ${TICKET_AGENT_CONFIRMATION_SECRET:${TICKET_MCP_INTERNAL_SECRET:}}
       confirmation-ttl: 5m
+      execution-lease: 2m
+      recovery-enabled: true
+      recovery-interval-millis: 5000
       reconciliation:
         max-attempts: 5
         retry-delay: 30s

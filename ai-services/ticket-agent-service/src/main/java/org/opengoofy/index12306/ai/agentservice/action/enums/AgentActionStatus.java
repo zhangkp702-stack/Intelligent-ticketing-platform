@@ -6,6 +6,7 @@ package org.opengoofy.index12306.ai.agentservice.action.enums;
  */
 public enum AgentActionStatus {
     AWAITING_CONFIRMATION,
+    QUEUED,
     EXECUTING,
     SUCCEEDED,
     FAILED,

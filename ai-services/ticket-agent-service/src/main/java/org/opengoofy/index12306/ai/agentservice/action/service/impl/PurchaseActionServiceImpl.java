@@ -12,6 +12,8 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.ClaimedAction;
 import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.ActionConfirmationView;
 import org.opengoofy.index12306.ai.agentservice.action.observability.AgentActionMetrics;
 import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService;
+import org.opengoofy.index12306.ai.agentservice.action.service.ActionExecutionLeaseCoordinator;
+import org.opengoofy.index12306.ai.agentservice.action.service.ActionStateService.ExecutionLease;
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.service.TicketOperationActionService;
 import org.opengoofy.index12306.ai.agentservice.action.validation.PurchaseDraftRevalidator;
@@ -66,6 +68,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
     private static final int MAX_PASSENGERS = 5;
 
     private final ActionStateService stateStore;
+    private final ActionExecutionLeaseCoordinator executionLeaseCoordinator;
     private final ConfirmationTokenService tokenService;
     private final ObjectProvider<ConfirmedPurchaseExecutor> executorProvider;
     private final ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider;
@@ -80,6 +83,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
      * 创建受确认保护的购票操作服务。
      *
      * @param stateStore 操作状态事务服务
+     * @param executionLeaseCoordinator 真实写执行租约协调器
      * @param tokenService 确认令牌服务
      * @param executorProvider 专用 MCP 写执行器
      * @param ticketOperationExecutorProvider 取消和退票专用 MCP 写执行器
@@ -92,6 +96,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
      */
     public PurchaseActionServiceImpl(
             ActionStateService stateStore,
+            ActionExecutionLeaseCoordinator executionLeaseCoordinator,
             ConfirmationTokenService tokenService,
             ObjectProvider<ConfirmedPurchaseExecutor> executorProvider,
             ObjectProvider<ConfirmedTicketOperationExecutor> ticketOperationExecutorProvider,
@@ -102,6 +107,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
             ObjectMapper objectMapper,
             Clock clock) {
         this.stateStore = stateStore;
+        this.executionLeaseCoordinator = executionLeaseCoordinator;
         this.tokenService = tokenService;
         this.executorProvider = executorProvider;
         this.ticketOperationExecutorProvider = ticketOperationExecutorProvider;
@@ -235,12 +241,18 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
             throw conflict("ACTION_NOT_CONFIRMABLE", "操作已经确认、过期或幂等键已被使用");
         }
 
+        // 确认事务提交后必须领取数据库租约，只有当前 fencing token 持有者能调用下游并提交终态。
+        ExecutionLease executionLease = executionLeaseCoordinator.start(claimed);
+        ConfirmedPurchaseExecutor selectedPurchaseExecutor = purchaseExecutor;
+        ConfirmedTicketOperationExecutor selectedTicketOperationExecutor = ticketOperationExecutor;
         long executionStartedNanos = System.nanoTime();
         try {
             // 专用执行器不会注册到回答模型，只能接收已经领取执行权的数据库快照。
-            String safeResultJson = claimed.actionType() == AgentActionType.TICKET_PURCHASE
-                    ? purchaseExecutor.execute(claimed, command.username())
-                    : ticketOperationExecutor.execute(claimed, command.username());
+            String safeResultJson = executionLeaseCoordinator.guard(
+                    executionLease,
+                    () -> claimed.actionType() == AgentActionType.TICKET_PURCHASE
+                            ? selectedPurchaseExecutor.execute(claimed, command.username())
+                            : selectedTicketOperationExecutor.execute(claimed, command.username()));
             Object result;
             String orderSn;
             if (claimed.actionType() == AgentActionType.TICKET_PURCHASE) {
@@ -255,7 +267,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
                 throw new IllegalStateException("操作结果缺少订单号");
             }
             stateStore.succeed(
-                    claimed.actionId(), safeResultJson, orderSn, fingerprint(safeResultJson));
+                    executionLease, safeResultJson, orderSn, fingerprint(safeResultJson));
             actionMetrics.recordExecution(
                     claimed.actionType(), AgentActionStatus.SUCCEEDED, executionStartedNanos);
             LOGGER.info(
@@ -269,7 +281,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
                     && isDefinitePurchaseFailure(ex)) {
                 // MCP 明确返回工具拒绝时订单没有成功，记录 FAILED 允许用户修正后创建新草案。
                 String failureCategory = purchaseFailureCategory(ex);
-                stateStore.fail(claimed.actionId(), failureCategory, ex.getClass().getName());
+                stateStore.fail(executionLease, failureCategory, ex.getClass().getName());
                 actionMetrics.recordExecution(
                         claimed.actionType(), AgentActionStatus.FAILED, executionStartedNanos);
                 LOGGER.warn(
@@ -286,7 +298,7 @@ public class PurchaseActionServiceImpl implements PurchaseActionService {
                     ? "PURCHASE_RESULT_UNKNOWN"
                     : ticketOperationActionService.unknownCategory(claimed.actionType());
             stateStore.markUnknown(
-                    claimed.actionId(), unknownCategory, ex.getClass().getName());
+                    executionLease, unknownCategory, ex.getClass().getName());
             actionMetrics.recordExecution(
                     claimed.actionType(), AgentActionStatus.UNKNOWN, executionStartedNanos);
             LOGGER.warn(
