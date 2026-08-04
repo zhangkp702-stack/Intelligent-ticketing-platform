@@ -140,14 +140,6 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         // 计算用户问题的指纹
         String payloadHash = fingerprint(content);
 
-        // 先读取轮次定位会话，但所有写路径统一按“会话 -> 轮次”顺序加锁以避免删除死锁。
-        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(command.turnId()))
-                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
-        // 校验是否属于当前会话
-        if (!observedTurn.getConversationId().equals(command.conversationId())) {
-            throw new IllegalArgumentException("轮次不属于当前会话");
-        }
-
         // 校验会话是否属于当前用户
         ConversationEntity conversation = requireLockedConversation(
                 command.userId(), command.conversationId());
@@ -158,19 +150,22 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         if (!turn.getConversationId().equals(conversation.getId())) {
             throw new IllegalArgumentException("轮次不属于当前会话");
         }
+        // 判断伦次是否是草案状态
         if (turn.getStatus() != TurnStatus.DRAFT) {
+            // 如果不是草案状态就比较指纹
             if (!turn.hasPayloadHash(payloadHash)) {
+                // 如果不turn处于草案并且指纹不一样，则返回异常
                 throw new TurnSubmissionException(
                         TurnSubmissionException.Reason.PAYLOAD_MISMATCH,
                         "轮次标识已经绑定不同的用户问题");
             }
+            // 获取当前时刻
             Instant reclaimNow = clock.instant();
-            if (turn.reclaim(
-                    executionOwner,
-                    reclaimNow.plus(turnProperties.executionLease()),
-                    reclaimNow)) {
+            // 判断是否需要接管
+            if (turn.reclaim(executionOwner, reclaimNow.plus(turnProperties.executionLease()), reclaimNow)) {
                 // 过期轮次取得新的 fencing token，后续流水线从持久化任务检查点继续执行。
                 turnRepository.updateById(turn);
+                // 根据轮次获取用户消息id
                 MessageEntity existingMessage = requireMessage(turn.getUserMessageId());
                 return toStartedTurn(conversation, turn, existingMessage, true);
             }
@@ -178,8 +173,9 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
             MessageEntity existingMessage = requireMessage(turn.getUserMessageId());
             return toStartedTurn(conversation, turn, existingMessage, false);
         }
-
+        // 如果turn状态是草案状态
         Instant now = clock.instant();
+        // 校验参数合法性
         validateDraftSubmission(turn, command.userId(), command.submissionToken(), now);
 
         // 已锁定会话，分配严格递增消息序号并在同一事务中绑定内容、消息和执行租约。

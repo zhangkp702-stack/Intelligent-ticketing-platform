@@ -121,10 +121,10 @@ public class ConversationContextLoader {
                 currentTurnId,
                 properties.recentTurnLimit());
 
-        // 一次性加载轮次两侧消息，避免按轮次逐条查询形成 N+1，key是消息id，value是消息体
+        // 一次性加载不同轮次不同角色的消息，避免按轮次逐条查询形成 N+1，key是消息id，value是消息体
         Map<String, MessageEntity> messagesById = loadMessagesById(recentTurns);
 
-        // 最近三个完整轮次全部进入上下文，不再按 Token 预算二次筛选。
+        // 最近三个完整轮次全部进入上下文
         LoadedHistory loadedHistory = loadRecentHistory(recentTurns, messagesById);
         ConversationHistoryContext context = new ConversationHistoryContext(
                 conversationId,
@@ -140,6 +140,7 @@ public class ConversationContextLoader {
                 loadedHistory.throughSequence());
 
         // 快照记录本次历史与当前问题的真实输入边界，但不复制消息正文。
+        // todo
         saveSnapshot(requestId, context, currentUserMessageId, currentUserSequence);
         return context;
     }
@@ -236,23 +237,27 @@ public class ConversationContextLoader {
         }
         Collections.reverse(loadedDescending);
 
-        // 反转后按时间顺序生成模型历史和快照引用。
+        // 这里获取到内容
         List<ConversationTurnContext> turns = loadedDescending.stream()
                 .map(LoadedTurn::context)
                 .toList();
         // 加载id，一个turn是一个完整的问答，记录本次请求加载了那些历史消息
         List<String> messageIds = new ArrayList<>();
+        // 获取到id
         for (LoadedTurn loadedTurn : loadedDescending) {
-            // 手机用户消息id
+            // 用户消息id
             messageIds.add(loadedTurn.userMessage().getId());
-            // 手机助手回复消息id
+            // 助手回复消息id
             messageIds.add(loadedTurn.assistantMessage().getId());
         }
+        // 这里是在获取范围，首先获取最高的消息序号
         Long fromSequence = loadedDescending.isEmpty()
                 ? null : loadedDescending.get(0).userMessage().getSequenceNo();
+        // 这里是获取结尾的序号
         Long throughSequence = loadedDescending.isEmpty()
                 ? null : loadedDescending.get(loadedDescending.size() - 1)
                         .assistantMessage().getSequenceNo();
+        // turns 是消息具体内容，然后是消息的范围，消息的起始id，消息的终止id
         return new LoadedHistory(turns, List.copyOf(messageIds), fromSequence, throughSequence);
     }
 

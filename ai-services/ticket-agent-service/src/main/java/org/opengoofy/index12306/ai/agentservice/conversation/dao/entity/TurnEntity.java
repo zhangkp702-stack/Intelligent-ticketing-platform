@@ -174,14 +174,20 @@ public class TurnEntity extends AgentBaseEntity {
      * @return 成功接管时返回 true
      */
     public boolean reclaim(String owner, Instant leaseUntil, Instant now) {
+        // 如果轮次状态不是running，说明还没开始或者完结了
         if (status != TurnStatus.RUNNING
+                // 没有到期
                 || this.leaseUntil == null
                 || now.isBefore(this.leaseUntil)) {
+            // 不允许接管
             return false;
         }
         // 接管只更换执行权，不改变已经固化的问题、消息和服务端任务计划。
+        // 把执行者从旧实例 A 改为当前实例 B
         this.leaseOwner = Objects.requireNonNull(owner, "owner");
+        // 执行新的时间期限
         this.leaseUntil = Objects.requireNonNull(leaseUntil, "leaseUntil");
+        // 版本号加一
         this.fencingToken++;
         this.lastHeartbeatAt = now;
         touch(now);

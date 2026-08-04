@@ -279,7 +279,7 @@ public class AgentChatPipeline {
 
         AtomicBoolean terminal = new AtomicBoolean();
         try {
-            // 加载上下文，并记录耗时指标，以及全局成功率指标
+            // 加载上下文，包括摘要和最近几轮对话，并记录耗时指标，以及全局成功率指标
             ConversationHistoryContext conversationHistory = loadObservedConversationHistory(
                     context, started, currentQuestion, performanceTrace);
             // 服务端工作流状态只用于补全可信的“继续”“这个”等省略表达。
@@ -310,6 +310,7 @@ public class AgentChatPipeline {
             ConversationMemoryService.StartedTurn started,
             String currentQuestion,
             RequestPerformanceTrace performanceTrace) {
+        // 记录当前时间
         long contextStartedNanos = System.nanoTime();
         try {
             // 当前问题保持独立，加载历史摘要。

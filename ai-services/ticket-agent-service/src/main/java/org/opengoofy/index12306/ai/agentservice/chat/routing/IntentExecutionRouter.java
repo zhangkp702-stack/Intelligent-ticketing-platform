@@ -85,8 +85,11 @@ public class IntentExecutionRouter {
      * 区分普通问答、只读固定链和交易固定链。
      */
     public enum IntentExecutionRoute {
+        /** 仅生成自然语言回答。 */
         CHAT_ONLY,
+        /** 执行只读的固定代码链。 */
         READ_ONLY_CODE_CHAIN,
+        /** 执行会生成待确认草案的交易代码链。 */
         TRANSACTION_CODE_CHAIN
     }
 
@@ -94,13 +97,21 @@ public class IntentExecutionRouter {
      * 可独立执行和观测的票务业务分组。
      */
     public enum BusinessGroup {
+        /** 车次和余票查询。 */
         TRAIN_QUERY,
+        /** 车次经停站查询。 */
         TRAIN_STOP,
+        /** 常用乘车人查询。 */
         PASSENGER,
+        /** 订单查询。 */
         ORDER_QUERY,
+        /** 支付信息查询。 */
         PAYMENT,
+        /** 购票业务流程。 */
         PURCHASE,
+        /** 订单取消业务流程。 */
         CANCELLATION,
+        /** 退票业务流程。 */
         REFUND
     }
 

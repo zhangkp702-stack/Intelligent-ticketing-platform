@@ -11,7 +11,7 @@ import org.apache.ibatis.annotations.Param;
 public interface ConversationDeletionRepository {
 
     /**
-     * 删除会话关联的动作对账 Outbox 和 Inbox 状态。
+     * 删除迁移前遗留的动作对账记录；待旧表退役后随表移除。
      *
      * @param conversationId 会话标识
      */
@@ -20,13 +20,54 @@ public interface ConversationDeletionRepository {
     void deleteActionReconciliationsByConversationId(@Param("conversationId") String conversationId);
 
     /**
-     * 删除会话关联的操作执行记录。
+     * 删除会话关联的可靠 Inbox 消费记录。
+     *
+     * @param conversationId 会话标识
+     */
+    @Delete("DELETE FROM t_reliable_inbox_consumption WHERE namespace = 'agent-action-reconciliation' "
+            + "AND event_id IN (SELECT event_id FROM t_reliable_outbox_event "
+            + "WHERE namespace = 'agent-action-reconciliation' AND aggregate_id IN "
+            + "(SELECT id FROM t_agent_action_draft WHERE conversation_id = #{conversationId}))")
+    void deleteActionInboxByConversationId(@Param("conversationId") String conversationId);
+
+    /**
+     * 删除会话关联的可靠 Outbox 事件。
+     *
+     * @param conversationId 会话标识
+     */
+    @Delete("DELETE FROM t_reliable_outbox_event WHERE namespace = 'agent-action-reconciliation' "
+            + "AND aggregate_id IN (SELECT id FROM t_agent_action_draft "
+            + "WHERE conversation_id = #{conversationId})")
+    void deleteActionOutboxByConversationId(@Param("conversationId") String conversationId);
+
+    /**
+     * 删除会话关联的可靠命令审计记录。
+     *
+     * @param conversationId 会话标识
+     */
+    @Delete("DELETE FROM t_reliable_command_audit WHERE namespace = 'agent-action-execution' "
+            + "AND command_id IN (SELECT id FROM t_agent_action_draft "
+            + "WHERE conversation_id = #{conversationId})")
+    void deleteActionCommandAuditsByConversationId(@Param("conversationId") String conversationId);
+
+    /**
+     * 删除会话关联的可靠动作命令。
+     *
+     * @param conversationId 会话标识
+     */
+    @Delete("DELETE FROM t_reliable_command WHERE namespace = 'agent-action-execution' "
+            + "AND command_id IN (SELECT id FROM t_agent_action_draft "
+            + "WHERE conversation_id = #{conversationId})")
+    void deleteActionCommandsByConversationId(@Param("conversationId") String conversationId);
+
+    /**
+     * 删除迁移前遗留的动作执行记录；待旧表正式下线后可随表一起移除。
      *
      * @param conversationId 会话标识
      */
     @Delete("DELETE FROM t_agent_action_execution WHERE action_id IN "
             + "(SELECT id FROM t_agent_action_draft WHERE conversation_id = #{conversationId})")
-    void deleteActionExecutionsByConversationId(@Param("conversationId") String conversationId);
+    void deleteLegacyActionExecutionsByConversationId(@Param("conversationId") String conversationId);
 
     /**
      * 删除会话关联的高风险操作草案。

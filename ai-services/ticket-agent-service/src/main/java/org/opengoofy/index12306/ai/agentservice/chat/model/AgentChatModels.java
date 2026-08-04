@@ -207,11 +207,17 @@ public final class AgentChatModels {
      * 流式事件类型。
      */
     public enum EventType {
+        /** 流开始时发送的轮次元数据。 */
         META,
+        /** 助手回答的增量文本片段。 */
         DELTA,
+        /** 已生成高风险操作草案，等待用户确认。 */
         ACTION_REQUIRED,
+        /** 当前工作流需要用户补充选择。 */
         WORKFLOW_REQUIRED,
+        /** 当前轮次已正常结束。 */
         DONE,
+        /** 当前轮次发生可安全展示的错误。 */
         ERROR
     }
 

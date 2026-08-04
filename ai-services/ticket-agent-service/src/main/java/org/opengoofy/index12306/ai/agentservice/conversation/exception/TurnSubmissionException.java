@@ -31,8 +31,11 @@ public class TurnSubmissionException extends RuntimeException {
      * 轮次提交协议允许对外暴露的稳定失败分类。
      */
     public enum Reason {
+        /** 首次提交令牌缺失、伪造或与当前轮次不匹配。 */
         INVALID_TOKEN,
+        /** 草稿轮次的首次提交时限已过。 */
         SUBMISSION_EXPIRED,
+        /** 同一轮次重试时携带了不同的问题内容。 */
         PAYLOAD_MISMATCH
     }
 }

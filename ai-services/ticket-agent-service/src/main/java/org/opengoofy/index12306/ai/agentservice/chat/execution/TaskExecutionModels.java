@@ -22,13 +22,21 @@ public final class TaskExecutionModels {
      * 单个子任务的稳定执行状态。
      */
     public enum TaskExecutionStatus {
+        /** 任务尚未满足执行条件。 */
         PENDING,
+        /** 任务正在执行。 */
         RUNNING,
+        /** 任务已成功完成。 */
         SUCCESS,
+        /** 任务需要用户补充信息或作出选择。 */
         NEEDS_INPUT,
+        /** 前置依赖未成功，任务未执行。 */
         BLOCKED,
+        /** 任务执行超过允许时限。 */
         TIMED_OUT,
+        /** 任务执行发生明确失败。 */
         FAILED,
+        /** 所属轮次已取消，任务未继续执行。 */
         CANCELLED
     }
 

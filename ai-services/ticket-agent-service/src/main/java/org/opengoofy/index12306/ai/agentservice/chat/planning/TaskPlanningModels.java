@@ -133,8 +133,11 @@ public final class TaskPlanningModels {
      * 购票任务从查票结果中确定性选择车次时允许使用的策略。
      */
     public enum TrainSelectionPolicy {
+        /** 选择出发时间最早的车次。 */
         EARLIEST,
+        /** 选择出发时间最晚的车次。 */
         LATEST,
+        /** 选择价格最低的车次。 */
         CHEAPEST
     }
 
@@ -142,8 +145,11 @@ public final class TaskPlanningModels {
      * 当前任务与服务端活动工作流的关系。
      */
     public enum WorkflowRelation {
+        /** 与当前活动工作流无关，独立执行。 */
         INDEPENDENT,
+        /** 延续当前活动工作流。 */
         CONTINUE,
+        /** 用当前任务替换已有活动工作流。 */
         REPLACE
     }
 }
