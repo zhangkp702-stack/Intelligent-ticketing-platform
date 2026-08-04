@@ -31,6 +31,16 @@ import java.util.List;
 public class RefundReqDTO {
 
     /**
+     * Agent 真实交易意图标识；普通退款请求可以不传。
+     */
+    private String actionId;
+
+    /**
+     * 支付退款步骤的稳定命令标识。
+     */
+    private String commandId;
+
+    /**
      * 幂等退款请求标识
      */
     private String requestId;

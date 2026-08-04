@@ -27,6 +27,7 @@ import org.opengoofy.index12306.biz.payservice.dao.mapper.PayMapper;
 import org.opengoofy.index12306.biz.payservice.dao.mapper.RefundMapper;
 import org.opengoofy.index12306.biz.payservice.dto.RefundReqDTO;
 import org.opengoofy.index12306.biz.payservice.dto.RefundRespDTO;
+import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.biz.payservice.mq.produce.RefundResultCallbackOrderSendProduce;
 import org.opengoofy.index12306.biz.payservice.remote.TicketOrderRemoteService;
 import org.opengoofy.index12306.biz.payservice.service.impl.RefundServiceImpl;
@@ -35,6 +36,7 @@ import org.opengoofy.index12306.framework.starter.designpattern.strategy.Abstrac
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -92,5 +94,31 @@ class RefundServiceImplTests {
         assertThat(result.getStatus()).isEqualTo(10);
         assertThat(result.getTradeNo()).isEqualTo("trade-1");
         verifyNoInteractions(payMapper, abstractStrategyChoose, refundResultCallbackOrderSendProduce);
+    }
+
+    /**
+     * 验证相同退款命令不能绑定不同的不可变业务参数。
+     */
+    @Test
+    void repeatedAgentRefundRejectsDifferentPayload() {
+        RefundDO existing = new RefundDO();
+        existing.setActionId("action-1");
+        existing.setCommandId("action-1:refund-payment");
+        existing.setRefundRequestId("action-1:refund-payment");
+        existing.setOrderSn("order-1");
+        existing.setRequestFingerprint("different-fingerprint");
+        when(refundMapper.selectList(any())).thenReturn(List.of(existing));
+
+        // 即使 commandId 相同，退款金额或选票范围变化也必须拒绝，不能追加第二笔退款。
+        RefundReqDTO request = new RefundReqDTO();
+        request.setActionId("action-1");
+        request.setCommandId("action-1:refund-payment");
+        request.setRequestId("action-1:refund-payment");
+        request.setOrderSn("order-1");
+        request.setRefundAmount(1000);
+        request.setRefundDetailReqDTOList(List.of());
+        assertThatThrownBy(() -> refundService.commonRefund(request))
+                .isInstanceOf(ServiceException.class)
+                .hasMessageContaining("原请求不一致");
     }
 }

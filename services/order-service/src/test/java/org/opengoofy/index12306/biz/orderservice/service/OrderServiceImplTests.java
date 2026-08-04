@@ -30,6 +30,7 @@ import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderItemDO;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderItemMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderMapper;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQueryReqDTO;
+import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.mq.produce.DelayCloseOrderSendProduce;
@@ -148,6 +149,40 @@ class OrderServiceImplTests {
             assertThat(order.getRealName()).isEqualTo("万重山");
             assertThat(order.getCanRefund()).isTrue();
         });
+    }
+
+    /**
+     * 验证命令查询只能返回当前用户的原订单结果。
+     */
+    @Test
+    void commandStatusIsBoundToCurrentUser() {
+        UserContext.setUser(UserInfoDTO.builder().userId("1001").username("alice").build());
+        OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
+        existing.setActionId("action-1");
+        existing.setCommandId("action-1:create-order");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+
+        // 权威查询只返回命令、action 和订单号，不返回乘车人证件等订单正文。
+        OrderCommandStatusRespDTO result = orderService.queryCommandStatus("action-1:create-order");
+        assertThat(result.getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(result.getOrderSn()).isEqualTo("order-1");
+        assertThat(result.getActionId()).isEqualTo("action-1");
+    }
+
+    /**
+     * 验证猜中其他用户命令标识也不能读取订单结果。
+     */
+    @Test
+    void otherUserCannotQueryCommandResult() {
+        UserContext.setUser(UserInfoDTO.builder().userId("2002").username("mallory").build());
+        OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
+        existing.setCommandId("action-1:create-order");
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+
+        // 即使底层查询意外返回其他分片记录，服务层仍执行最终归属校验。
+        assertThatThrownBy(() -> orderService.queryCommandStatus("action-1:create-order"))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("无权访问");
     }
 
     /**

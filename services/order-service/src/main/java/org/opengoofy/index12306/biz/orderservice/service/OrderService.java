@@ -25,6 +25,7 @@ import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderPageQueryReq
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQueryReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
+import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.orderservice.mq.event.PayResultCallbackOrderEvent;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
 
@@ -73,6 +74,14 @@ public interface OrderService {
      * @return 订单号
      */
     String createTicketOrder(TicketOrderCreateReqDTO requestParam);
+
+    /**
+     * 查询当前用户稳定订单命令的权威结果。
+     *
+     * @param commandId 订单创建命令标识
+     * @return 不存在或已成功的命令状态
+     */
+    OrderCommandStatusRespDTO queryCommandStatus(String commandId);
 
     /**
      * 关闭火车票订单

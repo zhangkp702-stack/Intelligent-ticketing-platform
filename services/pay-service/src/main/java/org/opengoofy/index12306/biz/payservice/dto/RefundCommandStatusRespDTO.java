@@ -15,29 +15,44 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.orderservice.dto.req;
+package org.opengoofy.index12306.biz.payservice.dto;
 
+import lombok.Builder;
 import lombok.Data;
 
 /**
- * 取消车票订单请求入参
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 退款命令权威状态，只返回核对所需的安全字段。
  */
 @Data
-public class CancelTicketOrderReqDTO {
+@Builder
+public class RefundCommandStatusRespDTO {
 
     /**
-     * Agent 真实交易意图标识；普通取消请求可以不传。
-     */
-    private String operationId;
-
-    /**
-     * 取消订单步骤的稳定命令标识。
+     * 稳定退款命令标识。
      */
     private String commandId;
 
     /**
-     * 订单号
+     * Agent 真实交易意图标识。
+     */
+    private String actionId;
+
+    /**
+     * 命令状态：NOT_FOUND、PROCESSING、SUCCEEDED、FAILED 或 UNKNOWN。
+     */
+    private String status;
+
+    /**
+     * 关联订单号。
      */
     private String orderSn;
+
+    /**
+     * 已确定的退款金额。
+     */
+    private Integer refundAmount;
+
+    /**
+     * 支付服务内部退款流水引用。
+     */
 }

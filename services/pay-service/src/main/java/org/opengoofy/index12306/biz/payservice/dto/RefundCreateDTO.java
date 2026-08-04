@@ -30,6 +30,21 @@ import java.util.List;
 public class RefundCreateDTO {
 
     /**
+     * Agent 真实交易意图标识。
+     */
+    private String actionId;
+
+    /**
+     * 支付退款步骤的稳定命令标识。
+     */
+    private String commandId;
+
+    /**
+     * 退款不可变参数的 SHA-256 指纹。
+     */
+    private String requestFingerprint;
+
+    /**
      * 幂等退款请求标识
      */
     private String requestId;

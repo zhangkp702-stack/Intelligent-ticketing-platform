@@ -20,10 +20,13 @@ package org.opengoofy.index12306.biz.payservice.controller;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.payservice.dto.RefundReqDTO;
 import org.opengoofy.index12306.biz.payservice.dto.RefundRespDTO;
+import org.opengoofy.index12306.biz.payservice.dto.RefundCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.payservice.service.RefundService;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.web.Results;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -43,5 +46,18 @@ public class RefundController {
     @PostMapping("/api/pay-service/common/refund")
     public Result<RefundRespDTO> commonRefund(@RequestBody RefundReqDTO requestParam) {
         return Results.success(refundService.commonRefund(requestParam));
+    }
+
+    /**
+     * 查询当前用户退款命令的权威结果。
+     *
+     * @param commandId 稳定退款命令标识
+     * @return 命令状态和安全退款引用
+     */
+    @GetMapping("/api/pay-service/operations/{commandId}")
+    public Result<RefundCommandStatusRespDTO> queryCommandStatus(
+            @PathVariable("commandId") String commandId) {
+        // 命令查询由服务层校验退款记录归属，不能只凭 commandId 返回结果。
+        return Results.success(refundService.queryCommandStatus(commandId));
     }
 }

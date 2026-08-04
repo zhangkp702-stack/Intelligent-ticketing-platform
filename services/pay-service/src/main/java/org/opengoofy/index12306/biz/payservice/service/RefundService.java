@@ -18,6 +18,7 @@
 package org.opengoofy.index12306.biz.payservice.service;
 import org.opengoofy.index12306.biz.payservice.dto.RefundReqDTO;
 import org.opengoofy.index12306.biz.payservice.dto.RefundRespDTO;
+import org.opengoofy.index12306.biz.payservice.dto.RefundCommandStatusRespDTO;
 
 /**
  * 退款接口层
@@ -32,4 +33,12 @@ public interface RefundService {
      * @return 退款返回详情
      */
     RefundRespDTO commonRefund(RefundReqDTO requestParam);
+
+    /**
+     * 查询当前用户稳定退款命令的权威结果。
+     *
+     * @param commandId 支付退款命令标识
+     * @return 未找到、处理中或已完成的退款状态
+     */
+    RefundCommandStatusRespDTO queryCommandStatus(String commandId);
 }

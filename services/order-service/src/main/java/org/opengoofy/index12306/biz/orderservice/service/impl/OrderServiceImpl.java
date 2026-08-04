@@ -47,6 +47,7 @@ import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQuer
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderPassengerDetailRespDTO;
+import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.orderservice.mq.event.DelayCloseOrderEvent;
 import org.opengoofy.index12306.biz.orderservice.mq.event.PayResultCallbackOrderEvent;
 import org.opengoofy.index12306.biz.orderservice.mq.produce.DelayCloseOrderSendProduce;
@@ -64,8 +65,13 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.time.LocalDate;
@@ -207,10 +213,23 @@ public class OrderServiceImpl implements OrderService {
     @Transactional(rollbackFor = Exception.class)
     @Override
     public String createTicketOrder(TicketOrderCreateReqDTO requestParam) {
+        String commandId = normalizeCreateCommand(requestParam);
+        String requestFingerprint = commandId == null ? null : createRequestFingerprint(requestParam);
+        if (commandId != null) {
+            // 网络重试优先读取同一用户分片内的原订单，避免再次生成订单号和子订单。
+            OrderDO existing = findByCommandId(commandId, String.valueOf(requestParam.getUserId()));
+            if (existing != null) {
+                return resolveExistingCreateCommand(requestParam, requestFingerprint, existing);
+            }
+        }
         // 通过基因法将用户 ID 融入到订单号
         String orderSn = OrderIdGeneratorManager.generateId(requestParam.getUserId());
         // 创建汇总订单，存储整个账单的公共情况
-        OrderDO orderDO = OrderDO.builder().orderSn(orderSn)
+        OrderDO orderDO = OrderDO.builder()
+                .actionId(requestParam.getActionId())
+                .commandId(commandId)
+                .requestFingerprint(requestFingerprint)
+                .orderSn(orderSn)
                 .orderTime(requestParam.getOrderTime())
                 .departure(requestParam.getDeparture())
                 .departureTime(requestParam.getDepartureTime())
@@ -224,7 +243,16 @@ public class OrderServiceImpl implements OrderService {
                 .username(requestParam.getUsername())
                 .userId(String.valueOf(requestParam.getUserId()))
                 .build();
-        orderMapper.insert(orderDO);
+        try {
+            // 每个订单分片上的命令唯一约束是并发创建的最终防线。
+            orderMapper.insert(orderDO);
+        } catch (DuplicateKeyException exception) {
+            OrderDO existing = findByCommandId(commandId, String.valueOf(requestParam.getUserId()));
+            if (existing == null) {
+                throw exception;
+            }
+            return resolveExistingCreateCommand(requestParam, requestFingerprint, existing);
+        }
         List<TicketOrderItemCreateReqDTO> ticketOrderItems = requestParam.getTicketOrderItems();
         List<OrderItemDO> orderItemDOList = new ArrayList<>();
         List<OrderItemPassengerDO> orderPassengerRelationDOList = new ArrayList<>();
@@ -269,6 +297,134 @@ public class OrderServiceImpl implements OrderService {
             throw ex;
         }
         return orderSn;
+    }
+
+    /**
+     * 查询当前用户订单创建命令的权威状态。
+     *
+     * @param commandId 稳定命令标识
+     * @return 未找到或已成功创建的安全结果
+     */
+    @Override
+    public OrderCommandStatusRespDTO queryCommandStatus(String commandId) {
+        if (commandId == null || commandId.isBlank()) {
+            throw new ServiceException("订单命令标识不能为空");
+        }
+        String normalized = commandId.trim();
+        String userId = UserContext.getUserId();
+        OrderDO order = findByCommandId(normalized, userId);
+        if (order == null) {
+            return OrderCommandStatusRespDTO.builder()
+                    .commandId(normalized)
+                    .status("NOT_FOUND")
+                    .build();
+        }
+        if (!Objects.equals(order.getUserId(), userId)) {
+            throw new ClientException("订单命令不存在或无权访问");
+        }
+        // 查询始终带用户分片键，其他用户即使猜中 commandId 也无法读取订单号。
+        return OrderCommandStatusRespDTO.builder()
+                .commandId(order.getCommandId())
+                .actionId(order.getActionId())
+                .status("SUCCEEDED")
+                .orderSn(order.getOrderSn())
+                .build();
+    }
+
+    /**
+     * 校验并规范化 Agent 订单创建命令。
+     *
+     * @param requestParam 订单创建参数
+     * @return 普通请求返回 null，Agent 请求返回规范化命令标识
+     */
+    private String normalizeCreateCommand(TicketOrderCreateReqDTO requestParam) {
+        boolean hasAction = requestParam.getActionId() != null && !requestParam.getActionId().isBlank();
+        boolean hasCommand = requestParam.getCommandId() != null && !requestParam.getCommandId().isBlank();
+        if (!hasAction && !hasCommand) {
+            return null;
+        }
+        if (!hasAction || !hasCommand) {
+            throw new ServiceException("订单 actionId 和 commandId 必须同时提供");
+        }
+        String actionId = requestParam.getActionId().trim();
+        String normalized = requestParam.getCommandId().trim();
+        if (!normalized.equals(actionId + ":create-order")) {
+            throw new ServiceException("订单命令标识与操作标识不一致");
+        }
+        requestParam.setActionId(actionId);
+        requestParam.setCommandId(normalized);
+        return normalized;
+    }
+
+    /**
+     * 读取同一用户分片内已经创建的订单命令。
+     *
+     * @param commandId 稳定命令标识
+     * @param userId 用户分片键
+     * @return 已创建订单，不存在时返回 null
+     */
+    private OrderDO findByCommandId(String commandId, String userId) {
+        return orderMapper.selectOne(Wrappers.lambdaQuery(OrderDO.class)
+                .eq(OrderDO::getUserId, userId)
+                .eq(OrderDO::getCommandId, commandId));
+    }
+
+    /**
+     * 校验重复命令仍绑定同一 action、用户和不可变参数。
+     *
+     * @param requestParam 当前创建参数
+     * @param requestFingerprint 当前参数指纹
+     * @param existing 已存在订单
+     * @return 原订单号
+     */
+    private String resolveExistingCreateCommand(
+            TicketOrderCreateReqDTO requestParam,
+            String requestFingerprint,
+            OrderDO existing) {
+        if (!Objects.equals(existing.getActionId(), requestParam.getActionId())
+                || !Objects.equals(existing.getRequestFingerprint(), requestFingerprint)
+                || !Objects.equals(existing.getUserId(), String.valueOf(requestParam.getUserId()))) {
+            throw new ServiceException("订单命令标识与原请求不一致");
+        }
+        return existing.getOrderSn();
+    }
+
+    /**
+     * 计算不包含命令标识的订单创建参数指纹。
+     *
+     * @param requestParam 订单创建参数
+     * @return SHA-256 十六进制摘要
+     */
+    private String createRequestFingerprint(TicketOrderCreateReqDTO requestParam) {
+        CreateCommandPayload payload = new CreateCommandPayload(
+                requestParam.getUserId(), requestParam.getUsername(), requestParam.getTrainId(),
+                requestParam.getDeparture(), requestParam.getArrival(), requestParam.getRidingDate(),
+                requestParam.getTrainNumber(), requestParam.getDepartureTime(), requestParam.getArrivalTime(),
+                requestParam.getTicketOrderItems());
+        try {
+            // JSON 仅用于固定 DTO 字段顺序的摘要输入，不作为权威业务结果存储。
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(
+                    JSON.toJSONString(payload).getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前运行环境不支持 SHA-256", exception);
+        }
+    }
+
+    /**
+     * 订单创建命令的不可变摘要载荷。
+     */
+    private record CreateCommandPayload(
+            Long userId,
+            String username,
+            Long trainId,
+            String departure,
+            String arrival,
+            java.util.Date ridingDate,
+            String trainNumber,
+            java.util.Date departureTime,
+            java.util.Date arrivalTime,
+            List<TicketOrderItemCreateReqDTO> items) {
     }
 
     @Transactional(rollbackFor = Exception.class)

@@ -27,6 +27,7 @@ import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQuer
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderPassengerDetailRespDTO;
+import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.orderservice.service.OrderItemService;
 import org.opengoofy.index12306.biz.orderservice.service.OrderService;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
@@ -35,6 +36,7 @@ import org.opengoofy.index12306.framework.starter.web.Results;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -116,6 +118,19 @@ public class TicketOrderController {
     @PostMapping("/api/order-service/order/ticket/create")
     public Result<String> createTicketOrder(@RequestBody TicketOrderCreateReqDTO requestParam) {
         return Results.success(orderService.createTicketOrder(requestParam));
+    }
+
+    /**
+     * 查询当前用户订单创建命令的权威结果。
+     *
+     * @param commandId 稳定命令标识
+     * @return 命令状态和成功订单号
+     */
+    @GetMapping("/api/order-service/operations/{commandId}")
+    public Result<OrderCommandStatusRespDTO> queryCommandStatus(
+            @PathVariable("commandId") String commandId) {
+        // 服务层基于当前用户路由并校验归属，命令标识本身不构成授权凭据。
+        return Results.success(orderService.queryCommandStatus(commandId));
     }
 
     /**
