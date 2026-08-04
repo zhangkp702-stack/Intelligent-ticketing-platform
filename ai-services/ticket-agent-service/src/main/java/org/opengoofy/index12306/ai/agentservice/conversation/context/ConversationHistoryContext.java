@@ -19,7 +19,6 @@ import java.util.Objects;
  * @param messageIds 实际进入历史上下文的消息标识
  * @param fromSequence 历史消息起始序号
  * @param throughSequence 历史消息结束序号
- * @param estimatedTokenCount 摘要、状态、历史和当前问题的 Token 估算
  */
 public record ConversationHistoryContext(
         String conversationId,
@@ -32,8 +31,7 @@ public record ConversationHistoryContext(
         AgentChatMessage currentQuestion,
         List<String> messageIds,
         Long fromSequence,
-        Long throughSequence,
-        int estimatedTokenCount) {
+        Long throughSequence) {
 
     /**
      * 规范化会话历史集合。
@@ -49,7 +47,6 @@ public record ConversationHistoryContext(
      * @param messageIds 实际使用的消息标识
      * @param fromSequence 历史起始序号
      * @param throughSequence 历史结束序号
-     * @param estimatedTokenCount Token 估算
      */
     public ConversationHistoryContext {
         // 对外暴露不可变集合，避免 Pipeline 阶段意外修改已经审计的上下文。
@@ -59,6 +56,5 @@ public record ConversationHistoryContext(
             throw new IllegalArgumentException("当前问题角色必须为 USER");
         }
         messageIds = messageIds == null ? List.of() : List.copyOf(messageIds);
-        estimatedTokenCount = Math.max(0, estimatedTokenCount);
     }
 }

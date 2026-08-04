@@ -111,7 +111,9 @@ public class ConversationContextLoader {
 
         // 摘要只提供压缩历史，当前正在执行的用户问题始终独立于历史轮次。
         ConversationSummaryEntity summary = summaryRepository.findByConversationId(conversationId).orElse(null);
+        // 如果是null，说明第一次，不为null就获取最后覆盖的消息的序列id
         long summarizedThrough = summary == null ? 0 : summary.getSummarizedThroughSequence();
+        // 加载最近三轮问答
         List<TurnEntity> recentTurns = turnRepository.findRecentCompletedTurns(
                 conversationId,
                 TurnStatus.COMPLETED,
@@ -119,10 +121,11 @@ public class ConversationContextLoader {
                 currentTurnId,
                 properties.recentTurnLimit());
 
-        // 一次性加载轮次两侧消息，避免按轮次逐条查询形成 N+1。
+        // 一次性加载轮次两侧消息，避免按轮次逐条查询形成 N+1，key是消息id，value是消息体
         Map<String, MessageEntity> messagesById = loadMessagesById(recentTurns);
-        SelectedHistory selected = selectWithinTokenBudget(
-                summary, recentTurns, messagesById, currentQuestion);
+
+        // 最近三个完整轮次全部进入上下文，不再按 Token 预算二次筛选。
+        LoadedHistory loadedHistory = loadRecentHistory(recentTurns, messagesById);
         ConversationHistoryContext context = new ConversationHistoryContext(
                 conversationId,
                 summary == null ? null : summary.getId(),
@@ -130,12 +133,11 @@ public class ConversationContextLoader {
                 summary == null ? null : summary.getStructuredState(),
                 summary == null ? null : summary.getSummaryVersion(),
                 summarizedThrough,
-                selected.turns(),
+                loadedHistory.turns(),
                 AgentChatMessage.user(currentQuestion),
-                selected.messageIds(),
-                selected.fromSequence(),
-                selected.throughSequence(),
-                selected.estimatedTokenCount());
+                loadedHistory.messageIds(),
+                loadedHistory.fromSequence(),
+                loadedHistory.throughSequence());
 
         // 快照记录本次历史与当前问题的真实输入边界，但不复制消息正文。
         saveSnapshot(requestId, context, currentUserMessageId, currentUserSequence);
@@ -149,6 +151,11 @@ public class ConversationContextLoader {
      * @return 以消息标识索引的消息集合
      */
     private Map<String, MessageEntity> loadMessagesById(List<TurnEntity> turns) {
+        if (turns.isEmpty()) {
+            // 新会话没有历史轮次时直接返回，避免向 MyBatis-Plus 传入空 IN 集合。
+            return Map.of();
+        }
+
         List<String> messageIds = new ArrayList<>();
         for (TurnEntity turn : turns) {
             // 完成轮次必须同时引用用户消息和助手消息，批量读取可避免循环访问数据库。
@@ -169,8 +176,10 @@ public class ConversationContextLoader {
      * @return 可进入模型上下文的完整轮次
      */
     private LoadedTurn toLoadedTurn(TurnEntity turn, Map<String, MessageEntity> messagesById) {
+        // 取出用户消息
         MessageEntity userMessage = requireMessage(
                 turn.getUserMessageId(), MessageRole.USER, messagesById);
+        // 取出助手消息
         MessageEntity assistantMessage = requireMessage(
                 turn.getAssistantMessageId(), MessageRole.ASSISTANT, messagesById);
 
@@ -179,12 +188,12 @@ public class ConversationContextLoader {
                 || assistantMessage.getMessageType() != MessageType.TEXT) {
             throw new IllegalStateException("完整历史轮次必须由文本用户消息和文本助手消息组成");
         }
+        // 转换为大模型需要的文本信息
         ConversationTurnContext context = new ConversationTurnContext(
                 turn.getId(),
                 AgentChatMessage.user(userMessage.getContent()),
                 AgentChatMessage.assistant(assistantMessage.getContent()));
-        int tokenCount = normalizedTokenCount(userMessage) + normalizedTokenCount(assistantMessage);
-        return new LoadedTurn(context, userMessage, assistantMessage, tokenCount);
+        return new LoadedTurn(context, userMessage, assistantMessage);
     }
 
     /**
@@ -210,49 +219,41 @@ public class ConversationContextLoader {
     }
 
     /**
-     * 在 Token 预算内从最新轮次向前选择连续上下文。
+     * 将查询到的最近完整轮次全部装配为模型历史。
      *
-     * @param summary 当前会话摘要
      * @param recentDescending 摘要边界后的完整轮次倒序列表
      * @param messagesById 已批量加载的消息索引
-     * @param currentQuestion 当前用户问题
      * @return 按消息序号升序排列的完整历史轮次
      */
-    private SelectedHistory selectWithinTokenBudget(
-            ConversationSummaryEntity summary,
+    private LoadedHistory loadRecentHistory(
             List<TurnEntity> recentDescending,
-            Map<String, MessageEntity> messagesById,
-            String currentQuestion) {
-        int consumedTokens = estimateSummaryTokens(summary) + estimateTokens(currentQuestion);
-        List<LoadedTurn> selectedDescending = new ArrayList<>();
+            Map<String, MessageEntity> messagesById) {
+        List<LoadedTurn> loadedDescending = new ArrayList<>();
 
-        // 每次只加入完整的用户—助手轮次，避免 Token 截断后留下孤立消息。
+        // 轮次已由数据库限制为最近三个，此处仅完成消息校验和对象转换。
         for (TurnEntity turn : recentDescending) {
-            LoadedTurn loadedTurn = toLoadedTurn(turn, messagesById);
-            if (consumedTokens + loadedTurn.tokenCount() > properties.contextTokenBudget()) {
-                break;
-            }
-            selectedDescending.add(loadedTurn);
-            consumedTokens += loadedTurn.tokenCount();
+            loadedDescending.add(toLoadedTurn(turn, messagesById));
         }
-        Collections.reverse(selectedDescending);
+        Collections.reverse(loadedDescending);
 
         // 反转后按时间顺序生成模型历史和快照引用。
-        List<ConversationTurnContext> turns = selectedDescending.stream()
+        List<ConversationTurnContext> turns = loadedDescending.stream()
                 .map(LoadedTurn::context)
                 .toList();
+        // 加载id，一个turn是一个完整的问答，记录本次请求加载了那些历史消息
         List<String> messageIds = new ArrayList<>();
-        for (LoadedTurn loadedTurn : selectedDescending) {
+        for (LoadedTurn loadedTurn : loadedDescending) {
+            // 手机用户消息id
             messageIds.add(loadedTurn.userMessage().getId());
+            // 手机助手回复消息id
             messageIds.add(loadedTurn.assistantMessage().getId());
         }
-        Long fromSequence = selectedDescending.isEmpty()
-                ? null : selectedDescending.get(0).userMessage().getSequenceNo();
-        Long throughSequence = selectedDescending.isEmpty()
-                ? null : selectedDescending.get(selectedDescending.size() - 1)
+        Long fromSequence = loadedDescending.isEmpty()
+                ? null : loadedDescending.get(0).userMessage().getSequenceNo();
+        Long throughSequence = loadedDescending.isEmpty()
+                ? null : loadedDescending.get(loadedDescending.size() - 1)
                         .assistantMessage().getSequenceNo();
-        return new SelectedHistory(
-                turns, List.copyOf(messageIds), fromSequence, throughSequence, consumedTokens);
+        return new LoadedHistory(turns, List.copyOf(messageIds), fromSequence, throughSequence);
     }
 
     /**
@@ -286,45 +287,9 @@ public class ConversationContextLoader {
                 fromSequence,
                 currentUserSequence,
                 writeJson(messageIds),
-                context.estimatedTokenCount(),
                 hashContext(context),
                 clock.instant());
         snapshotRepository.insert(snapshot);
-    }
-
-    /**
-     * 取得持久化 Token 数，缺失时使用保守字符估算。
-     *
-     * @param message 原始消息
-     * @return 非负 Token 估算
-     */
-    private int normalizedTokenCount(MessageEntity message) {
-        return message.getTokenCount() > 0 ? message.getTokenCount() : estimateTokens(message.getContent());
-    }
-
-    /**
-     * 使用字符长度估算 Token 数。
-     *
-     * @param content 文本内容
-     * @return 估算 Token 数
-     */
-    private int estimateTokens(String content) {
-        return content == null || content.isEmpty() ? 0 : Math.max(1, (content.length() + 1) / 2);
-    }
-
-    /**
-     * 计算摘要正文与结构化状态的 Token 估算。
-     *
-     * @param summary 当前会话摘要
-     * @return 摘要相关 Token 估算
-     */
-    private int estimateSummaryTokens(ConversationSummaryEntity summary) {
-        if (summary == null) {
-            return 0;
-        }
-        // 摘要正文和结构化状态都会进入系统消息，因此需要共同占用预算。
-        return estimateTokens(summary.getSummaryContent())
-                + estimateTokens(summary.getStructuredState());
     }
 
     /**
@@ -385,29 +350,25 @@ public class ConversationContextLoader {
      * @param context 标准历史轮次
      * @param userMessage 用户消息实体
      * @param assistantMessage 助手消息实体
-     * @param tokenCount 完整轮次 Token 估算
      */
     private record LoadedTurn(
             ConversationTurnContext context,
             MessageEntity userMessage,
-            MessageEntity assistantMessage,
-            int tokenCount) {
+            MessageEntity assistantMessage) {
     }
 
     /**
-     * Token 预算筛选后的历史上下文。
+     * 已加载并按时间正序整理的历史上下文。
      *
      * @param turns 按时间正序排列的完整轮次
      * @param messageIds 按时间正序排列的消息标识
      * @param fromSequence 历史起始序号
      * @param throughSequence 历史结束序号
-     * @param estimatedTokenCount 包含当前问题的总 Token 估算
      */
-    private record SelectedHistory(
+    private record LoadedHistory(
             List<ConversationTurnContext> turns,
             List<String> messageIds,
             Long fromSequence,
-            Long throughSequence,
-            int estimatedTokenCount) {
+            Long throughSequence) {
     }
 }

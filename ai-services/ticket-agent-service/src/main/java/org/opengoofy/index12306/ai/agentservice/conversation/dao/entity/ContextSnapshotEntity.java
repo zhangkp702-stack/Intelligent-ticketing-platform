@@ -16,24 +16,49 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ContextSnapshotEntity extends AgentBaseEntity {
 
+    /**
+     * 触发本次模型上下文装配的请求标识。
+     */
     private String requestId;
 
+    /**
+     * 本次上下文所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 本次上下文使用的会话摘要标识；未使用摘要时为空。
+     */
     private String summaryId;
 
+    /**
+     * 本次上下文使用的会话摘要版本；未使用摘要时为空。
+     */
     private Integer summaryVersion;
 
+    /**
+     * 已被摘要覆盖的最大消息序号，未使用摘要时为零。
+     */
     private long summarizedThroughSequence;
 
+    /**
+     * 本次上下文选取的首条原始消息序号。
+     */
     private Long messageFromSequence;
 
+    /**
+     * 本次上下文选取的末条原始消息序号。
+     */
     private Long messageThroughSequence;
 
+    /**
+     * 本次上下文选中的消息标识 JSON。
+     */
     private String selectedMessageIds;
 
-    private int estimatedTokenCount;
-
+    /**
+     * 本次实际装配上下文内容的哈希值，用于审计和一致性校验。
+     */
     private String contextHash;
 
     private ContextSnapshotEntity(
@@ -45,7 +70,6 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
             Long messageFromSequence,
             Long messageThroughSequence,
             String selectedMessageIds,
-            int estimatedTokenCount,
             String contextHash,
             Instant now) {
         super(now);
@@ -57,7 +81,6 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
         this.messageFromSequence = messageFromSequence;
         this.messageThroughSequence = messageThroughSequence;
         this.selectedMessageIds = selectedMessageIds;
-        this.estimatedTokenCount = Math.max(0, estimatedTokenCount);
         this.contextHash = Objects.requireNonNull(contextHash, "contextHash");
     }
 
@@ -72,7 +95,6 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
      * @param messageFromSequence 首条消息序号
      * @param messageThroughSequence 末条消息序号
      * @param selectedMessageIds 选中消息标识 JSON
-     * @param estimatedTokenCount 估算 Token 数
      * @param contextHash 上下文内容哈希
      * @param now 创建时间
      * @return 上下文快照实体
@@ -86,13 +108,12 @@ public class ContextSnapshotEntity extends AgentBaseEntity {
             Long messageFromSequence,
             Long messageThroughSequence,
             String selectedMessageIds,
-            int estimatedTokenCount,
             String contextHash,
             Instant now) {
         // 快照只保存引用、范围和哈希，避免重复保存用户对话正文。
         return new ContextSnapshotEntity(
                 requestId, conversationId, summaryId, summaryVersion, summarizedThroughSequence,
                 messageFromSequence, messageThroughSequence, selectedMessageIds,
-                estimatedTokenCount, contextHash, now);
+                contextHash, now);
     }
 }

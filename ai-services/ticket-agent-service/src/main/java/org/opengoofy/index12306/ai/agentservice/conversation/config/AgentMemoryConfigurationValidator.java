@@ -26,9 +26,8 @@ public class AgentMemoryConfigurationValidator implements SmartInitializingSingl
      */
     @Override
     public void afterSingletonsInstantiated() {
-        // 上下文数量和 Token 预算必须为正，避免生成缺少当前问题的模型输入。
+        // 最近完整轮次数量必须为正，避免上下文加载配置无效。
         Assert.isTrue(properties.recentTurnLimit() > 0, "最近完整轮次数量必须大于零");
-        Assert.isTrue(properties.contextTokenBudget() > 0, "上下文 Token 预算必须大于零");
 
         // 摘要阈值和有限重试共同约束后台任务量，防止失败任务无限循环。
         Assert.isTrue(properties.summaryTriggerMessageCount() > 0, "摘要触发消息数必须大于零");
