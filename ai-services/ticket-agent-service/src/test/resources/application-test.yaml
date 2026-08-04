@@ -23,8 +23,16 @@ mybatis-plus:
 
 index12306:
   agent:
+    turn:
+      submission-secret: test-turn-submission-secret-at-least-32-characters
+      recovery-enabled: false
+    stream:
+      cleanup-enabled: false
     action:
       confirmation-secret: test-confirmation-secret-at-least-32-characters
+      reconciliation:
+        mq:
+          enabled: false
     memory:
       mq:
         enabled: false

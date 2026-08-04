@@ -13,7 +13,9 @@ import org.opengoofy.index12306.ai.agentservice.action.dto.PurchaseActionModels.
 import org.opengoofy.index12306.ai.agentservice.action.service.PurchaseActionService;
 import org.opengoofy.index12306.ai.agentservice.action.enums.AgentActionStatus;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
+import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatEvent;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.EventType;
+import org.opengoofy.index12306.ai.agentservice.chat.stream.service.DurableStreamEventService;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.chat.enums.AgentIntent;
 import org.opengoofy.index12306.ai.agentservice.chat.execution.ReadTaskChain;
@@ -21,7 +23,12 @@ import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskExecutionMode
 import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskExecutionModels.TaskExecutionStatus;
 import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskDependencyResolver;
 import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskPlanExecutor;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.service.DurableTaskExecutionCoordinator;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.service.TaskExecutionCheckpointService;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.service.TurnLeaseHeartbeatCoordinator;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.PlannedTask;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.QuestionResolutionPlan;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.ResolvedTask;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskSlots;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TrainSelectionPolicy;
@@ -52,6 +59,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.time.Clock;
@@ -60,7 +68,9 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -94,8 +104,7 @@ class AgentChatServiceTests {
                         AgentChatMessage.assistant("上一轮回答"))));
 
         // 模拟新轮次和会话级上下文，回答模型返回两个流式增量。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
         ChatResponse firstResponse = response("北京到");
         ChatResponse secondResponse = response("上海有票");
@@ -149,7 +158,7 @@ class AgentChatServiceTests {
         // 捕获实际发送给模型的提示，确认独立只读工具可以在同一模型轮次中批量请求。
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.model(), atLeastOnce()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
-        assertThat(promptCaptor.getValue().getOptions()).isNull();
+        assertThat(promptCaptor.getValue().getOptions().getMaxTokens()).isEqualTo(2048);
         assertThat(promptCaptor.getValue().getInstructions())
                 .filteredOn(message -> message instanceof UserMessage)
                 .extracting(message -> message.getText())
@@ -194,8 +203,7 @@ class AgentChatServiceTests {
                         AgentChatMessage.assistant("第一趟 G9001，第二趟 G9003"))));
 
         // 任务规划阶段把省略问句补全，固定链使用补全后的独立问题。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
         doReturn(plan(task(
                         AgentIntent.TRAIN_QUERY,
@@ -204,7 +212,7 @@ class AgentChatServiceTests {
                         new TaskSlots(
                                 "北京", "上海", "2026-07-17", "G9003",
                                 null, null, null, List.of(), null, null))))
-                .when(test.taskPlanner()).plan(eq(conversationHistory), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         ChatResponse modelResponse = response("G9003 还有余票");
         when(test.model().stream(any(), any(), any(), eq(false), any()))
                 .thenReturn(Flux.just(modelResponse));
@@ -223,7 +231,7 @@ class AgentChatServiceTests {
                 any());
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
-        assertThat(promptCaptor.getValue().getOptions()).isNull();
+        assertThat(promptCaptor.getValue().getOptions().getMaxTokens()).isEqualTo(2048);
         assertThat(promptCaptor.getValue().getInstructions())
                 .extracting(message -> message.getText())
                 .anyMatch(text -> text.contains("明天北京到上海的第二趟车 G9003 还有票吗"));
@@ -243,8 +251,7 @@ class AgentChatServiceTests {
                 "购买 G9004 次列车", Instant.parse("2026-07-16T00:10:00Z"), "confirmation-token");
 
         // 固定链返回草案结果，数据库中保存对应待确认操作。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
         doReturn(plan(task(
                         AgentIntent.TICKET_PURCHASE,
@@ -253,7 +260,7 @@ class AgentChatServiceTests {
                         new TaskSlots(
                                 null, null, null, "G9001", null,
                                 "一等座", null, List.of("万重山"), null, null))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         when(test.purchaseChainExecutor().execute(any(), any())).thenReturn(
                 new PurchaseChainExecutor.PurchaseChainResult("已生成购票草案"));
         when(test.purchaseActionService().confirmationForTurn(command.userId(), "turn-1"))
@@ -293,8 +300,7 @@ class AgentChatServiceTests {
                 "conversation-1", "帮万重山买明天早上七点的票");
 
         // 模拟工具已经返回两名有效乘车人，但模型仍错误生成空乘车人结论。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
         doReturn(plan(task(
                         AgentIntent.TICKET_PURCHASE,
@@ -303,7 +309,7 @@ class AgentChatServiceTests {
                         new TaskSlots(
                                 null, null, "2026-07-17", null, "07:00",
                                 null, null, List.of("万重山"), null, null))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         ChatResponse incorrectModelResponse = response("系统提示当前账号没有可用乘车人");
         when(test.model().stream(any(), any(), any(), eq(true), any()))
                 .thenReturn(Flux.just(incorrectModelResponse));
@@ -333,8 +339,7 @@ class AgentChatServiceTests {
                 new CancellationIntentData(null, "G9001", "2026-07-28");
 
         // 意图模型只输出取消字段，后续订单定位和草案创建由代码链完成。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
         doReturn(plan(task(
                         AgentIntent.ORDER_CANCELLATION,
@@ -344,7 +349,7 @@ class AgentChatServiceTests {
                                 null, null, null, cancellationRequest.trainNumber(),
                                 null, null, null, List.of(), cancellationRequest.orderSn(),
                                 cancellationRequest.ridingDate()))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         when(test.ticketOperationChainExecutor().executeCancellation(any(), eq(cancellationRequest)))
                 .thenReturn(new TicketOperationChainExecutor.OperationChainResult("取消订单草案已生成。"));
 
@@ -373,8 +378,7 @@ class AgentChatServiceTests {
                 "workflow-1", WorkflowStage.SELECTING_ORDER, "请选择需要取消的订单", List.of());
 
         // 固定链先建立数据库工作流，完成阶段随后从对应服务恢复同一待选择状态。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
         doReturn(plan(task(
                         AgentIntent.ORDER_CANCELLATION,
@@ -384,7 +388,7 @@ class AgentChatServiceTests {
                                 null, null, null, cancellationRequest.trainNumber(),
                                 null, null, null, List.of(), cancellationRequest.orderSn(),
                                 cancellationRequest.ridingDate()))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         when(test.ticketOperationChainExecutor().executeCancellation(any(), eq(cancellationRequest)))
                 .thenReturn(new TicketOperationChainExecutor.OperationChainResult("等待用户选择订单。"));
         when(test.cancellationWorkflowService().findPendingSelection("user-1", "conversation-1"))
@@ -421,8 +425,7 @@ class AgentChatServiceTests {
                 new RefundIntentData(null, "G9001", "2026-07-28", List.of("万重山"));
 
         // 意图模型提供订单定位和乘车人字段，退票查询、预览及草案顺序由代码固定。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, history(command.conversationId(), command.message(), List.of()));
         doReturn(plan(task(
                         AgentIntent.TICKET_REFUND,
@@ -432,7 +435,7 @@ class AgentChatServiceTests {
                                 null, null, null, refundRequest.trainNumber(),
                                 null, null, null, refundRequest.passengerNames(),
                                 refundRequest.orderSn(), refundRequest.ridingDate()))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         when(test.ticketOperationChainExecutor().executeRefund(any(), eq(refundRequest)))
                 .thenReturn(new TicketOperationChainExecutor.OperationChainResult("退票草案已生成。"));
 
@@ -458,8 +461,7 @@ class AgentChatServiceTests {
         ConversationHistoryContext conversationHistory = history(
                 command.conversationId(), command.message(), List.of());
         // 模拟一次购票业务问答，固定链在工具提供器解析之前直接执行。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
         doReturn(plan(task(
                         AgentIntent.TICKET_PURCHASE,
@@ -468,7 +470,7 @@ class AgentChatServiceTests {
                         new TaskSlots(
                                 "北京", "上海", "2026-07-17", null,
                                 null, "二等座", null, List.of(), null, null))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
@@ -494,8 +496,7 @@ class AgentChatServiceTests {
         ChatResponse modelResponse = response("已查询当前账号乘车人");
 
         // 模拟乘车人查询意图，确保分流工具不会被流水线的最终白名单再次移除。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
         doReturn(plan(task(
                         AgentIntent.PASSENGER_QUERY,
@@ -504,7 +505,7 @@ class AgentChatServiceTests {
                         new TaskSlots(
                                 null, null, null, null, null, null, null,
                                 List.of("万重山"), null, null))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         when(test.model().stream(any(), any(), any(), eq(false), any())).thenReturn(Flux.just(modelResponse));
 
         StepVerifier.create(test.service().stream(command))
@@ -517,7 +518,7 @@ class AgentChatServiceTests {
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.readTaskChain()).execute(any(), any(), any());
         verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
-        assertThat(promptCaptor.getValue().getOptions()).isNull();
+        assertThat(promptCaptor.getValue().getOptions().getMaxTokens()).isEqualTo(2048);
     }
 
     /**
@@ -534,8 +535,7 @@ class AgentChatServiceTests {
         ChatResponse modelResponse = response("你好，我是 12306 购票智能体助手");
 
         // 普通问答仍经过统一编排和持久化，但模型调用不携带任何工具定义。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
         when(test.model().stream(any(), any(), any(), eq(false), any()))
                 .thenReturn(Flux.just(modelResponse));
@@ -548,7 +548,7 @@ class AgentChatServiceTests {
 
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
-        assertThat(promptCaptor.getValue().getOptions()).isNull();
+        assertThat(promptCaptor.getValue().getOptions().getMaxTokens()).isEqualTo(2048);
     }
 
     /**
@@ -564,8 +564,7 @@ class AgentChatServiceTests {
                 command.conversationId(), command.message(), List.of());
 
         // 模拟业务问题已经完成上下文加载，但当前没有任何 MCP 工具提供器。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
 
         // 规划结果进入查票固定链，单个查询异常由调度器转换为安全失败结果。
@@ -576,7 +575,7 @@ class AgentChatServiceTests {
                         new TaskSlots(
                                 "北京", "上海", "2026-07-17", null,
                                 null, null, null, List.of(), null, null))))
-                .when(test.taskPlanner()).plan(any(), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         doReturn(reactor.core.publisher.Mono.error(
                 new IllegalStateException("resolve_station unavailable")))
                 .when(test.readTaskChain()).execute(any(), any(), any());
@@ -628,11 +627,10 @@ class AgentChatServiceTests {
                 List.of(), List.of(), WorkflowRelation.INDEPENDENT, List.of());
 
         // 规划结果一次返回三个任务，两个查询由固定链处理，购票继续走服务端代码链。
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
         doReturn(new TaskPlan(List.of(trainTask, purchaseTask, passengerTask)))
-                .when(test.taskPlanner()).plan(eq(conversationHistory), any(), any());
+                .when(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         doReturn(reactor.core.publisher.Mono.just(new TaskExecutionResult(
                 "task-1", 1, AgentIntent.TRAIN_QUERY, TaskExecutionStatus.SUCCESS,
                 trainTask.standaloneQuestion(),
@@ -666,7 +664,8 @@ class AgentChatServiceTests {
                 })
                 .verifyComplete();
 
-        verify(test.taskPlanner()).plan(eq(conversationHistory), any(), any());
+        verify(test.taskPlanner()).resolveQuestions(eq(conversationHistory), any(), any());
+        verify(test.taskPlanner()).planResolvedTasks(any(), any(), any());
         verify(test.readTaskChain(), org.mockito.Mockito.times(2)).execute(any(), any(), any());
         ArgumentCaptor<PurchaseIntentData> purchaseCaptor =
                 ArgumentCaptor.forClass(PurchaseIntentData.class);
@@ -675,7 +674,7 @@ class AgentChatServiceTests {
         assertThat(purchaseCaptor.getValue().departureTime()).isEqualTo("06:30");
         ArgumentCaptor<Prompt> promptCaptor = ArgumentCaptor.forClass(Prompt.class);
         verify(test.model()).stream(any(), promptCaptor.capture(), any(), eq(false), any());
-        assertThat(promptCaptor.getValue().getOptions()).isNull();
+        assertThat(promptCaptor.getValue().getOptions().getMaxTokens()).isEqualTo(2048);
         assertThat(promptCaptor.getValue().getInstructions())
                 .extracting(message -> message.getText())
                 .anySatisfy(text -> assertThat(text)
@@ -693,10 +692,11 @@ class AgentChatServiceTests {
     void completedTurnIsReusedWithoutModelCall() {
         TestContext test = context();
         ChatCommand command = command();
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, false));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, false));
         when(test.memory().getTurnState(command.userId(), "turn-1")).thenReturn(
-                new ConversationMemoryService.TurnState(TurnStatus.COMPLETED, "已完成的回答"));
+                new ConversationMemoryService.TurnState(
+                        "turn-1", command.conversationId(), TurnStatus.COMPLETED,
+                        "已完成的回答", null, Instant.now(), Instant.now()));
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextCount(2)
@@ -720,17 +720,19 @@ class AgentChatServiceTests {
         ChatCommand command = command();
         ConversationHistoryContext conversationHistory = history(
                 command.conversationId(), command.message(), List.of());
-        when(test.memory().startTurn(any())).thenReturn(new ConversationMemoryService.StartedTurn(
-                command.conversationId(), "turn-1", "message-1", 1L, true));
+        when(test.memory().startTurn(any())).thenReturn(startedTurn(command, true));
         stubHistory(test, command, conversationHistory);
         when(test.model().stream(any(), any(), any(), eq(false), any())).thenReturn(Flux.never());
 
         StepVerifier.create(test.service().stream(command))
                 .expectNextMatches(event -> event.type() == EventType.META)
-                .expectErrorSatisfies(error -> org.assertj.core.api.Assertions.assertThat(error)
-                        .isInstanceOf(AgentChatException.class))
+                .assertNext(event -> {
+                    assertThat(event.type()).isEqualTo(EventType.ERROR);
+                    assertThat(event.failureCategory()).isEqualTo("CHAT_TIMEOUT");
+                })
+                .expectComplete()
                 .verify(Duration.ofSeconds(1));
-        verify(test.memory()).cancelTurn(command.userId(), "turn-1");
+        verify(test.memory()).cancelOwnedTurn(command.userId(), "turn-1", "test-owner", 1L);
     }
 
     /**
@@ -748,7 +750,7 @@ class AgentChatServiceTests {
         // 测试历史只关注完整轮次结构，摘要和快照边界保持为空。
         return new ConversationHistoryContext(
                 conversationId, null, null, null, null, 0,
-                turns, AgentChatMessage.user(currentQuestion), List.of(), null, null, 0);
+                turns, AgentChatMessage.user(currentQuestion), List.of(), null, null);
     }
 
     /**
@@ -797,13 +799,41 @@ class AgentChatServiceTests {
         RefundWorkflowService refundWorkflowService = mock(RefundWorkflowService.class);
         PurchaseChainExecutor purchaseChainExecutor = mock(PurchaseChainExecutor.class);
         TicketOperationChainExecutor ticketOperationChainExecutor = mock(TicketOperationChainExecutor.class);
-        // 默认规划单个普通问答任务，具体业务场景在各测试中覆盖该计划。
-        when(taskPlanner.plan(any(), any(), any())).thenAnswer(invocation -> {
+        TaskExecutionCheckpointService taskCheckpointService = mock(TaskExecutionCheckpointService.class);
+        DurableTaskExecutionCoordinator taskExecutionCoordinator = mock(DurableTaskExecutionCoordinator.class);
+        TurnLeaseHeartbeatCoordinator heartbeatCoordinator = mock(TurnLeaseHeartbeatCoordinator.class);
+        DurableStreamEventService durableStreamEventService = mock(DurableStreamEventService.class);
+        AtomicLong eventSequence = new AtomicLong();
+        // 单元测试沿用直接执行语义，持久化检查点和心跳由独立持久化测试覆盖。
+        when(taskCheckpointService.findPlan(any())).thenReturn(Optional.empty());
+        when(taskCheckpointService.persistPlan(any(), any())).thenAnswer(invocation -> invocation.getArgument(1));
+        when(taskExecutionCoordinator.execute(any(), any(), any())).thenAnswer(invocation -> {
+            Supplier<Mono<TaskExecutionResult>> execution = invocation.getArgument(2);
+            return execution.get();
+        });
+        when(heartbeatCoordinator.guard(any(), any(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(2));
+        when(durableStreamEventService.append(any(String.class), any(ChatEvent.class)))
+                .thenAnswer(invocation -> Optional.of(
+                        ((ChatEvent) invocation.getArgument(1))
+                                .withEventSequence(eventSequence.incrementAndGet())));
+        when(durableStreamEventService.ensureTerminal(any(String.class), any(String.class)))
+                .thenReturn(Optional.empty());
+        // 默认第一阶段生成一个保持原文的问题，具体改写场景由规划服务测试覆盖。
+        when(taskPlanner.resolveQuestions(any(), any(), any())).thenAnswer(invocation -> {
             ConversationHistoryContext history = invocation.getArgument(0);
+            String question = history.currentQuestion().content();
+            return new QuestionResolutionPlan(List.of(new ResolvedTask(
+                    "task-1", 1, question, question, List.of())));
+        });
+        // 默认第二阶段把已解析问题映射为普通问答，具体业务场景在各测试中覆盖该计划。
+        when(taskPlanner.planResolvedTasks(any(), any(), any())).thenAnswer(invocation -> {
+            QuestionResolutionPlan resolutionPlan = invocation.getArgument(0);
+            ResolvedTask resolvedTask = resolutionPlan.tasks().get(0);
             return plan(task(
                     AgentIntent.GENERAL_CHAT,
-                    history.currentQuestion().content(),
-                    history.currentQuestion().content(),
+                    resolvedTask.originalClause(),
+                    resolvedTask.standaloneQuestion(),
                     emptySlots()));
         });
         when(readTaskChain.execute(any(), any(), any())).thenAnswer(invocation -> {
@@ -840,6 +870,9 @@ class AgentChatServiceTests {
                 contextService,
                 taskPlanner,
                 new TaskPlanExecutor(chatProperties, chatMetrics),
+                taskCheckpointService,
+                taskExecutionCoordinator,
+                heartbeatCoordinator,
                 readTaskChain,
                 new TaskDependencyResolver(new ObjectMapper()),
                 new IntentExecutionRouter(),
@@ -856,11 +889,25 @@ class AgentChatServiceTests {
                 memory,
                 pipeline,
                 chatProperties,
-                chatMetrics);
+                chatMetrics,
+                durableStreamEventService);
         return new TestContext(
                 service, memory, contextService, taskPlanner, readTaskChain, model,
                 purchaseActionService, purchaseWorkflowService,
                 cancellationWorkflowService, purchaseChainExecutor, ticketOperationChainExecutor, meterRegistry);
+    }
+
+    /**
+     * 创建携带真实执行权字段的轮次启动结果，避免测试绕过租约协议。
+     *
+     * @param command 当前聊天命令
+     * @param created 是否首次创建轮次
+     * @return 可供流水线使用的轮次启动结果
+     */
+    private ConversationMemoryService.StartedTurn startedTurn(ChatCommand command, boolean created) {
+        // 所有流水线单测共享同一组稳定的执行者和围栏令牌。
+        return new ConversationMemoryService.StartedTurn(
+                command.conversationId(), "turn-1", "message-1", 1L, created, "test-owner", 1L);
     }
 
     /**

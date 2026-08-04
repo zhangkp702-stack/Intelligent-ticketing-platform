@@ -10,6 +10,7 @@ import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.SummaryT
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.SummaryTaskStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.TurnEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
+import org.opengoofy.index12306.ai.agentservice.conversation.exception.TurnSubmissionException;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ContextSnapshotRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationSummaryRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.SummaryTaskRepository;
@@ -25,6 +26,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 验证会话消息、唯一摘要和会话级上下文在真实 MyBatis-Plus 映射下的核心约束。
@@ -65,10 +67,11 @@ class AgentMemoryPersistenceTests {
         ConversationMemoryService.StartedTurn retried = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
                         fixture.userId(), fixture.conversationId(), fixture.requestId(),
-                        fixture.requestId(), "查询明天北京到上海的票", 10));
+                        fixture.submissionToken(), "test-user", "查询明天北京到上海的票", 10));
         MessageEntity completedAgain = conversationMemoryService.completeTurn(
                 new ConversationMemoryService.CompleteTurnCommand(
-                        fixture.userId(), fixture.turnId(), "不会重复写入的回答", 8));
+                        fixture.userId(), fixture.turnId(), "不会重复写入的回答", 8,
+                        fixture.executionOwner(), fixture.fencingToken()));
 
         TurnEntity turn = Optional.ofNullable(turnRepository.selectById(fixture.turnId())).orElseThrow();
         assertThat(retried.created()).isFalse();
@@ -80,20 +83,93 @@ class AgentMemoryPersistenceTests {
     }
 
     /**
+     * 验证服务端轮次在首次提交时固化内容指纹和租约，后续只能重放相同问题。
+     */
+    @Test
+    void preparedTurnBindsPayloadAndExecutionLeaseOnce() {
+        String userId = unique("turn-owner");
+        ConversationEntity conversation = conversationMemoryService.createConversation(
+                userId, "轮次协议测试");
+
+        // 预创建只产生 DRAFT 轮次，不提前写入用户消息或领取执行权。
+        ConversationMemoryService.PreparedTurn prepared = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
+        TurnEntity draft = Optional.ofNullable(turnRepository.selectById(prepared.turnId())).orElseThrow();
+        assertThat(draft.getStatus()).isEqualTo(TurnStatus.DRAFT);
+        assertThat(draft.getUserMessageId()).isNull();
+        assertThat(draft.getPayloadHash()).isNull();
+        assertThat(draft.getFencingToken()).isZero();
+
+        // 首次合法提交在同一事务中绑定问题、用户消息、执行租约和 fencing token。
+        ConversationMemoryService.StartedTurn started = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), prepared.turnId(),
+                        prepared.submissionToken(), "test-user", "查询上海到杭州的车票", 8));
+        TurnEntity running = Optional.ofNullable(turnRepository.selectById(prepared.turnId())).orElseThrow();
+        assertThat(started.created()).isTrue();
+        assertThat(running.getStatus()).isEqualTo(TurnStatus.RUNNING);
+        assertThat(running.getPayloadHash()).hasSize(64);
+        assertThat(running.getLeaseOwner()).isNotBlank();
+        assertThat(running.getLeaseUntil()).isAfter(running.getStartedAt());
+        assertThat(running.getFencingToken()).isEqualTo(1L);
+
+        // 相同内容重试复用原消息，不同内容不能借同一个 turnId 发起第二个业务请求。
+        ConversationMemoryService.StartedTurn retried = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), prepared.turnId(),
+                        prepared.submissionToken(), "test-user", "查询上海到杭州的车票", 8));
+        assertThat(retried.created()).isFalse();
+        assertThat(retried.userMessageId()).isEqualTo(started.userMessageId());
+        assertThatThrownBy(() -> conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), prepared.turnId(),
+                        prepared.submissionToken(), "test-user", "改成查询北京到广州", 8)))
+                .isInstanceOf(TurnSubmissionException.class)
+                .satisfies(exception -> assertThat(((TurnSubmissionException) exception).reason())
+                        .isEqualTo(TurnSubmissionException.Reason.PAYLOAD_MISMATCH));
+    }
+
+    /**
+     * 验证伪造提交令牌不能把服务端 DRAFT 轮次推进为运行状态。
+     */
+    @Test
+    void preparedTurnRejectsInvalidSubmissionToken() {
+        String userId = unique("token-owner");
+        ConversationEntity conversation = conversationMemoryService.createConversation(
+                userId, "提交令牌测试");
+        ConversationMemoryService.PreparedTurn prepared = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
+
+        // 无效令牌在持久化用户消息之前被拒绝，轮次仍可使用原令牌正常提交。
+        assertThatThrownBy(() -> conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), prepared.turnId(),
+                        "forged-submission-token", "test-user", "查询今天的车票", 6)))
+                .isInstanceOf(TurnSubmissionException.class)
+                .satisfies(exception -> assertThat(((TurnSubmissionException) exception).reason())
+                        .isEqualTo(TurnSubmissionException.Reason.INVALID_TOKEN));
+        TurnEntity draft = Optional.ofNullable(turnRepository.selectById(prepared.turnId())).orElseThrow();
+        assertThat(draft.getStatus()).isEqualTo(TurnStatus.DRAFT);
+        assertThat(draft.getUserMessageId()).isNull();
+    }
+
+    /**
      * 验证回答上下文只加载当前问题之前的完整轮次，不再执行主题判断。
      */
     @Test
     void conversationContextLoadsMessagesAndPersistsSnapshot() {
         Fixture fixture = createCompletedTurn("查询北京到上海的余票", "已有可选车次");
-        String requestId = unique("context");
 
-        // 新问题虽然已经持久化，但不会混入最近完整历史轮次。
+        // 新问题先由服务端预创建轮次，持久化后也不会混入最近完整历史轮次。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                fixture.userId(), fixture.conversationId());
         ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
-                fixture.userId(), fixture.conversationId(), requestId, requestId, "二等座还有吗", 6));
+                        fixture.userId(), fixture.conversationId(), preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "test-user", "二等座还有吗", 6));
         ConversationHistoryContext context = conversationContextLoader.load(
                 fixture.userId(),
-                requestId,
+                current.turnId(),
                 fixture.conversationId(),
                 current.turnId(),
                 current.userMessageId(),
@@ -108,7 +184,34 @@ class AgentMemoryPersistenceTests {
                 .isEqualTo(MessageRole.ASSISTANT);
         assertThat(context.recentTurns().get(0).assistantMessage().content())
                 .isEqualTo("已有可选车次");
-        assertThat(snapshotRepository.findByRequestId(requestId)).isPresent();
+        assertThat(snapshotRepository.findByRequestId(current.turnId())).isPresent();
+    }
+
+    /**
+     * 验证会话上下文固定保留最近三个完整轮次，不再按 Token 数二次筛选。
+     */
+    @Test
+    void conversationContextLoadsLatestThreeCompletedTurns() {
+        Fixture fixture = createCompletedTurn("第一轮问题", "第一轮回答");
+        // 在同一会话中追加三个完整轮次，使可查历史超过配置上限。
+        appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第二轮问题", "第二轮回答");
+        appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第三轮问题", "第三轮回答");
+        appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第四轮问题", "第四轮回答");
+
+        // 当前运行中轮次仅作为独立问题，不能进入完整历史。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                fixture.userId(), fixture.conversationId());
+        ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        fixture.userId(), fixture.conversationId(), preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "test-user", "当前问题", 4));
+        ConversationHistoryContext context = conversationContextLoader.load(
+                fixture.userId(), current.turnId(), fixture.conversationId(), current.turnId(),
+                current.userMessageId(), current.sequenceNo(), "当前问题");
+
+        assertThat(context.recentTurns())
+                .extracting(turn -> turn.userMessage().content())
+                .containsExactly("第二轮问题", "第三轮问题", "第四轮问题");
     }
 
     /**
@@ -155,17 +258,47 @@ class AgentMemoryPersistenceTests {
      */
     private Fixture createCompletedTurn(String userQuestion, String assistantAnswer) {
         String userId = unique("user");
-        String requestId = unique("request");
         ConversationEntity conversation = conversationMemoryService.createConversation(userId, "购票助手会话");
+        // 轮次标识和提交令牌均由服务端生成，客户端重试只能复用这组凭证。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
         ConversationMemoryService.StartedTurn started = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
-                        userId, conversation.getId(), requestId, requestId, userQuestion, 10));
+                        userId, conversation.getId(), preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "test-user", userQuestion, 10));
         MessageEntity assistant = conversationMemoryService.completeTurn(
                 new ConversationMemoryService.CompleteTurnCommand(
-                        userId, started.turnId(), assistantAnswer, 10));
+                        userId, started.turnId(), assistantAnswer, 10,
+                        started.executionOwner(), started.fencingToken()));
         return new Fixture(
-                userId, requestId, conversation.getId(), started.turnId(),
-                started.userMessageId(), assistant.getId());
+                userId, started.turnId(), preparedTurn.submissionToken(), conversation.getId(), started.turnId(),
+                started.userMessageId(), assistant.getId(), started.executionOwner(), started.fencingToken());
+    }
+
+    /**
+     * 在指定会话中追加一个已完成的问答轮次。
+     *
+     * @param userId 会话所属用户
+     * @param conversationId 目标会话标识
+     * @param userQuestion 用户问题
+     * @param assistantAnswer 助手回答
+     */
+    private void appendCompletedTurn(
+            String userId,
+            String conversationId,
+            String userQuestion,
+            String assistantAnswer) {
+        // 每个追加轮次都使用服务端生成的轮次凭证，保持与真实提交流程一致。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                userId, conversationId);
+        ConversationMemoryService.StartedTurn started = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversationId, preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "test-user", userQuestion, 10));
+        conversationMemoryService.completeTurn(
+                new ConversationMemoryService.CompleteTurnCommand(
+                        userId, started.turnId(), assistantAnswer, 10,
+                        started.executionOwner(), started.fencingToken()));
     }
 
     /**
@@ -183,17 +316,23 @@ class AgentMemoryPersistenceTests {
      *
      * @param userId 用户标识
      * @param requestId 请求标识
+     * @param submissionToken 服务端签发的轮次提交令牌
      * @param conversationId 会话标识
      * @param turnId 轮次标识
      * @param userMessageId 用户消息标识
      * @param assistantMessageId 助手消息标识
+     * @param executionOwner 当前轮次执行者
+     * @param fencingToken 当前轮次围栏令牌
      */
     private record Fixture(
             String userId,
             String requestId,
+            String submissionToken,
             String conversationId,
             String turnId,
             String userMessageId,
-            String assistantMessageId) {
+            String assistantMessageId,
+            String executionOwner,
+            long fencingToken) {
     }
 }

@@ -80,13 +80,13 @@ public class AgentChatExceptionHandler {
     }
 
     /**
-     * 从请求头读取可选请求标识，用于关联客户端错误响应。
+     * 从请求头读取可选网络尝试标识，用于关联客户端错误响应。
      *
      * @param request 当前 HTTP 请求
-     * @return 请求标识或空值
+     * @return 网络尝试标识或空值
      */
     private String requestId(HttpServletRequest request) {
-        // 失败发生在命令创建前时可能没有请求标识，因此不在异常处理器中生成新值。
-        return request.getHeader("X-Request-Id");
+        // 失败发生在命令创建前时可能没有尝试标识，因此不在异常处理器中生成新值。
+        return request.getHeader("X-Attempt-Id");
     }
 }

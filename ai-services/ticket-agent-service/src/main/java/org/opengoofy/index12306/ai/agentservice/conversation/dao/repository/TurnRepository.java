@@ -9,6 +9,7 @@ import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
 
 import java.util.List;
 import java.util.Optional;
+import java.time.Instant;
 
 /**
  * 问答轮次持久化访问接口。
@@ -60,4 +61,20 @@ public interface TurnRepository extends BaseMapper<TurnEntity> {
      */
     @Select("SELECT * FROM t_agent_turn WHERE id = #{turnId} FOR UPDATE")
     Optional<TurnEntity> findLockedById(@Param("turnId") String turnId);
+
+    /**
+     * 查询租约已经到期的运行中轮次，供后台恢复器竞争接管。
+     *
+     * @param status 运行中状态
+     * @param now 当前数据库比较时间
+     * @param limit 单次扫描上限
+     * @return 按租约到期时间升序排列的候选轮次
+     */
+    @Select("SELECT * FROM t_agent_turn WHERE status = #{status} "
+            + "AND lease_until IS NOT NULL AND lease_until <= #{now} "
+            + "ORDER BY lease_until ASC LIMIT #{limit}")
+    List<TurnEntity> findExpiredRunningTurns(
+            @Param("status") TurnStatus status,
+            @Param("now") Instant now,
+            @Param("limit") int limit);
 }

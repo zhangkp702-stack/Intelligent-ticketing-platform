@@ -11,7 +11,11 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * 配置智能体 SSE 请求使用的受控异步执行器和容器级兜底超时。
  */
 @Configuration
-@EnableConfigurationProperties(AgentChatProperties.class)
+@EnableConfigurationProperties({
+        AgentChatProperties.class,
+        AgentTurnProperties.class,
+        AgentStreamProperties.class
+})
 public class AgentChatWebConfiguration implements WebMvcConfigurer {
 
     private static final int CORE_POOL_SIZE = 8;

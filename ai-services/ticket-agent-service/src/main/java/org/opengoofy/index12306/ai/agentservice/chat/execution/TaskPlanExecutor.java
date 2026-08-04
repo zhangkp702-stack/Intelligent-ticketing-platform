@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 
 /**
  * 按任务依赖图调度只读任务和固定交易任务。
@@ -59,11 +60,30 @@ public class TaskPlanExecutor {
     public Mono<TaskExecutionSummary> execute(
             TaskPlan plan,
             TaskRunner taskRunner) {
+        // 不需要持久化检查点的单元测试和纯执行调用沿用直接生命周期。
+        return execute(plan, taskRunner, (task, execution) -> execution.get());
+    }
+
+    /**
+     * 按依赖关系执行任务，并允许调用方为每个任务包装持久化领取和提交生命周期。
+     *
+     * @param plan 已通过确定性校验的任务计划
+     * @param taskRunner 实际执行单个任务的业务函数
+     * @param lifecycle 单任务持久化生命周期
+     * @return 所有任务均达到终态后的异步汇总
+     */
+    public Mono<TaskExecutionSummary> execute(
+            TaskPlan plan,
+            TaskRunner taskRunner,
+            TaskExecutionLifecycle lifecycle) {
         if (plan == null || plan.tasks() == null || plan.tasks().isEmpty()) {
             return Mono.error(new IllegalArgumentException("任务计划不能为空"));
         }
         if (taskRunner == null) {
             return Mono.error(new IllegalArgumentException("任务执行器不能为空"));
+        }
+        if (lifecycle == null) {
+            return Mono.error(new IllegalArgumentException("任务生命周期不能为空"));
         }
 
         // 每个任务 Mono 只允许执行一次，依赖订阅和最终汇总共享同一个缓存结果。
@@ -76,7 +96,7 @@ public class TaskPlanExecutor {
                 .toList();
         for (PlannedTask task : plan.tasks()) {
             // 递归建立依赖 Mono，使排在交易任务之后的独立查询也能进入只读屏障。
-            createExecution(task, taskById, readTaskIds, executions, taskRunner);
+            createExecution(task, taskById, readTaskIds, executions, taskRunner, lifecycle);
         }
 
         // flatMap 触发互不依赖任务并行订阅，结果在全部完成后按 sequence 重新排序。
@@ -97,6 +117,7 @@ public class TaskPlanExecutor {
      * @param readTaskIds 当前计划的只读任务标识
      * @param executions 已创建的共享执行 Mono
      * @param taskRunner 实际业务执行函数
+     * @param lifecycle 单任务持久化生命周期
      * @return 当前任务只执行一次的缓存 Mono
      */
     private Mono<TaskExecutionResult> createExecution(
@@ -104,7 +125,8 @@ public class TaskPlanExecutor {
             Map<String, PlannedTask> taskById,
             List<String> readTaskIds,
             Map<String, Mono<TaskExecutionResult>> executions,
-            TaskRunner taskRunner) {
+            TaskRunner taskRunner,
+            TaskExecutionLifecycle lifecycle) {
         Mono<TaskExecutionResult> existing = executions.get(task.taskId());
         if (existing != null) {
             return existing;
@@ -118,12 +140,16 @@ public class TaskPlanExecutor {
                     if (dependency == null) {
                         return Mono.error(new IllegalArgumentException("任务依赖不存在: " + taskId));
                     }
-                    return createExecution(dependency, taskById, readTaskIds, executions, taskRunner);
+                    return createExecution(
+                            dependency, taskById, readTaskIds, executions, taskRunner, lifecycle);
                 })
                 .collectList();
-        Mono<TaskExecutionResult> execution = dependencyResults
-                .flatMap(results -> executeTask(task, results, taskRunner))
-                .onErrorResume(exception -> recoverTaskFailure(task, exception));
+        Mono<TaskExecutionResult> execution = dependencyResults.flatMap(results -> {
+            Mono<TaskExecutionResult> recoveredExecution = executeTask(task, results, taskRunner)
+                    .onErrorResume(exception -> recoverTaskFailure(task, exception));
+            // 依赖完成后再领取任务，避免把尚未具备执行条件的任务提前标记为运行中。
+            return lifecycle.execute(task, () -> recoveredExecution);
+        });
         // 每个缓存任务只记录一次终态和耗时，依赖订阅与最终汇总不会重复增加指标。
         execution = chatMetrics.observeTask(execution, task.intent()).cache();
         executions.put(task.taskId(), execution);
@@ -274,5 +300,23 @@ public class TaskPlanExecutor {
         Mono<TaskExecutionResult> execute(
                 PlannedTask task,
                 List<TaskExecutionResult> dependencyResults);
+    }
+
+    /**
+     * 单个任务的领取、检查点复用和终态提交生命周期。
+     */
+    @FunctionalInterface
+    public interface TaskExecutionLifecycle {
+
+        /**
+         * 包装已经具备稳定结果语义的单任务执行流。
+         *
+         * @param task 当前服务端任务
+         * @param execution 实际执行函数
+         * @return 复用或新提交的任务结果
+         */
+        Mono<TaskExecutionResult> execute(
+                PlannedTask task,
+                Supplier<Mono<TaskExecutionResult>> execution);
     }
 }

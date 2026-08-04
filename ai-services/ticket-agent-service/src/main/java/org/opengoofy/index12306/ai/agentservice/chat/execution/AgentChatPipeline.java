@@ -23,7 +23,12 @@ import org.opengoofy.index12306.ai.agentservice.chat.execution.ReadTaskChain;
 import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskDependencyResolver;
 import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskDependencyResolver.DependencyResolution;
 import org.opengoofy.index12306.ai.agentservice.chat.execution.TaskPlanExecutor;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.exception.ExecutionLeaseLostException;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.service.DurableTaskExecutionCoordinator;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.service.TaskExecutionCheckpointService;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.service.TurnLeaseHeartbeatCoordinator;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.PlannedTask;
+import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.QuestionResolutionPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskPlan;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanningModels.TaskSlots;
 import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanner;
@@ -51,6 +56,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -78,6 +84,9 @@ public class AgentChatPipeline {
     private final ConversationContextLoader conversationContextLoader;
     private final TaskPlanner taskPlanner;
     private final TaskPlanExecutor taskPlanExecutor;
+    private final TaskExecutionCheckpointService taskExecutionCheckpointService;
+    private final DurableTaskExecutionCoordinator durableTaskExecutionCoordinator;
+    private final TurnLeaseHeartbeatCoordinator turnLeaseHeartbeatCoordinator;
     private final ReadTaskChain readTaskChain;
     private final TaskDependencyResolver taskDependencyResolver;
     private final IntentExecutionRouter intentExecutionRouter;
@@ -190,6 +199,9 @@ public class AgentChatPipeline {
      * @param conversationContextLoader 会话摘要与最近消息加载器
      * @param taskPlanner 一次完成问题补全、拆分和字段提取的任务规划器
      * @param taskPlanExecutor 依赖感知的多任务执行器
+     * @param taskExecutionCheckpointService 服务端任务计划和结果检查点服务
+     * @param durableTaskExecutionCoordinator 受 Turn 围栏保护的任务检查点协调器
+     * @param turnLeaseHeartbeatCoordinator 轮次数据库租约心跳协调器
      * @param readTaskChain 不经过模型选择工具的只读固定链
      * @param taskDependencyResolver 使用固定规则消费前置查询结果的解析服务
      * @param intentExecutionRouter 意图到服务端固定执行链的确定性路由器
@@ -208,6 +220,9 @@ public class AgentChatPipeline {
             ConversationContextLoader conversationContextLoader,
             TaskPlanner taskPlanner,
             TaskPlanExecutor taskPlanExecutor,
+            TaskExecutionCheckpointService taskExecutionCheckpointService,
+            DurableTaskExecutionCoordinator durableTaskExecutionCoordinator,
+            TurnLeaseHeartbeatCoordinator turnLeaseHeartbeatCoordinator,
             ReadTaskChain readTaskChain,
             TaskDependencyResolver taskDependencyResolver,
             IntentExecutionRouter intentExecutionRouter,
@@ -224,6 +239,9 @@ public class AgentChatPipeline {
         this.conversationContextLoader = conversationContextLoader;
         this.taskPlanner = taskPlanner;
         this.taskPlanExecutor = taskPlanExecutor;
+        this.taskExecutionCheckpointService = taskExecutionCheckpointService;
+        this.durableTaskExecutionCoordinator = durableTaskExecutionCoordinator;
+        this.turnLeaseHeartbeatCoordinator = turnLeaseHeartbeatCoordinator;
         this.readTaskChain = readTaskChain;
         this.taskDependencyResolver = taskDependencyResolver;
         this.intentExecutionRouter = intentExecutionRouter;
@@ -245,10 +263,13 @@ public class AgentChatPipeline {
      * @return 元数据、正文增量、待确认操作和完成事件组成的流
      */
     public Flux<ChatEvent> execute(ChatCommand command) {
+        // 创建本轮请求的性能记录器，用来累积各阶段耗时
         RequestPerformanceTrace performanceTrace = new RequestPerformanceTrace();
         // 先创建或复用持久化轮次，保证后续模型和工具调用拥有稳定审计边界。
         ConversationMemoryService.StartedTurn started = startTurn(command);
+        // 把 HTTP 请求里的信息和数据库轮次信息组合成一个统一上下文，供后续所有层传递
         AgentRequestContext context = createRequestContext(command, started);
+        // 用户当前问题
         String currentQuestion = command.message().trim();
 
         if (!started.created()) {
@@ -258,13 +279,13 @@ public class AgentChatPipeline {
 
         AtomicBoolean terminal = new AtomicBoolean();
         try {
-            // 当前问题独立于历史轮次加载，避免把未完成输入带入模型上下文。
+            // 加载上下文，并记录耗时指标，以及全局成功率指标
             ConversationHistoryContext conversationHistory = loadObservedConversationHistory(
                     context, started, currentQuestion, performanceTrace);
             // 服务端工作流状态只用于补全可信的“继续”“这个”等省略表达。
             WorkflowPlanningContext workflowContext = loadActiveWorkflowContext(context);
             // 规划模型只产生受校验的任务计划，不直接调用任何交易工具。
-            TaskPlan taskPlan = planTasks(
+            TaskPlan taskPlan = resolveTaskPlan(
                     context, conversationHistory, workflowContext, performanceTrace);
             // 按计划进入固定业务链，并在流内完成回答持久化和终态收口。
             return executeTaskPlan(
@@ -291,11 +312,13 @@ public class AgentChatPipeline {
             RequestPerformanceTrace performanceTrace) {
         long contextStartedNanos = System.nanoTime();
         try {
-            // 当前问题保持独立，只加载此前已经完成的完整历史轮次。
+            // 当前问题保持独立，加载历史摘要。
             ConversationHistoryContext conversationHistory =
                     loadConversationHistory(context, started, currentQuestion);
+            // 这一行计算从“开始加载上下文”到“上下文加载完成”耗费了多少毫秒，并写入本轮请求的性能对象
             performanceTrace.contextDurationMs =
                     RequestPerformanceTrace.elapsedMillis(contextStartedNanos);
+            // 全局监控指标，用于统计一段时间内上下文加载的平均耗时、成功率等。
             chatMetrics.recordContextLoad(contextStartedNanos, "SUCCESS");
             return conversationHistory;
         } catch (RuntimeException exception) {
@@ -336,22 +359,65 @@ public class AgentChatPipeline {
             ConversationHistoryContext conversationHistory,
             WorkflowPlanningContext workflowContext,
             RequestPerformanceTrace performanceTrace) {
-        long routingStartedNanos = System.nanoTime();
         ModelAttemptContext routingAttemptContext = new ModelAttemptContext(
                 context.requestId(), context.conversationId(), context.turnId());
 
-        // 一次结构化模型调用完成上下文补全、任务拆分、意图识别和槽位提取。
-        TaskPlan taskPlan = taskPlanner.plan(
-                conversationHistory,
-                workflowContext,
-                routingAttemptContext);
-        long planningDurationMs = RequestPerformanceTrace.elapsedMillis(routingStartedNanos);
-        boolean rewritten = taskPlan.tasks().stream()
+        // 第一阶段只拆分问题和补全可信上下文，第二阶段再识别业务意图、槽位和依赖。
+        long planningStartedNanos = System.nanoTime();
+        QuestionResolutionPlan resolutionPlan = resolveQuestions(
+                conversationHistory, workflowContext, routingAttemptContext, performanceTrace);
+        TaskPlan taskPlan = planResolvedTasks(
+                resolutionPlan, workflowContext, routingAttemptContext, performanceTrace);
+        logTaskPlanningResult(context, taskPlan, performanceTrace, planningStartedNanos);
+        return taskPlan;
+    }
+
+    /**
+     * 调用问题解析模型完成任务拆分、指代消解和独立问题补全。
+     *
+     * @param conversationHistory 当前会话历史和独立用户问题
+     * @param workflowContext 当前活动工作流上下文
+     * @param attemptContext 模型调用审计上下文
+     * @param performanceTrace 本轮性能数据容器
+     * @return 已通过服务端校验的问题解析结果
+     */
+    private QuestionResolutionPlan resolveQuestions(
+            ConversationHistoryContext conversationHistory,
+            WorkflowPlanningContext workflowContext,
+            ModelAttemptContext attemptContext,
+            RequestPerformanceTrace performanceTrace) {
+        long rewriteStartedNanos = System.nanoTime();
+        // 问题解析阶段可以读取最近历史和可信工作流，但不会接收意图目录。
+        QuestionResolutionPlan resolutionPlan = taskPlanner.resolveQuestions(
+                conversationHistory, workflowContext, attemptContext);
+        boolean rewritten = resolutionPlan.tasks().stream()
                 .anyMatch(task -> !task.originalClause().equals(task.standaloneQuestion()));
-        performanceTrace.rewriteDurationMs = planningDurationMs;
+        performanceTrace.rewriteDurationMs = RequestPerformanceTrace.elapsedMillis(rewriteStartedNanos);
         performanceTrace.rewriteModelInvoked = true;
         performanceTrace.rewritten = rewritten;
-        performanceTrace.routingDurationMs = planningDurationMs;
+        chatMetrics.recordRewrite(rewriteStartedNanos, true, rewritten);
+        return resolutionPlan;
+    }
+
+    /**
+     * 调用业务规划模型识别意图、槽位、依赖和工作流关系。
+     *
+     * @param resolutionPlan 已校验的问题解析结果
+     * @param workflowContext 当前活动工作流上下文
+     * @param attemptContext 模型调用审计上下文
+     * @param performanceTrace 本轮性能数据容器
+     * @return 已合并两个阶段并通过最终业务校验的任务计划
+     */
+    private TaskPlan planResolvedTasks(
+            QuestionResolutionPlan resolutionPlan,
+            WorkflowPlanningContext workflowContext,
+            ModelAttemptContext attemptContext,
+            RequestPerformanceTrace performanceTrace) {
+        long routingStartedNanos = System.nanoTime();
+        // 第二阶段只能补充业务字段，第一阶段确定的原文和独立问题由服务端合并保留。
+        TaskPlan taskPlan = taskPlanner.planResolvedTasks(
+                resolutionPlan, workflowContext, attemptContext);
+        performanceTrace.routingDurationMs = RequestPerformanceTrace.elapsedMillis(routingStartedNanos);
         performanceTrace.route = taskPlan.tasks().size() > 1
                 ? "MULTI_TASK_DIRECT_CHAIN"
                 : intentExecutionRouter.route(taskPlan.tasks().get(0).intent()).route().name();
@@ -364,23 +430,94 @@ public class AgentChatPipeline {
         performanceTrace.toolAvailability = "DIRECT_CHAIN";
         performanceTrace.enabledTools = List.of();
         performanceTrace.missingTools = List.of();
-        chatMetrics.recordRewrite(routingStartedNanos, true, rewritten);
         chatMetrics.recordRouting(
                 routingStartedNanos,
                 performanceTrace.route,
                 performanceTrace.toolAvailability,
                 Set.copyOf(performanceTrace.matchedGroups));
+        return taskPlan;
+    }
+
+    /**
+     * 记录两阶段任务规划完成后的汇总日志。
+     *
+     * @param context 当前请求上下文
+     * @param taskPlan 已通过服务端校验的任务计划
+     * @param performanceTrace 本轮性能数据容器
+     * @param planningStartedNanos 两阶段规划开始的单调时钟值
+     */
+    private void logTaskPlanningResult(
+            AgentRequestContext context,
+            TaskPlan taskPlan,
+            RequestPerformanceTrace performanceTrace,
+            long planningStartedNanos) {
+        long planningDurationMs = RequestPerformanceTrace.elapsedMillis(planningStartedNanos);
+        // 汇总日志同时保留总耗时和两个模型阶段耗时，便于识别具体瓶颈。
         LOGGER.info(
                 "Agent任务规划完成，requestId={}, conversationId={}, turnId={}, taskCount={}, route={}, "
-                        + "groups={}, durationMs={}",
+                        + "groups={}, rewriteDurationMs={}, routingDurationMs={}, durationMs={}",
                 context.requestId(),
                 context.conversationId(),
                 context.turnId(),
                 taskPlan.tasks().size(),
                 performanceTrace.route,
                 performanceTrace.matchedGroups,
+                performanceTrace.rewriteDurationMs,
+                performanceTrace.routingDurationMs,
                 planningDurationMs);
-        return taskPlan;
+    }
+
+    /**
+     * 优先恢复已经固化的服务端计划，仅在没有检查点时调用规划模型并原子保存。
+     *
+     * @param context 当前请求上下文
+     * @param history 当前会话历史
+     * @param workflowContext 当前活动工作流上下文
+     * @param performanceTrace 本轮性能数据容器
+     * @return 使用服务端 taskId 的可恢复计划
+     */
+    private TaskPlan resolveTaskPlan(
+            AgentRequestContext context,
+            ConversationHistoryContext history,
+            WorkflowPlanningContext workflowContext,
+            RequestPerformanceTrace performanceTrace) {
+        TaskPlan persistedPlan = taskExecutionCheckpointService.findPlan(context).orElse(null);
+        if (persistedPlan != null) {
+            // 接管实例直接复用原计划，避免模型再次规划导致任务拆分、依赖或参数漂移。
+            recordRecoveredPlan(context, performanceTrace, persistedPlan);
+            return persistedPlan;
+        }
+        TaskPlan candidate = planTasks(context, history, workflowContext, performanceTrace);
+        return taskExecutionCheckpointService.persistPlan(context, candidate);
+    }
+
+    /**
+     * 为恢复计划补充分流观测字段，不伪造已经发生过的规划模型耗时。
+     *
+     * @param context 当前接管后的执行权上下文
+     * @param performanceTrace 本轮性能数据容器
+     * @param taskPlan 已持久化计划
+     */
+    private void recordRecoveredPlan(
+            AgentRequestContext context,
+            RequestPerformanceTrace performanceTrace,
+            TaskPlan taskPlan) {
+        performanceTrace.route = taskPlan.tasks().size() > 1
+                ? "MULTI_TASK_DIRECT_CHAIN" : "SINGLE_TASK_DIRECT_CHAIN";
+        performanceTrace.matchedGroups = taskPlan.tasks().stream()
+                .flatMap(task -> intentExecutionRouter.route(task.intent()).matchedGroups().stream())
+                .map(Enum::name)
+                .distinct()
+                .sorted()
+                .toList();
+        performanceTrace.toolAvailability = "DIRECT_CHAIN";
+        performanceTrace.enabledTools = List.of();
+        performanceTrace.missingTools = List.of();
+        LOGGER.info(
+                "Agent恢复持久化任务计划，turnId={}, taskCount={}, route={}",
+                context.turnId(),
+                taskPlan.tasks().size(),
+                performanceTrace.route);
     }
 
     /**
@@ -402,7 +539,10 @@ public class AgentChatPipeline {
         // 查询任务按依赖图并行执行，唯一交易任务在全部只读任务结束后进入固定代码链。
         Flux<ChatEvent> processingEvents = taskPlanExecutor
                 .execute(taskPlan, (task, dependencies) ->
-                        executePlannedTask(context, task, dependencies))
+                        executePlannedTask(context, task, dependencies),
+                        (task, execution) -> durableTaskExecutionCoordinator.execute(
+                                context, task, execution))
+                .map(summary -> rehydrateTaskViews(context, summary))
                 .flatMapMany(summary -> createAnswerEvents(
                         context,
                         currentQuestion,
@@ -413,7 +553,8 @@ public class AgentChatPipeline {
                 Flux.concat(Flux.just(ChatEvent.meta(context, false)), processingEvents)
                         .doOnError(exception -> failTurn(context, terminal, exception))
                         .doOnCancel(() -> cancelTurn(context, terminal));
-        return responseEvents;
+        // 心跳覆盖模型、工具和持久化全过程；终态写入后停止续租但继续发送尾部 SSE 事件。
+        return turnLeaseHeartbeatCoordinator.guard(context, terminal::get, responseEvents);
     }
 
     /**
@@ -442,8 +583,9 @@ public class AgentChatPipeline {
     private ConversationMemoryService.StartedTurn startTurn(ChatCommand command) {
         // 用户问题先落库，后续上下文、模型或工具失败时仍可审计本轮输入。
         return conversationMemoryService.startTurn(new ConversationMemoryService.StartTurnCommand(
-                command.userId(), command.conversationId(), command.requestId(),
-                command.idempotencyKey(), command.message().trim(), estimateTokens(command.message())));
+                command.userId(), command.conversationId(), command.turnId(),
+                command.submissionToken(), command.username(), command.message().trim(),
+                estimateTokens(command.message())));
     }
 
     /**
@@ -459,7 +601,45 @@ public class AgentChatPipeline {
         // 工具上下文必须绑定服务端身份和真实轮次，不能从模型参数中推导。
         return new AgentRequestContext(
                 command.requestId(), command.userId(), command.username(),
-                command.conversationId(), started.turnId());
+                command.conversationId(), started.turnId(),
+                started.executionOwner(), started.fencingToken());
+    }
+
+    /**
+     * 从权威 Action 和 Workflow 状态表恢复任务检查点中刻意省略的临时视图。
+     *
+     * @param context 当前请求上下文
+     * @param summary 已恢复或新完成的持久化任务结果
+     * @return 可生成确认卡片和工作流表单的任务结果
+     */
+    private TaskExecutionSummary rehydrateTaskViews(
+            AgentRequestContext context,
+            TaskExecutionSummary summary) {
+        List<TaskExecutionResult> results = summary.results().stream()
+                .map(result -> {
+                    if (!isTransaction(result.intent())
+                            || result.action() != null
+                            || result.workflow() != null) {
+                        return result;
+                    }
+                    // 确认令牌按当前数据库状态重新签发，绝不从 task result JSON 读取旧令牌。
+                    ActionConfirmationView action = purchaseActionService
+                            .confirmationForTurn(context.userId(), context.turnId())
+                            .orElse(null);
+                    WorkflowInteractionView workflow = pendingWorkflow(context, result.intent());
+                    return new TaskExecutionResult(
+                            result.taskId(),
+                            result.sequence(),
+                            result.intent(),
+                            result.status(),
+                            result.question(),
+                            result.content(),
+                            result.missingFields(),
+                            action,
+                            workflow);
+                })
+                .toList();
+        return TaskExecutionSummary.ordered(results);
     }
 
     /**
@@ -842,7 +1022,9 @@ public class AgentChatPipeline {
                     context.userId(),
                     context.turnId(),
                     completed.content(),
-                    estimateTokens(completed.content())));
+                    estimateTokens(completed.content()),
+                    context.executionOwner(),
+                    context.fencingToken()));
             terminal.set(true);
             performanceTrace.completionDurationMs =
                     RequestPerformanceTrace.elapsedMillis(completionStartedNanos);
@@ -970,7 +1152,10 @@ public class AgentChatPipeline {
                 对 GENERAL_CHAT，可以根据原始问题自然作答，但不得虚构系统能力或具体业务事实。
                 交易任务的服务端权威正文不会提供给你，并将在你的回复之后由服务端原样追加。
                 不要描述、猜测或重复交易状态，不要声称已经购票、取消订单或退票。
-                使用简洁、自然的中文直接回答，不要解释内部处理流程。
+                使用简洁、自然的中文直接回答，不要解释内部处理流程，也不要复述用户问题。
+                先给结论或结果，不使用客套开场和结束语；能用一句说清时不要展开。
+                单任务优先使用短段落，只有多个任务时才分点，每项只保留必要事实、缺失信息和下一步。
+                不要补充与用户问题无关的背景，但不得为了简短而遗漏完成回答所必需的信息。
                 """;
         // 交易权威正文不进入模型上下文，只告知其由服务端另行追加，避免模型改写或重复交易状态。
         List<SummaryTaskInput> taskResults = summary.results().stream()
@@ -984,9 +1169,13 @@ public class AgentChatPipeline {
                         isTransaction(result.intent())))
                 .toList();
         SummaryPromptInput input = new SummaryPromptInput(originalQuestion, taskResults);
+        // 最终回复单次最多生成 2048 Token，不影响任务规划和记忆摘要模型。
+        ChatOptions answerOptions = ChatOptions.builder()
+                .maxTokens(2048)
+                .build();
         return new Prompt(List.of(
                 new SystemMessage(systemPrompt),
-                new UserMessage(writeJson(input))));
+                new UserMessage(writeJson(input))), answerOptions);
     }
 
     /**
@@ -1094,7 +1283,19 @@ public class AgentChatPipeline {
         // 轮次只保存稳定分类，不保存可能含提示词、工具参数或平台响应的异常正文。
         String category = exception instanceof ModelRoutingException routingException
                 ? routingException.failureCategory().name() : "CHAT_ORCHESTRATION_FAILED";
-        conversationMemoryService.failTurn(context.userId(), context.turnId(), category);
+        try {
+            conversationMemoryService.failTurn(
+                    context.userId(),
+                    context.turnId(),
+                    context.executionOwner(),
+                    context.fencingToken(),
+                    category);
+        } catch (ExecutionLeaseLostException | IllegalStateException staleExecution) {
+            // 旧执行者不能覆盖取消、完成或新 fencing token，终态由当前数据库所有者继续收口。
+            LOGGER.info(
+                    "忽略失效执行者的轮次失败回调，turnId={}, fencingToken={}",
+                    context.turnId(), context.fencingToken());
+        }
     }
 
     /**
@@ -1106,7 +1307,11 @@ public class AgentChatPipeline {
     private void cancelTurn(AgentRequestContext context, AtomicBoolean terminal) {
         if (terminal.compareAndSet(false, true)) {
             // 显式取消避免轮次永久停留在运行状态。
-            conversationMemoryService.cancelTurn(context.userId(), context.turnId());
+            conversationMemoryService.cancelOwnedTurn(
+                    context.userId(),
+                    context.turnId(),
+                    context.executionOwner(),
+                    context.fencingToken());
         }
     }
 

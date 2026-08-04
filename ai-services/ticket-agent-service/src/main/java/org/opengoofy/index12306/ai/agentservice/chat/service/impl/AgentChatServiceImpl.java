@@ -1,18 +1,22 @@
 package org.opengoofy.index12306.ai.agentservice.chat.service.impl;
 
 import org.opengoofy.index12306.ai.agentservice.chat.exception.AgentChatException;
+import org.opengoofy.index12306.ai.agentservice.chat.execution.exception.ExecutionLeaseLostException;
 import org.opengoofy.index12306.ai.agentservice.chat.execution.AgentChatPipeline;
 import org.opengoofy.index12306.ai.agentservice.chat.observability.AgentChatMetrics;
 import org.opengoofy.index12306.ai.agentservice.chat.service.AgentChatService;
+import org.opengoofy.index12306.ai.agentservice.chat.stream.service.DurableStreamEventService;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels;
 
 
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
-import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCancelRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatEvent;
+import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.PrepareTurnResponse;
+import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.TurnStatusView;
 import org.opengoofy.index12306.ai.agentservice.chat.config.AgentChatProperties;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
+import org.opengoofy.index12306.ai.agentservice.conversation.exception.TurnSubmissionException;
 import org.opengoofy.index12306.ai.agentservice.infra.model.routing.exception.ModelRoutingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,11 +26,14 @@ import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 提供智能体对话的接口级服务，并把单轮业务流程交给独立流水线执行。
@@ -37,11 +44,14 @@ public class AgentChatServiceImpl implements AgentChatService {
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentChatServiceImpl.class);
     private static final int MAX_MESSAGE_LENGTH = 4000;
     private static final int MAX_TITLE_LENGTH = 200;
+    private static final int STREAM_REPLAY_BATCH_SIZE = 256;
+    private static final Duration STREAM_REPLAY_POLL_INTERVAL = Duration.ofMillis(250);
 
     private final ConversationMemoryService conversationMemoryService;
     private final AgentChatPipeline chatPipeline;
     private final AgentChatProperties chatProperties;
     private final AgentChatMetrics chatMetrics;
+    private final DurableStreamEventService durableStreamEventService;
     private final ConcurrentMap<String, Sinks.One<Void>> activeTurnCancels = new ConcurrentHashMap<>();
 
     /**
@@ -51,16 +61,19 @@ public class AgentChatServiceImpl implements AgentChatService {
      * @param chatPipeline 单轮对话业务流水线
      * @param chatProperties 在线对话超时配置
      * @param chatMetrics 在线对话首事件、首个文本增量和总耗时指标
+     * @param durableStreamEventService SSE 事件持久化和重放服务
      */
     public AgentChatServiceImpl(
             ConversationMemoryService conversationMemoryService,
             AgentChatPipeline chatPipeline,
             AgentChatProperties chatProperties,
-            AgentChatMetrics chatMetrics) {
+            AgentChatMetrics chatMetrics,
+            DurableStreamEventService durableStreamEventService) {
         this.conversationMemoryService = conversationMemoryService;
         this.chatPipeline = chatPipeline;
         this.chatProperties = chatProperties;
         this.chatMetrics = chatMetrics;
+        this.durableStreamEventService = durableStreamEventService;
     }
 
     /**
@@ -84,6 +97,50 @@ public class AgentChatServiceImpl implements AgentChatService {
     }
 
     /**
+     * 为当前用户预创建服务端轮次并返回首次提交凭证。
+     *
+     * @param userId 用户标识
+     * @param conversationId 会话标识
+     * @return 服务端轮次标识、提交令牌和截止时间
+     */
+    @Override
+    public PrepareTurnResponse prepareTurn(String userId, String conversationId) {
+        requireText(userId, "用户标识不能为空");
+        requireText(conversationId, "会话标识不能为空");
+
+        // 会话所有权和令牌签发由持久化服务在同一事务边界内完成。
+        ConversationMemoryService.PreparedTurn prepared = conversationMemoryService.prepareTurn(
+                userId, conversationId.trim());
+        return new PrepareTurnResponse(
+                prepared.turnId(), prepared.submissionToken(), prepared.expiresAt());
+    }
+
+    /**
+     * 查询当前用户轮次的持久化状态并返回可安全展示的结果。
+     *
+     * @param userId 用户标识
+     * @param turnId 轮次标识
+     * @return 当前轮次状态和已完成回答
+     */
+    @Override
+    public TurnStatusView getTurn(String userId, String turnId) {
+        requireText(userId, "用户标识不能为空");
+        requireText(turnId, "轮次标识不能为空");
+
+        // 状态查询始终通过会话所有权校验，不允许只凭 turnId 探测其他用户数据。
+        ConversationMemoryService.TurnState state = conversationMemoryService.getTurnState(
+                userId, turnId.trim());
+        return new TurnStatusView(
+                state.turnId(),
+                state.conversationId(),
+                state.status(),
+                state.assistantContent(),
+                state.failureCategory(),
+                state.startedAt(),
+                state.finishedAt());
+    }
+
+    /**
      * 执行一轮完整对话并返回元数据、增量正文和完成事件。
      *
      * @param command 包含身份、幂等键和用户问题的对话命令
@@ -93,9 +150,94 @@ public class AgentChatServiceImpl implements AgentChatService {
     public Flux<ChatEvent> stream(ChatCommand command) {
         validateCommand(command);
 
-        // 日志和指标都从订阅时刻开始，覆盖路由、模型、工具和最终持久化的完整在线链路。
-        Flux<ChatEvent> eventStream = Flux.defer(() -> createLoggedStream(command));
-        return chatMetrics.observe(eventStream);
+        // 指标仍观察真实流水线，发送层只会看到已经成功写入事件日志的事件。
+        Flux<ChatEvent> observedStream = chatMetrics.observe(
+                Flux.defer(() -> createLoggedStream(command)));
+        Flux<ChatEvent> safeBusinessStream = observedStream
+                // 只转换业务流水线异常；事件日志写入失败必须保留为传输失败并等待重连补偿。
+                .onErrorResume(exception -> Mono.just(toErrorEvent(command, exception)));
+        return safeBusinessStream
+                // concatMap 保证数据库事件序号与上游事件顺序完全一致。
+                .concatMap(event -> persistEvent(command.userId(), event))
+                // 显式取消等“无错误完成”场景根据数据库 Turn 状态补齐终态事件。
+                .concatWith(Mono.defer(() -> Mono.justOrEmpty(
+                        durableStreamEventService.ensureTerminal(
+                                command.userId(), command.turnId()))));
+    }
+
+    /**
+     * 从 Last-Event-ID 后继续轮询持久化事件，不再次调用模型或业务工具。
+     *
+     * @param command 原轮次及本次网络尝试信息
+     * @param lastEventSequence 客户端最后收到的事件序号
+     * @return 从下一事件开始直到 DONE 或 ERROR 的重放流
+     */
+    @Override
+    public Flux<ChatEvent> resume(ChatCommand command, long lastEventSequence) {
+        validateCommand(command);
+        if (lastEventSequence < 0L) {
+            throw invalidRequest("Last-Event-ID 不能小于零");
+        }
+
+        return Flux.defer(() -> {
+            // 首次请求可能在抵达服务端前断网；DRAFT 轮次必须在重连时真正启动一次。
+            TurnStatusView state = getTurn(command.userId(), command.turnId());
+            if (!state.conversationId().equals(command.conversationId())) {
+                throw invalidRequest("轮次不属于当前会话");
+            }
+            if (state.status() == org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus.DRAFT) {
+                return stream(command);
+            }
+            return replayPersistedEvents(command.userId(), command.turnId(), lastEventSequence);
+        });
+    }
+
+    /**
+     * 周期读取其他实例持续写入的事件，直到观察到持久化终态。
+     *
+     * @param userId 当前用户标识
+     * @param turnId 服务端轮次标识
+     * @param lastEventSequence 初始客户端游标
+     * @return 跨实例可消费的有序事件流
+     */
+    private Flux<ChatEvent> replayPersistedEvents(
+            String userId,
+            String turnId,
+            long lastEventSequence) {
+        AtomicLong cursor = new AtomicLong(lastEventSequence);
+
+        // 数据库轮询不占用 Reactor 事件线程；concatMap 防止慢查询产生并发重叠游标。
+        return Flux.interval(Duration.ZERO, STREAM_REPLAY_POLL_INTERVAL)
+                .concatMap(ignored -> Mono.fromCallable(() -> durableStreamEventService.poll(
+                                userId, turnId, cursor.get(), STREAM_REPLAY_BATCH_SIZE))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .flatMapIterable(events -> events)
+                .doOnNext(event -> cursor.accumulateAndGet(event.eventSequence(), Math::max))
+                .takeUntil(this::isTerminalEvent);
+    }
+
+    /**
+     * 将单个上游事件持久化并转换为 Reactor 单值信号。
+     *
+     * @param userId 当前用户标识
+     * @param event 待发布事件
+     * @return 新写入的事件；终态后的重复事件为空信号
+     */
+    private Mono<ChatEvent> persistEvent(String userId, ChatEvent event) {
+        // defer 确保持久化发生在订阅阶段，并让事务异常沿响应式链传播。
+        return Mono.defer(() -> Mono.justOrEmpty(
+                durableStreamEventService.append(userId, event)));
+    }
+
+    /**
+     * 判断持久化事件是否已经结束本次传输。
+     *
+     * @param event 当前事件
+     * @return DONE 或 ERROR 时返回 true
+     */
+    private boolean isTerminalEvent(ChatEvent event) {
+        return event.type() == AgentChatModels.EventType.DONE
+                || event.type() == AgentChatModels.EventType.ERROR;
     }
 
     /**
@@ -217,29 +359,24 @@ public class AgentChatServiceImpl implements AgentChatService {
      * 显式终止指定请求的模型流，并将仍在运行的持久化轮次置为取消状态。
      *
      * @param userId 当前用户标识
-     * @param request 需要取消的会话和请求标识
+     * @param turnId 服务端轮次标识
      * @return 是否取消了运行中的轮次或模型流
      */
     @Override
-    public boolean cancel(String userId, ChatCancelRequest request) {
-        if (request == null) {
-            throw invalidRequest("取消请求不能为空");
-        }
+    public boolean cancel(String userId, String turnId) {
         requireText(userId, "用户标识不能为空");
-        requireText(request.conversationId(), "会话标识不能为空");
-        requireText(request.requestId(), "请求标识不能为空");
+        requireText(turnId, "轮次标识不能为空");
+        String normalizedTurnId = turnId.trim();
 
         // 先持久化取消状态，保证模型客户端未能及时响应取消信号时轮次也不会永久处于运行中。
-        boolean turnCancelled = conversationMemoryService.cancelTurn(
-                userId, request.conversationId().trim(), request.requestId().trim());
-        Sinks.One<Void> cancellation = activeTurnCancels.get(request.requestId().trim());
+        boolean turnCancelled = conversationMemoryService.cancelTurn(userId, normalizedTurnId);
+        Sinks.One<Void> cancellation = activeTurnCancels.get(normalizedTurnId);
         if (cancellation != null) {
             // 该信号会向 Reactor 上游传播取消，从而中断模型流和可取消的工具调用。
             cancellation.tryEmitEmpty();
         }
         boolean cancelled = turnCancelled || cancellation != null;
-        LOGGER.info("Agent收到取消请求，requestId={}, conversationId={}, cancelled={}",
-                request.requestId().trim(), request.conversationId().trim(), cancelled);
+        LOGGER.info("Agent收到取消请求，turnId={}, cancelled={}", normalizedTurnId, cancelled);
         return cancelled;
     }
 
@@ -286,9 +423,25 @@ public class AgentChatServiceImpl implements AgentChatService {
         if (exception instanceof AgentChatException chatException) {
             return ChatEvent.error(command, chatException.failureCategory(), chatException.getMessage());
         }
+        if (exception instanceof TurnSubmissionException submissionException) {
+            // 轮次协议错误使用稳定分类和安全提示，不返回令牌或原问题内容。
+            return switch (submissionException.reason()) {
+                case INVALID_TOKEN -> ChatEvent.error(
+                        command, "TURN_SUBMISSION_TOKEN_INVALID", "轮次提交凭证无效，请重新创建轮次");
+                case SUBMISSION_EXPIRED -> ChatEvent.error(
+                        command, "TURN_SUBMISSION_EXPIRED", "轮次提交凭证已过期，请重新创建轮次");
+                case PAYLOAD_MISMATCH -> ChatEvent.error(
+                        command, "TURN_PAYLOAD_MISMATCH", "该轮次已经绑定其他问题，不能修改后重试");
+            };
+        }
         if (exception instanceof ModelRoutingException routingException) {
             return ChatEvent.error(
                     command, routingException.failureCategory().name(), "模型服务暂时不可用，请稍后重试");
+        }
+        if (exception instanceof ExecutionLeaseLostException) {
+            // 跨实例取消或租约接管只返回稳定分类，不暴露执行者和 fencing token。
+            return ChatEvent.error(
+                    command, "TURN_EXECUTION_LEASE_LOST", "当前处理已被取消或转移，请查询轮次状态");
         }
         return ChatEvent.error(command, "INTERNAL_ERROR", "对话处理失败，请稍后重试");
     }
@@ -302,13 +455,17 @@ public class AgentChatServiceImpl implements AgentChatService {
         if (command == null) {
             throw invalidRequest("请求体不能为空");
         }
-        requireText(command.requestId(), "请求标识不能为空");
-        requireText(command.idempotencyKey(), "幂等键不能为空");
+        requireText(command.turnId(), "轮次标识不能为空");
+        requireText(command.attemptId(), "网络尝试标识不能为空");
+        requireText(command.submissionToken(), "轮次提交令牌不能为空");
         requireText(command.userId(), "用户标识不能为空");
         requireText(command.conversationId(), "会话标识不能为空");
         requireText(command.message(), "用户问题不能为空");
-        if (command.requestId().length() > 64 || command.idempotencyKey().length() > 128) {
-            throw invalidRequest("请求标识或幂等键过长");
+        if (command.turnId().length() > 64 || command.attemptId().length() > 64) {
+            throw invalidRequest("轮次标识或网络尝试标识过长");
+        }
+        if (command.submissionToken().length() > 256) {
+            throw invalidRequest("轮次提交令牌过长");
         }
         if (command.message().length() > MAX_MESSAGE_LENGTH) {
             throw invalidRequest("用户问题不能超过 4000 个字符");

@@ -7,13 +7,15 @@
 当前前端已经支持：
 
 1. 创建当前登录用户的智能体会话。
-2. 通过 POST SSE 接收模型流式回答。
-3. 展示用户消息、助手消息、失败分类和停止生成按钮。
-4. 接收购票、取消订单和退票的结构化确认卡片。
-5. 提交一次性确认令牌和稳定幂等键。
-6. 查询并轮询操作执行状态。
-7. 展示购票车票结果、订单号和退款金额。
-8. 对 `UNKNOWN` 状态禁止盲目重试，并引导用户查询本人订单。
+2. 发送前向服务端预创建业务轮次并保存 `turnId` 和短期提交令牌。
+3. 通过 POST SSE 接收模型流式回答，并用独立 `X-Attempt-Id` 标识网络尝试。
+4. 网络断流后按 `turnId` 查询数据库终态并恢复最终回答。
+5. 展示用户消息、助手消息、失败分类和停止生成按钮。
+6. 接收购票、取消订单和退票的结构化确认卡片。
+7. 提交一次性确认令牌和稳定幂等键。
+8. 查询并轮询操作执行状态。
+9. 展示购票车票结果、订单号和退款金额。
+10. 对 `UNKNOWN` 状态禁止盲目重试，并引导用户查询本人订单。
 
 ## 2. 页面入口
 
@@ -59,12 +61,19 @@ console-vue/src
 fetch + ReadableStream + TextDecoder + AbortController
 ```
 
-请求携带：
+发送时先调用：
+
+```http
+POST /api/agent-service/conversations/{conversationId}/turns
+```
+
+再使用返回的 `turnId` 调用 `/api/agent-service/turns/{turnId}/stream`。流式请求携带：
 
 - `Authorization`
-- `X-Request-Id`
-- `Idempotency-Key`
-- JSON 对话请求体
+- `X-Attempt-Id`，只标识本次网络连接
+- 包含 `conversationId`、原始问题和 `submissionToken` 的 JSON 请求体
+
+浏览器不生成业务 `turnId`。同一业务轮次发生网络重试时必须复用服务端凭证和原问题；如果响应可能已经完成，先调用 `GET /api/agent-service/turns/{turnId}` 恢复权威结果。
 
 前端处理以下事件：
 

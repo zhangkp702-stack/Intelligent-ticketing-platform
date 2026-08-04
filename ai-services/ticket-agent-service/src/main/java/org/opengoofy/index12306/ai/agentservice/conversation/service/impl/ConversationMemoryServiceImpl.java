@@ -1,11 +1,14 @@
 package org.opengoofy.index12306.ai.agentservice.conversation.service.impl;
 
+import org.opengoofy.index12306.ai.agentservice.chat.config.AgentTurnProperties;
+import org.opengoofy.index12306.ai.agentservice.chat.security.TurnSubmissionTokenService;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.ConversationEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.MessageEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.TurnEntity;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
+import org.opengoofy.index12306.ai.agentservice.conversation.exception.TurnSubmissionException;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.MessageRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.TurnRepository;
@@ -15,10 +18,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.HexFormat;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * 负责会话、消息和问答轮次的一致性写入，并合并异步摘要目标。
@@ -31,6 +40,9 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
     private final TurnRepository turnRepository;
     private final Clock clock;
     private final SummaryTaskService summaryTaskService;
+    private final AgentTurnProperties turnProperties;
+    private final TurnSubmissionTokenService turnSubmissionTokenService;
+    private final String executionOwner;
 
     /**
      * 创建会话记忆写入服务。
@@ -40,18 +52,26 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
      * @param turnRepository 轮次仓储
      * @param clock 统一时钟
      * @param summaryTaskService 会话摘要任务服务
+     * @param turnProperties 服务端轮次提交和执行租约配置
+     * @param turnSubmissionTokenService 轮次提交令牌服务
      */
     public ConversationMemoryServiceImpl(
             ConversationRepository conversationRepository,
             MessageRepository messageRepository,
             TurnRepository turnRepository,
             Clock clock,
-            SummaryTaskService summaryTaskService) {
+            SummaryTaskService summaryTaskService,
+            AgentTurnProperties turnProperties,
+            TurnSubmissionTokenService turnSubmissionTokenService) {
         this.conversationRepository = conversationRepository;
         this.messageRepository = messageRepository;
         this.turnRepository = turnRepository;
         this.clock = clock;
         this.summaryTaskService = summaryTaskService;
+        this.turnProperties = turnProperties;
+        this.turnSubmissionTokenService = turnSubmissionTokenService;
+        // 每个服务实例使用独立执行者标识，租约记录不依赖客户端或线程名称。
+        this.executionOwner = "agent-turn-" + UUID.randomUUID().toString().replace("-", "");
     }
 
     /**
@@ -74,6 +94,37 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
     }
 
     /**
+     * 预创建不包含用户消息的服务端轮次，并签发绑定用户和会话的提交令牌。
+     *
+     * @param userId 用户标识
+     * @param conversationId 会话标识
+     * @return 可供前端保存并首次提交的轮次凭证
+     */
+    @Transactional
+    @Override
+    public PreparedTurn prepareTurn(String userId, String conversationId) {
+        requireText(userId, "用户标识不能为空");
+        requireText(conversationId, "会话标识不能为空");
+
+        // 先锁定并校验会话，避免删除事务与 DRAFT 轮次插入交叉产生孤儿数据。
+        requireLockedConversation(userId, conversationId);
+        Instant now = clock.instant();
+        TurnEntity turn = TurnEntity.prepare(
+                conversationId, now.plus(turnProperties.submissionTtl()), now);
+        turnRepository.insert(turn);
+
+        // 使用数据库回读值签名，消除不同数据库对时间精度和时区映射的规范化差异。
+        TurnEntity persistedTurn = Optional.ofNullable(turnRepository.selectById(turn.getId()))
+                .orElseThrow(() -> new IllegalStateException("预创建轮次写入失败"));
+        String token = turnSubmissionTokenService.issue(persistedTurn, userId);
+        return new PreparedTurn(
+                conversationId,
+                persistedTurn.getId(),
+                token,
+                persistedTurn.getSubmissionExpiresAt());
+    }
+
+    /**
      * 幂等写入当前用户问题并创建等待回答的运行中轮次。
      *
      * @param command 用户问题写入命令
@@ -82,57 +133,73 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
     @Transactional
     @Override
     public StartedTurn startTurn(StartTurnCommand command) {
+        // 首次提交和重复提交使用相同校验入口，关键参数不得为空。
         validateStartCommand(command);
+        String content = command.content().trim();
+        String payloadHash = fingerprint(content);
 
-        // 相同请求 ID 的网络重试直接返回原轮次，不重复分配消息序号。
-        TurnEntity existingTurn = turnRepository
-                .findByConversationIdAndRequestId(command.conversationId(), command.requestId())
-                .orElse(null);
-        if (existingTurn != null) {
-            ConversationEntity conversation = requireConversation(command.userId(), command.conversationId());
-            MessageEntity message = requireMessage(existingTurn.getUserMessageId());
-            return toStartedTurn(conversation, existingTurn, message, false);
+        // 先读取轮次定位会话，但所有写路径统一按“会话 -> 轮次”顺序加锁以避免删除死锁。
+        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(command.turnId()))
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        if (!observedTurn.getConversationId().equals(command.conversationId())) {
+            throw new IllegalArgumentException("轮次不属于当前会话");
         }
 
-        // 锁定会话后分配严格递增序号，并在同一事务中保存消息与轮次。
-        ConversationEntity conversation = requireLockedConversation(command.userId(), command.conversationId());
-        TurnEntity concurrentExistingTurn = turnRepository
-                .findByConversationIdAndRequestId(command.conversationId(), command.requestId())
-                .orElse(null);
-        if (concurrentExistingTurn != null) {
-            // 会话锁内再次检查，确保并发重试返回首个事务已经创建的轮次。
-            MessageEntity existingMessage = requireMessage(concurrentExistingTurn.getUserMessageId());
-            return toStartedTurn(conversation, concurrentExistingTurn, existingMessage, false);
+        // 锁定会话并校验所有权后再锁轮次，并发提交只能有一个请求迁移 DRAFT 状态。
+        ConversationEntity conversation = requireLockedConversation(
+                command.userId(), command.conversationId());
+        TurnEntity turn = turnRepository.findLockedById(command.turnId())
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        if (!turn.getConversationId().equals(conversation.getId())) {
+            throw new IllegalArgumentException("轮次不属于当前会话");
         }
-        if (StringUtils.hasText(command.idempotencyKey())) {
-            MessageEntity existingMessage = messageRepository
-                    .findByConversationIdAndIdempotencyKey(command.conversationId(), command.idempotencyKey())
-                    .orElse(null);
-            if (existingMessage != null && existingMessage.getTurnId() != null) {
-                TurnEntity idempotentTurn = Optional.ofNullable(turnRepository.selectById(existingMessage.getTurnId()))
-                        .orElseThrow(() -> new IllegalStateException("幂等消息缺少关联轮次"));
-                return toStartedTurn(conversation, idempotentTurn, existingMessage, false);
+        if (turn.getStatus() != TurnStatus.DRAFT) {
+            if (!turn.hasPayloadHash(payloadHash)) {
+                throw new TurnSubmissionException(
+                        TurnSubmissionException.Reason.PAYLOAD_MISMATCH,
+                        "轮次标识已经绑定不同的用户问题");
             }
+            Instant reclaimNow = clock.instant();
+            if (turn.reclaim(
+                    executionOwner,
+                    reclaimNow.plus(turnProperties.executionLease()),
+                    reclaimNow)) {
+                // 过期轮次取得新的 fencing token，后续流水线从持久化任务检查点继续执行。
+                turnRepository.updateById(turn);
+                MessageEntity existingMessage = requireMessage(turn.getUserMessageId());
+                return toStartedTurn(conversation, turn, existingMessage, true);
+            }
+            // 已提交轮次只复用原用户消息，后续由流水线按终态回放或拒绝重复执行。
+            MessageEntity existingMessage = requireMessage(turn.getUserMessageId());
+            return toStartedTurn(conversation, turn, existingMessage, false);
         }
 
         Instant now = clock.instant();
+        validateDraftSubmission(turn, command.userId(), command.submissionToken(), now);
+
+        // 已锁定会话，分配严格递增消息序号并在同一事务中绑定内容、消息和执行租约。
         long sequence = conversation.nextMessageSequence(now);
         MessageEntity userMessage = MessageEntity.create(
                 command.conversationId(),
                 sequence,
                 MessageRole.USER,
                 MessageType.TEXT,
-                command.content(),
+                content,
                 "text/plain",
                 command.tokenCount(),
-                command.requestId(),
-                command.idempotencyKey(),
+                turn.getId(),
+                turn.getId(),
                 now);
-        TurnEntity turn = TurnEntity.start(
-                command.conversationId(), command.requestId(), userMessage.getId(), now);
+        turn.start(
+                userMessage.getId(),
+                command.username(),
+                payloadHash,
+                executionOwner,
+                now.plus(turnProperties.executionLease()),
+                now);
         userMessage.attachTurn(turn.getId(), now);
         messageRepository.insert(userMessage);
-        turnRepository.insert(turn);
+        turnRepository.updateById(turn);
         // 消息序号保存在会话行中，MyBatis-Plus 下需显式更新以保持下一轮递增。
         conversationRepository.updateById(conversation);
         return toStartedTurn(conversation, turn, userMessage, true);
@@ -149,6 +216,12 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
     public MessageEntity completeTurn(CompleteTurnCommand command) {
         requireText(command.userId(), "用户标识不能为空");
         requireText(command.content(), "助手回答不能为空");
+
+        // 先读取轮次定位并锁定会话，所有终态写入与删除事务保持相同加锁顺序。
+        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(command.turnId()))
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        ConversationEntity conversation = requireLockedConversation(
+                command.userId(), observedTurn.getConversationId());
         TurnEntity turn = turnRepository.findLockedById(command.turnId())
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
 
@@ -156,8 +229,6 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         if (turn.getStatus() == TurnStatus.COMPLETED) {
             return requireMessage(turn.getAssistantMessageId());
         }
-
-        ConversationEntity conversation = requireLockedConversation(command.userId(), turn.getConversationId());
 
         // 助手消息与轮次完成状态在同一事务提交，失败时一起回滚。
         Instant now = clock.instant();
@@ -175,7 +246,11 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
                 now);
         assistantMessage.attachTurn(turn.getId(), now);
         messageRepository.insert(assistantMessage);
-        turn.complete(assistantMessage.getId(), now);
+        turn.complete(
+                assistantMessage.getId(),
+                command.executionOwner(),
+                command.fencingToken(),
+                now);
         // 助手消息、轮次终态和会话序号必须在同一事务内显式写回。
         turnRepository.updateById(turn);
         conversationRepository.updateById(conversation);
@@ -189,18 +264,67 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
      *
      * @param userId 用户标识
      * @param turnId 轮次标识
+     * @param executionOwner 执行实例标识
+     * @param fencingToken 领取时获得的 fencing token
      * @param failureCategory 稳定失败分类
      */
     @Transactional
     @Override
-    public void failTurn(String userId, String turnId, String failureCategory) {
+    public void failTurn(
+            String userId,
+            String turnId,
+            String executionOwner,
+            long fencingToken,
+            String failureCategory) {
+        // 失败收口与完成、取消、会话删除统一使用“会话 -> 轮次”数据库锁顺序。
+        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(turnId))
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        requireLockedConversation(userId, observedTurn.getConversationId());
         TurnEntity turn = turnRepository.findLockedById(turnId)
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
 
-        // 失败状态更新前再次校验会话所有权，避免跨用户操作轮次。
-        requireConversation(userId, turn.getConversationId());
-        turn.fail(failureCategory, clock.instant());
+        // 只允许当前运行轮次进入失败终态，实体状态机拒绝覆盖其他终态。
+        turn.fail(failureCategory, executionOwner, fencingToken, clock.instant());
         turnRepository.updateById(turn);
+    }
+
+    /**
+     * 为当前执行实例续租运行中轮次，并在取消或接管后拒绝旧 token。
+     *
+     * @param userId 用户标识
+     * @param turnId 轮次标识
+     * @param executionOwner 执行实例标识
+     * @param fencingToken 当前 fencing token
+     * @return 成功续租时返回 true
+     */
+    @Transactional
+    @Override
+    public boolean heartbeatTurn(
+            String userId,
+            String turnId,
+            String executionOwner,
+            long fencingToken) {
+        // 心跳与删除事务保持“会话 -> 轮次”锁顺序，避免恢复线程引入新的死锁环。
+        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(turnId)).orElse(null);
+        if (observedTurn == null) {
+            return false;
+        }
+        requireLockedConversation(userId, observedTurn.getConversationId());
+        TurnEntity turn = turnRepository.findLockedById(turnId).orElse(null);
+        if (turn == null) {
+            return false;
+        }
+        Instant now = clock.instant();
+        if (!turn.heartbeat(
+                executionOwner,
+                fencingToken,
+                now.plus(turnProperties.executionLease()),
+                now)) {
+            return false;
+        }
+        // 续租先持久化再返回成功，数据库仍是跨实例执行权的唯一真相。
+        turnRepository.updateById(turn);
+        return true;
     }
 
     /**
@@ -220,7 +344,14 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         requireConversation(userId, turn.getConversationId());
         String assistantContent = turn.getAssistantMessageId() == null
                 ? null : requireMessage(turn.getAssistantMessageId()).getContent();
-        return new TurnState(turn.getStatus(), assistantContent);
+        return new TurnState(
+                turn.getId(),
+                turn.getConversationId(),
+                turn.getStatus(),
+                assistantContent,
+                turn.getFailureCategory(),
+                turn.getStartedAt(),
+                turn.getFinishedAt());
     }
 
     /**
@@ -231,46 +362,83 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
      */
     @Transactional
     @Override
-    public void cancelTurn(String userId, String turnId) {
+    public boolean cancelTurn(String userId, String turnId) {
+        // 取消与完成、失败、会话删除统一按“会话 -> 轮次”顺序获取数据库锁。
+        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(turnId))
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        requireLockedConversation(userId, observedTurn.getConversationId());
         TurnEntity turn = turnRepository.findLockedById(turnId)
                 .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
 
         // 终态轮次保持原结果，避免取消回调覆盖已经持久化的完成或失败状态。
-        requireConversation(userId, turn.getConversationId());
-        if (turn.getStatus() == TurnStatus.RUNNING) {
-            turn.cancel(clock.instant());
-            turnRepository.updateById(turn);
+        if (turn.getStatus() != TurnStatus.RUNNING) {
+            return false;
         }
+        // 使用轮次行锁与正常完成流程互斥，只允许运行状态迁移一次。
+        turn.cancel(clock.instant());
+        turnRepository.updateById(turn);
+        return true;
     }
 
     /**
-     * 按会话和请求标识取消仍在执行的轮次，并校验当前用户拥有该会话。
+     * 仅允许仍持有相同执行者和 fencing token 的流水线取消轮次。
      *
-     * @param userId 当前用户标识
-     * @param conversationId 会话标识
-     * @param requestId 请求标识
-     * @return 找到且成功取消运行中轮次时返回 true
+     * @param userId 用户标识
+     * @param turnId 轮次标识
+     * @param executionOwner 执行实例标识
+     * @param fencingToken 当前 fencing token
+     * @return 当前执行者成功取消时返回 true
      */
     @Transactional
     @Override
-    public boolean cancelTurn(String userId, String conversationId, String requestId) {
-        // 先锁定并校验会话归属，防止通过请求标识取消其他用户的轮次。
-        requireLockedConversation(userId, conversationId);
-        TurnEntity turn = turnRepository.findByConversationIdAndRequestId(conversationId, requestId)
-                .orElse(null);
-        if (turn == null) {
+    public boolean cancelOwnedTurn(
+            String userId,
+            String turnId,
+            String executionOwner,
+            long fencingToken) {
+        // 仍按“会话 -> 轮次”加锁，避免旧连接断开时与新执行者接管交叉覆盖。
+        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(turnId)).orElse(null);
+        if (observedTurn == null) {
             return false;
         }
-
-        // 使用轮次行锁与正常完成流程互斥，只取消仍处于运行状态的轮次。
-        TurnEntity lockedTurn = turnRepository.findLockedById(turn.getId())
-                .orElseThrow(() -> new IllegalStateException("轮次不存在"));
-        if (lockedTurn.getStatus() != TurnStatus.RUNNING) {
+        requireLockedConversation(userId, observedTurn.getConversationId());
+        TurnEntity turn = turnRepository.findLockedById(turnId).orElse(null);
+        if (turn == null || !turn.isOwnedBy(executionOwner, fencingToken)) {
             return false;
         }
-        lockedTurn.cancel(clock.instant());
-        turnRepository.updateById(lockedTurn);
+        // 只有数据库确认执行权仍有效，客户端断流才有权结束该轮次。
+        turn.cancel(clock.instant());
+        turnRepository.updateById(turn);
         return true;
+    }
+
+    /**
+     * 读取租约已过期轮次的恢复快照，真正接管仍由 startTurn 的行锁和 fencing token 决定。
+     *
+     * @return 可供后台恢复器尝试的轮次列表
+     */
+    @Transactional(readOnly = true)
+    @Override
+    public List<ExpiredTurnCandidate> findExpiredTurnCandidates() {
+        // 候选扫描不持有写锁，多实例可以同时发现，后续只有一个实例能在行锁内接管。
+        return turnRepository.findExpiredRunningTurns(TurnStatus.RUNNING, clock.instant(), 100).stream()
+                .map(turn -> {
+                    ConversationEntity conversation = conversationRepository.selectById(turn.getConversationId());
+                    MessageEntity message = turn.getUserMessageId() == null
+                            ? null : messageRepository.selectById(turn.getUserMessageId());
+                    if (conversation == null || message == null || !StringUtils.hasText(turn.getUsername())) {
+                        return null;
+                    }
+                    // 恢复只使用首次提交时已经固化的身份、会话和问题，不接受新的客户端字段。
+                    return new ExpiredTurnCandidate(
+                            conversation.getUserId(),
+                            turn.getUsername(),
+                            turn.getConversationId(),
+                            turn.getId(),
+                            message.getContent());
+                })
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     /**
@@ -334,8 +502,52 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         Objects.requireNonNull(command, "command");
         requireText(command.userId(), "用户标识不能为空");
         requireText(command.conversationId(), "会话标识不能为空");
-        requireText(command.requestId(), "请求标识不能为空");
+        requireText(command.turnId(), "轮次标识不能为空");
+        requireText(command.submissionToken(), "轮次提交令牌不能为空");
+        requireText(command.username(), "用户名不能为空");
         requireText(command.content(), "用户问题不能为空");
+    }
+
+    /**
+     * 校验 DRAFT 轮次提交令牌和首次提交截止时间。
+     *
+     * @param turn 待提交轮次
+     * @param userId 当前认证用户
+     * @param submissionToken 客户端回传令牌
+     * @param now 当前时间
+     */
+    private void validateDraftSubmission(
+            TurnEntity turn,
+            String userId,
+            String submissionToken,
+            Instant now) {
+        if (!now.isBefore(turn.getSubmissionExpiresAt())) {
+            throw new TurnSubmissionException(
+                    TurnSubmissionException.Reason.SUBMISSION_EXPIRED,
+                    "轮次首次提交时间窗口已经结束");
+        }
+        // HMAC 必须覆盖当前用户、会话、轮次和过期时间，禁止伪造或跨轮次复用。
+        if (!turnSubmissionTokenService.matches(turn, userId, submissionToken)) {
+            throw new TurnSubmissionException(
+                    TurnSubmissionException.Reason.INVALID_TOKEN,
+                    "轮次提交令牌无效");
+        }
+    }
+
+    /**
+     * 计算标准化用户问题的稳定 SHA-256 指纹。
+     *
+     * @param content 已去除首尾空白的用户问题
+     * @return 小写十六进制内容指纹
+     */
+    private String fingerprint(String content) {
+        try {
+            // 使用 JDK 标准摘要算法，避免内容指纹依赖平台默认字符集。
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(content.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前运行环境不支持 SHA-256", exception);
+        }
     }
 
     /**
@@ -366,7 +578,7 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
             boolean created) {
         return new StartedTurn(
                 conversation.getId(), turn.getId(), message.getId(),
-                message.getSequenceNo(), created);
+                message.getSequenceNo(), created, turn.getLeaseOwner(), turn.getFencingToken());
     }
 
 }

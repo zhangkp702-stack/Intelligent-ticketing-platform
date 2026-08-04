@@ -4,6 +4,7 @@ import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.ConversationStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
+import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowInteractionView;
 
 import java.time.Instant;
@@ -34,6 +35,40 @@ public final class AgentChatModels {
      * @param conversationId 会话标识
      */
     public record CreateConversationResponse(String conversationId) {
+    }
+
+    /**
+     * 服务端预创建轮次响应。
+     *
+     * @param turnId 服务端轮次标识
+     * @param submissionToken 绑定用户、会话和轮次的首次提交令牌
+     * @param expiresAt 首次提交截止时间
+     */
+    public record PrepareTurnResponse(
+            String turnId,
+            String submissionToken,
+            Instant expiresAt) {
+    }
+
+    /**
+     * 用户可查询的持久化轮次状态。
+     *
+     * @param turnId 轮次标识
+     * @param conversationId 会话标识
+     * @param status 当前状态
+     * @param content 已完成回答，未完成时为空
+     * @param failureCategory 稳定失败分类，未失败时为空
+     * @param startedAt 开始执行时间，尚未提交时为空
+     * @param finishedAt 终态时间，尚未结束时为空
+     */
+    public record TurnStatusView(
+            String turnId,
+            String conversationId,
+            TurnStatus status,
+            String content,
+            String failureCategory,
+            Instant startedAt,
+            Instant finishedAt) {
     }
 
     /**
@@ -101,36 +136,71 @@ public final class AgentChatModels {
      *
      * @param conversationId 会话标识
      * @param message 当前用户问题
+     * @param submissionToken 服务端签发的首次提交令牌
      */
-    public record ChatRequest(String conversationId, String message) {
-    }
-
-    /**
-     * 取消指定会话中正在生成的对话轮次。
-     *
-     * @param conversationId 会话标识
-     * @param requestId 本轮生成请求标识
-     */
-    public record ChatCancelRequest(String conversationId, String requestId) {
+    public record SubmitTurnRequest(
+            String conversationId,
+            String message,
+            String submissionToken) {
     }
 
     /**
      * 编排层使用的完整对话命令。
      *
-     * @param requestId 请求标识
-     * @param idempotencyKey 幂等键
+     * @param turnId 服务端轮次标识
+     * @param attemptId 当前网络尝试标识
+     * @param submissionToken 服务端首次提交令牌
      * @param userId 用户标识
      * @param username 用户名
      * @param conversationId 会话标识
      * @param message 当前用户问题
      */
     public record ChatCommand(
-            String requestId,
-            String idempotencyKey,
+            String turnId,
+            String attemptId,
+            String submissionToken,
             String userId,
             String username,
             String conversationId,
             String message) {
+
+        /**
+         * 兼容内部测试和旧构造位置，并把第二个参数解释为轮次提交令牌。
+         *
+         * @param requestId 服务端轮次标识
+         * @param idempotencyKey 轮次提交令牌
+         * @param userId 用户标识
+         * @param username 用户名
+         * @param conversationId 会话标识
+         * @param message 用户问题
+         */
+        public ChatCommand(
+                String requestId,
+                String idempotencyKey,
+                String userId,
+                String username,
+                String conversationId,
+                String message) {
+            this(requestId, requestId, idempotencyKey, userId, username, conversationId, message);
+        }
+
+        /**
+         * 返回沿用旧审计字段名称的稳定轮次标识。
+         *
+         * @return 服务端 turnId
+         */
+        public String requestId() {
+            return turnId;
+        }
+
+        /**
+         * 返回内部消息持久化使用的稳定幂等标识。
+         *
+         * @return 服务端 turnId
+         */
+        public String idempotencyKey() {
+            return turnId;
+        }
     }
 
     /**
@@ -218,6 +288,7 @@ public final class AgentChatModels {
      * @param action 仅在 ACTION_REQUIRED 事件中返回的确认视图
      * @param workflow 仅在 WORKFLOW_REQUIRED 事件中返回的工作流交互视图
      * @param performance 仅在新生成回答的 DONE 事件中返回的本轮性能快照
+     * @param eventSequence 服务端持久化后分配的轮次内单调序号
      */
     public record ChatEvent(
             EventType type,
@@ -231,7 +302,8 @@ public final class AgentChatModels {
             String message,
             ActionConfirmationView action,
             WorkflowInteractionView workflow,
-            ChatPerformance performance) {
+            ChatPerformance performance,
+            Long eventSequence) {
 
         /**
          * 创建开始输出前的元数据事件。
@@ -245,7 +317,7 @@ public final class AgentChatModels {
                 boolean reused) {
             return new ChatEvent(
                     EventType.META, context.requestId(), context.conversationId(), context.turnId(),
-                    null, null, reused, null, null, null, null, null);
+                    null, null, reused, null, null, null, null, null, null);
         }
 
         /**
@@ -260,7 +332,7 @@ public final class AgentChatModels {
                 String delta) {
             return new ChatEvent(
                     EventType.DELTA, context.requestId(), context.conversationId(), context.turnId(),
-                    delta, null, false, null, null, null, null, null);
+                    delta, null, false, null, null, null, null, null, null);
         }
 
         /**
@@ -276,7 +348,7 @@ public final class AgentChatModels {
             // 确认令牌只通过服务端结构化事件返回，不写入模型回答正文。
             return new ChatEvent(
                     EventType.ACTION_REQUIRED, context.requestId(), context.conversationId(), context.turnId(),
-                    null, null, false, null, null, action, null, null);
+                    null, null, false, null, null, action, null, null, null);
         }
 
         /**
@@ -295,7 +367,7 @@ public final class AgentChatModels {
                     context.requestId(),
                     context.conversationId(),
                     context.turnId(),
-                    null, null, false, null, null, null, workflow, null);
+                    null, null, false, null, null, null, workflow, null, null);
         }
 
         /**
@@ -331,7 +403,7 @@ public final class AgentChatModels {
             // 性能数据与最终正文在同一个终态事件返回，避免增加新的 SSE 事件顺序。
             return new ChatEvent(
                     EventType.DONE, context.requestId(), context.conversationId(), context.turnId(),
-                    null, content, reused, null, null, null, null, performance);
+                    null, content, reused, null, null, null, null, performance, null);
         }
 
         /**
@@ -344,8 +416,59 @@ public final class AgentChatModels {
          */
         public static ChatEvent error(ChatCommand command, String category, String safeMessage) {
             return new ChatEvent(
-                    EventType.ERROR, command.requestId(), command.conversationId(), null,
-                    null, null, false, category, safeMessage, null, null, null);
+                    EventType.ERROR, command.requestId(), command.conversationId(), command.turnId(),
+                    null, null, false, category, safeMessage, null, null, null, null);
+        }
+
+        /**
+         * 根据持久化轮次结果创建可重放的完成事件。
+         *
+         * @param turnId 服务端轮次标识
+         * @param conversationId 会话标识
+         * @param content 已持久化的完整回答
+         * @return 不依赖原执行进程的完成事件
+         */
+        public static ChatEvent recoveredDone(
+                String turnId,
+                String conversationId,
+                String content) {
+            // 恢复事件使用稳定 turnId 作为旧 requestId，并明确标记回答来自持久化终态。
+            return new ChatEvent(
+                    EventType.DONE, turnId, conversationId, turnId,
+                    null, content, true, null, null, null, null, null, null);
+        }
+
+        /**
+         * 根据持久化轮次结果创建可重放的错误事件。
+         *
+         * @param turnId 服务端轮次标识
+         * @param conversationId 会话标识
+         * @param category 稳定失败分类
+         * @param safeMessage 安全的用户提示
+         * @return 不暴露内部执行细节的错误事件
+         */
+        public static ChatEvent recoveredError(
+                String turnId,
+                String conversationId,
+                String category,
+                String safeMessage) {
+            // 失败恢复只使用数据库中的稳定分类，不重放内部异常正文。
+            return new ChatEvent(
+                    EventType.ERROR, turnId, conversationId, turnId,
+                    null, null, false, category, safeMessage, null, null, null, null);
+        }
+
+        /**
+         * 返回携带服务端持久化事件序号的不可变副本。
+         *
+         * @param sequence 轮次内严格递增的事件序号
+         * @return 已绑定序号的 SSE 事件
+         */
+        public ChatEvent withEventSequence(long sequence) {
+            // 事件正文保持不变，序号只由持有数据库 Turn 行锁的服务分配。
+            return new ChatEvent(
+                    type, requestId, conversationId, turnId, delta, content, reused,
+                    failureCategory, message, action, workflow, performance, sequence);
         }
     }
 

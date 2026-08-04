@@ -148,6 +148,8 @@ import {
 import {
   cancelAgentChat,
   createAgentRequestId,
+  fetchAgentTurnState,
+  prepareAgentTurn,
   streamAgentChat
 } from '@/service/agent-stream'
 import ConversationPanel from './components/conversation-panel'
@@ -281,7 +283,7 @@ const mapHistoryMessage = (historyMessage) => ({
 /**
  * 中止当前会话的流读取和状态轮询，并异步通知后端终止对应生成任务。
  *
- * @returns {object | undefined} 被取消的请求标识信息
+ * @returns {object | undefined} 被取消的服务端轮次信息
  */
 const cancelActiveConversationWork = () => {
   const activeRequest = activeStreamRequest
@@ -584,22 +586,27 @@ const sendMessage = async (content) => {
   let elapsedTimer
   let requestGeneration
   let conversationId
+  let turnId
   try {
     conversationId = await requireConversation()
     requestGeneration = ++streamGeneration
-    const requestId = createAgentRequestId()
+    // 先向服务端申请业务轮次，浏览器只生成本次网络连接的 attemptId。
+    const preparedTurn = await prepareAgentTurn(conversationId)
+    turnId = preparedTurn.turnId
+    const attemptId = createAgentRequestId()
     const userMessage = {
-      id: `${requestId}-user`,
+      id: `${turnId}-user`,
       role: 'USER',
-      content: content.trim()
+      content: content.trim(),
+      turnId
     }
     assistantMessage = {
-      id: `${requestId}-assistant`,
+      id: `${turnId}-assistant`,
       role: 'ASSISTANT',
       content: '',
       pending: true,
       elapsedSeconds: 0,
-      requestId
+      turnId
     }
     state.messages.push(userMessage, assistantMessage)
     // 后续流式增量必须写入 Vue 代理对象，直接修改入列前的原始对象不会触发页面重绘。
@@ -613,14 +620,15 @@ const sendMessage = async (content) => {
     state.streaming = true
     await scrollToBottom()
 
-    // 同一次消息的请求标识和幂等键保持一致，网络层不得自动换键重试。
+    // 同一轮的所有网络重试必须复用服务端 turnId 和 submissionToken。
     streamController = new AbortController()
-    activeStreamRequest = { conversationId, requestId }
+    activeStreamRequest = { turnId }
     await streamAgentChat({
+      turnId,
       conversationId,
       message: content.trim(),
-      requestId,
-      idempotencyKey: requestId,
+      attemptId,
+      submissionToken: preparedTurn.submissionToken,
       signal: streamController.signal,
       onEvent: (eventName, event) => {
         // 会话切换后丢弃旧流中已经在网络途中的事件。
@@ -639,11 +647,21 @@ const sendMessage = async (content) => {
     if (!requestIsActive) {
       return
     }
+    let recovered = false
+    if (error.name !== 'AbortError' && turnId) {
+      // 响应可能在数据库完成提交后丢失，先读取持久化终态再决定是否展示失败。
+      const turnState = await fetchAgentTurnState(turnId).catch(() => null)
+      if (turnState?.status === 'COMPLETED' && turnState.content) {
+        assistantMessage.content = turnState.content
+        assistantMessage.pending = false
+        recovered = true
+      }
+    }
     if (error.name === 'AbortError') {
       if (assistantMessage && !assistantMessage.content) {
         assistantMessage.content = '已停止生成'
       }
-    } else {
+    } else if (!recovered) {
       if (assistantMessage) {
         assistantMessage.error = error.message || '智能体服务暂时不可用'
         assistantMessage.failureCategory = error.failureCategory
@@ -976,7 +994,7 @@ const stopStreaming = () => {
     return
   }
   const assistantMessage = state.messages.find(
-    (item) => item.id === `${activeRequest.requestId}-assistant`
+    (item) => item.id === `${activeRequest.turnId}-assistant`
   )
   if (assistantMessage) {
     // 先完成页面状态更新，用户不需要等待后端取消请求返回。

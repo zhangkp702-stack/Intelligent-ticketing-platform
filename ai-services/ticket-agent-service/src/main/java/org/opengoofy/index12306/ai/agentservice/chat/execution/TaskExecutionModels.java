@@ -22,11 +22,14 @@ public final class TaskExecutionModels {
      * 单个子任务的稳定执行状态。
      */
     public enum TaskExecutionStatus {
+        PENDING,
+        RUNNING,
         SUCCESS,
         NEEDS_INPUT,
         BLOCKED,
         TIMED_OUT,
-        FAILED
+        FAILED,
+        CANCELLED
     }
 
     /**
@@ -129,6 +132,33 @@ public final class TaskExecutionModels {
                     TaskExecutionStatus.TIMED_OUT,
                     question,
                     "该查询执行超时，请稍后重试。",
+                    List.of(),
+                    null,
+                    null);
+        }
+
+        /**
+         * 创建轮次被取消时尚未完成任务的稳定取消结果。
+         *
+         * @param taskId 当前任务标识
+         * @param sequence 当前任务顺序
+         * @param intent 当前任务意图
+         * @param question 当前独立问题
+         * @return 不包含执行中间数据的取消结果
+         */
+        public static TaskExecutionResult cancelled(
+                String taskId,
+                int sequence,
+                AgentIntent intent,
+                String question) {
+            // 取消结果只用于持久化检查点，前端最终状态仍以 Turn 的 CANCELLED 为准。
+            return new TaskExecutionResult(
+                    taskId,
+                    sequence,
+                    intent,
+                    TaskExecutionStatus.CANCELLED,
+                    question,
+                    "当前轮次已取消，本任务未继续执行。",
                     List.of(),
                     null,
                     null);

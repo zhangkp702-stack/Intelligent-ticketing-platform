@@ -1,8 +1,9 @@
 package org.opengoofy.index12306.ai.agentservice.chat.service;
 
-import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCancelRequest;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatCommand;
 import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.ChatEvent;
+import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.PrepareTurnResponse;
+import org.opengoofy.index12306.ai.agentservice.chat.model.AgentChatModels.TurnStatusView;
 import reactor.core.publisher.Flux;
 
 /**
@@ -20,6 +21,24 @@ public interface AgentChatService {
     String createConversation(String userId, String title);
 
     /**
+     * 为当前用户预创建尚未执行的服务端轮次。
+     *
+     * @param userId 用户标识
+     * @param conversationId 会话标识
+     * @return 轮次标识、提交令牌和截止时间
+     */
+    PrepareTurnResponse prepareTurn(String userId, String conversationId);
+
+    /**
+     * 查询当前用户轮次的持久化状态和最终结果。
+     *
+     * @param userId 用户标识
+     * @param turnId 轮次标识
+     * @return 当前轮次安全视图
+     */
+    TurnStatusView getTurn(String userId, String turnId);
+
+    /**
      * 执行一轮完整对话并返回流式事件。
      *
      * @param command 对话命令
@@ -28,13 +47,22 @@ public interface AgentChatService {
     Flux<ChatEvent> stream(ChatCommand command);
 
     /**
+     * 从客户端最后确认的事件序号继续读取同一轮次，不重复执行模型或业务工具。
+     *
+     * @param command 原轮次及本次网络尝试信息
+     * @param lastEventSequence 客户端最后收到的持久化事件序号，尚未收到时为 0
+     * @return 从下一事件开始的可重放 SSE 流
+     */
+    Flux<ChatEvent> resume(ChatCommand command, long lastEventSequence);
+
+    /**
      * 取消当前用户正在运行的对话轮次。
      *
      * @param userId 用户标识
-     * @param request 取消请求
+     * @param turnId 服务端轮次标识
      * @return 找到并取消运行中轮次时返回 true
      */
-    boolean cancel(String userId, ChatCancelRequest request);
+    boolean cancel(String userId, String turnId);
 
     /**
      * 将执行异常转换为稳定的前端错误事件。
