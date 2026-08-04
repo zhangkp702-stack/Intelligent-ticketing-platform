@@ -16,22 +16,49 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ConversationSummaryEntity extends AgentBaseEntity {
 
+    /**
+     * 摘要所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 模型生成的完整累计摘要正文。
+     */
     private String summaryContent;
 
+    /**
+     * 从会话中提取的结构化业务状态 JSON。
+     */
     private String structuredState;
 
+    /**
+     * 当前摘要已覆盖的最大消息序号。
+     */
     private long summarizedThroughSequence;
 
+    /**
+     * 会话摘要的业务版本号。
+     */
     private int summaryVersion;
 
+    /**
+     * 当前摘要累计覆盖的原始消息数量。
+     */
     private int sourceMessageCount;
 
+    /**
+     * 生成当前摘要的模型服务商标识。
+     */
     private String providerId;
 
+    /**
+     * 生成当前摘要的路由候选标识。
+     */
     private String candidateId;
 
+    /**
+     * 生成当前摘要的模型标识。
+     */
     private String modelId;
 
     private ConversationSummaryEntity(String conversationId, Instant now) {

@@ -18,16 +18,34 @@ import java.time.Instant;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class AgentWorkflowEntity extends AgentBaseEntity {
 
+    /**
+     * 工作流所属的用户标识。
+     */
     private String userId;
 
+    /**
+     * 工作流所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 由服务端推进的业务工作流类型。
+     */
     private WorkflowType workflowType;
 
+    /**
+     * 工作流当前所处阶段。
+     */
     private WorkflowStage stage;
 
+    /**
+     * 不含敏感信息且经过服务端校验的工作流上下文 JSON。
+     */
     private String contextJson;
 
+    /**
+     * 工作流允许继续推进的截止时间。
+     */
     private Instant expiresAt;
 
     /**

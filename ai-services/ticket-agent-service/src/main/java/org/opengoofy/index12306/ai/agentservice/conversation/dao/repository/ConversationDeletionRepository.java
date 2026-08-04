@@ -11,6 +11,15 @@ import org.apache.ibatis.annotations.Param;
 public interface ConversationDeletionRepository {
 
     /**
+     * 删除会话关联的动作对账 Outbox 和 Inbox 状态。
+     *
+     * @param conversationId 会话标识
+     */
+    @Delete("DELETE FROM t_agent_action_reconciliation WHERE action_id IN "
+            + "(SELECT id FROM t_agent_action_draft WHERE conversation_id = #{conversationId})")
+    void deleteActionReconciliationsByConversationId(@Param("conversationId") String conversationId);
+
+    /**
      * 删除会话关联的操作执行记录。
      *
      * @param conversationId 会话标识
@@ -74,6 +83,24 @@ public interface ConversationDeletionRepository {
      */
     @Delete("DELETE FROM t_agent_conversation_summary WHERE conversation_id = #{conversationId}")
     void deleteSummariesByConversationId(@Param("conversationId") String conversationId);
+
+    /**
+     * 删除会话各轮次关联的持久化任务计划和执行结果。
+     *
+     * @param conversationId 会话标识
+     */
+    @Delete("DELETE FROM t_agent_task_execution WHERE turn_id IN "
+            + "(SELECT id FROM t_agent_turn WHERE conversation_id = #{conversationId})")
+    void deleteTaskExecutionsByConversationId(@Param("conversationId") String conversationId);
+
+    /**
+     * 删除会话各轮次关联的可重放 SSE 事件。
+     *
+     * @param conversationId 会话标识
+     */
+    @Delete("DELETE FROM t_agent_stream_event WHERE turn_id IN "
+            + "(SELECT id FROM t_agent_turn WHERE conversation_id = #{conversationId})")
+    void deleteStreamEventsByConversationId(@Param("conversationId") String conversationId);
 
     /**
      * 删除会话关联的问答轮次。

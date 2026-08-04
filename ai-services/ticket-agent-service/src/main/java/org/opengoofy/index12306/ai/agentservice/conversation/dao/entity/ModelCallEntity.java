@@ -19,38 +19,89 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ModelCallEntity extends AgentBaseEntity {
 
+    /**
+     * 本次模型调用所属的请求标识。
+     */
     private String requestId;
 
+    /**
+     * 本次模型调用所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 本次模型调用关联的问答轮次标识。
+     */
     private String turnId;
 
+    /**
+     * 模型在当前调用链中承担的业务角色。
+     */
     private ModelRole role;
 
+    /**
+     * 实际调用的模型服务商标识。
+     */
     private String providerId;
 
+    /**
+     * 模型路由选中的候选标识。
+     */
     private String candidateId;
 
+    /**
+     * 实际调用的模型标识。
+     */
     private String modelId;
 
+    /**
+     * 当前业务角色下的调用尝试序号。
+     */
     private int attemptNo;
 
+    /**
+     * 当前调用在模型降级候选链中的索引。
+     */
     private int fallbackIndex;
 
+    /**
+     * 本次模型调用结果。
+     */
     private ModelAttemptOutcome outcome;
 
+    /**
+     * 模型调用失败分类；调用成功时为空。
+     */
     private ModelFailureCategory failureCategory;
 
+    /**
+     * 模型调用总耗时，单位为毫秒。
+     */
     private long latencyMillis;
 
+    /**
+     * 模型调用消耗的提示词令牌数。
+     */
     private Integer promptTokens;
 
+    /**
+     * 模型调用生成的补全令牌数。
+     */
     private Integer completionTokens;
 
+    /**
+     * 模型调用消耗的总令牌数。
+     */
     private Integer totalTokens;
 
+    /**
+     * 流式调用是否已经向客户端发送首个响应分片。
+     */
     private boolean firstChunkEmitted;
 
+    /**
+     * 调用失败时捕获的异常类型名称。
+     */
     private String exceptionType;
 
     private ModelCallEntity(ModelCallData data, Instant now) {

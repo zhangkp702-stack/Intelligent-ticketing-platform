@@ -17,28 +17,64 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ToolCallEntity extends AgentBaseEntity {
 
+    /**
+     * 本次工具调用所属的请求标识。
+     */
     private String requestId;
 
+    /**
+     * 本次工具调用所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 本次工具调用关联的问答轮次标识。
+     */
     private String turnId;
 
+    /**
+     * 被调用的 MCP 工具名称。
+     */
     private String toolName;
 
+    /**
+     * 提供该工具的 MCP 服务名称。
+     */
     private String mcpServer;
 
+    /**
+     * 当前请求内的工具调用序号。
+     */
     private int invocationNo;
 
+    /**
+     * 本次工具调用结果。
+     */
     private ToolCallOutcome outcome;
 
+    /**
+     * 工具调用总耗时，单位为毫秒。
+     */
     private long latencyMillis;
 
+    /**
+     * 工具调用失败时记录的稳定分类。
+     */
     private String failureCategory;
 
+    /**
+     * 工具请求参数的 SHA-256 指纹，不保存参数正文。
+     */
     private String requestFingerprint;
 
+    /**
+     * 工具响应包含的业务条目数量。
+     */
     private Integer responseItemCount;
 
+    /**
+     * 工具调用异常的类型名称，不包含异常正文。
+     */
     private String exceptionType;
 
     /**

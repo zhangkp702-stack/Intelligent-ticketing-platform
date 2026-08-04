@@ -79,7 +79,7 @@ TICKET_MCP_INTERNAL_SECRET=Agent与MCP服务一致的至少32字符密钥
 }
 ```
 
-SSE `/api/agent-service/chat/stream` 在 `done` 前增加 `action_required` 事件。确认令牌不进入模型回答正文。
+SSE `/api/agent-service/turns/{turnId}/stream` 在 `done` 前增加 `action_required` 事件。确认令牌不进入模型回答正文。
 
 ## 6. 确认与查询接口
 
@@ -110,19 +110,35 @@ userId: 当前用户标识
 - `AWAITING_CONFIRMATION`：等待用户确认。
 - `EXECUTING`：已经领取执行权，不能重复提交。
 - `SUCCEEDED`：购票成功，可读取脱敏订单结果。
-- `UNKNOWN`：下游结果无法确定，应先查询本人订单，禁止自动重试。
+- `UNKNOWN`：下游结果暂时无法确定，禁止自动重放写操作，等待后台对账。
+- `RECONCILING`：后台已唯一领取对账事件，正在只读查询同一 `actionId` 的下游事实。
 - `EXPIRED`：确认令牌已过期，需要重新发起对话生成草案。
 
 ## 7. 启动顺序
 
-1. 执行 V3 数据库迁移或让 Agent 服务通过 Flyway 自动迁移。
+1. 执行至 V8 数据库迁移或让 Agent 服务通过 Flyway 自动迁移。
 2. 配置 Agent 与 MCP 共用的内部签名密钥，以及 Agent 确认密钥。
 3. 先启动票务、用户、订单等原有业务服务。
 4. 启动 `ticket-mcp-server`，确认只读固定链工具和专用确认执行工具均已注册。
 5. 启动启用了 MCP 客户端的 `ticket-agent-service`。
 6. 通过查询乘车人、查询余票、生成草案、确认购票、查询订单的顺序执行联调。
 
-## 8. 验证结果
+## 8. UNKNOWN 自动对账
+
+真实写调用超时后，Agent 在保存 `UNKNOWN` 的同一数据库事务中写入
+`t_agent_action_reconciliation`。该记录同时承担事务 Outbox 发布状态和 MQ Inbox
+领取状态，数据库唯一 `action_id` 防止同一操作产生多个恢复任务。
+
+RocketMQ 消费者领取后只调用 `query_confirmed_action_status`，不会再次调用购票、取消或退票工具。
+ticket-service 按当前用户查询 `t_business_operation`，只返回操作状态和脱敏白名单结果：
+
+- `SUCCEEDED`：Agent 原子恢复草案、执行审计和对账任务为成功。
+- `FAILED`：只有下游事实表明确失败时，Agent 才结束为失败。
+- `PROCESSING` 或查询异常：恢复为 `UNKNOWN` 并延迟重查；达到上限后保留 `UNKNOWN`，转人工核对。
+
+消费者宕机由数据库租约恢复。恢复时事件、草案和执行审计一起退回可领取状态，重复 MQ 消息因行锁和状态条件被忽略。
+
+## 9. 验证结果
 
 已执行：
 

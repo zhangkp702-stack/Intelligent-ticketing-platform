@@ -18,38 +18,89 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class SummaryTaskEntity extends AgentBaseEntity {
 
+    /**
+     * 摘要任务所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 当前任务期望摘要覆盖到的最大消息序号。
+     */
     private long desiredThroughSequence;
 
+    /**
+     * 当前一次执行已冻结的摘要消息边界。
+     */
     private Long processingThroughSequence;
 
+    /**
+     * 当前任务预期更新的会话摘要版本。
+     */
     private int expectedSummaryVersion;
 
+    /**
+     * 摘要任务发布事件版本，用于识别过期 MQ 消息。
+     */
     private long eventVersion;
 
+    /**
+     * 摘要任务当前状态。
+     */
     private SummaryTaskStatus status;
 
+    /**
+     * 当前事件版本已经执行的次数。
+     */
     private int attemptCount;
 
+    /**
+     * 当前任务允许执行的最大次数。
+     */
     private int maxAttempts;
 
+    /**
+     * 失败后允许再次执行的最早时间。
+     */
     private Instant nextRetryAt;
 
+    /**
+     * 当前持有任务执行租约的工作节点标识。
+     */
     private String leaseOwner;
 
+    /**
+     * 当前任务执行租约的截止时间。
+     */
     private Instant leaseUntil;
 
+    /**
+     * RocketMQ 返回的消息标识。
+     */
     private String mqMessageId;
 
+    /**
+     * 当前事件版本成功发布到 RocketMQ 的时间。
+     */
     private Instant publishedAt;
 
+    /**
+     * 最近一次执行失败的稳定分类。
+     */
     private String failureCategory;
 
+    /**
+     * 最近一次执行失败的脱敏并截断后的说明。
+     */
     private String failureMessage;
 
+    /**
+     * 最近一次执行开始时间。
+     */
     private Instant startedAt;
 
+    /**
+     * 任务进入成功或失败终态的时间。
+     */
     private Instant finishedAt;
 
     private SummaryTaskEntity(

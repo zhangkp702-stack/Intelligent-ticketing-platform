@@ -17,12 +17,24 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ConversationEntity extends AgentBaseEntity {
 
+    /**
+     * 会话所属用户标识。
+     */
     private String userId;
 
+    /**
+     * 会话展示标题。
+     */
     private String title;
 
+    /**
+     * 会话当前状态。
+     */
     private ConversationStatus status;
 
+    /**
+     * 会话内已分配的最大消息序号。
+     */
     private long lastMessageSequence;
 
     private ConversationEntity(String userId, String title, Instant now) {

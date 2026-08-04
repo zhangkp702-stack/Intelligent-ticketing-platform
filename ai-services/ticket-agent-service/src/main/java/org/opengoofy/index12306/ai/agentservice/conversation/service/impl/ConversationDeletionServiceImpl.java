@@ -50,6 +50,7 @@ public class ConversationDeletionServiceImpl implements ConversationDeletionServ
         }
 
         // 按依赖关系先删除关联记录，最后删除会话主记录，确保不会留下孤儿数据。
+        conversationDeletionRepository.deleteActionReconciliationsByConversationId(conversationId);
         conversationDeletionRepository.deleteActionExecutionsByConversationId(conversationId);
         conversationDeletionRepository.deleteActionDraftsByConversationId(conversationId);
         conversationDeletionRepository.deleteWorkflowsByConversationId(conversationId);
@@ -58,6 +59,8 @@ public class ConversationDeletionServiceImpl implements ConversationDeletionServ
         conversationDeletionRepository.deleteContextSnapshotsByConversationId(conversationId);
         conversationDeletionRepository.deleteSummaryTasksByConversationId(conversationId);
         conversationDeletionRepository.deleteSummariesByConversationId(conversationId);
+        conversationDeletionRepository.deleteTaskExecutionsByConversationId(conversationId);
+        conversationDeletionRepository.deleteStreamEventsByConversationId(conversationId);
         conversationDeletionRepository.deleteTurnsByConversationId(conversationId);
         conversationDeletionRepository.deleteMessagesByConversationId(conversationId);
         conversationRepository.deleteById(conversationId);

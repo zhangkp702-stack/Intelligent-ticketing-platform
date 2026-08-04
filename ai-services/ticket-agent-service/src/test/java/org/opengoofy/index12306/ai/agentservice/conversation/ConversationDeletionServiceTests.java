@@ -52,19 +52,25 @@ class ConversationDeletionServiceTests {
     @Test
     void deleteConversationRemovesOwnedConversationAndRelatedMemory() {
         String userId = unique("user");
-        String requestId = unique("request");
         ConversationEntity conversation = conversationMemoryService.createConversation(userId, "待删除会话");
+        // 使用服务端签发的轮次凭证写入待删除数据。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
         ConversationMemoryService.StartedTurn started = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
-                        userId, conversation.getId(), requestId, requestId, "查询北京到上海", 8));
+                        userId, conversation.getId(), preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "alice", "查询北京到上海", 8));
         conversationMemoryService.completeTurn(
-                new ConversationMemoryService.CompleteTurnCommand(userId, started.turnId(), "已找到车次", 8));
+                new ConversationMemoryService.CompleteTurnCommand(
+                        userId, started.turnId(), "已找到车次", 8,
+                        started.executionOwner(), started.fencingToken()));
         conversationDeletionService.deleteConversation(userId, conversation.getId());
 
         assertThat(conversationRepository.selectById(conversation.getId())).isNull();
         assertThat(messageRepository.findByConversationIdAndSequenceNoGreaterThanOrderBySequenceNoAsc(
                 conversation.getId(), 0)).isEmpty();
-        assertThat(turnRepository.findByConversationIdAndRequestId(conversation.getId(), requestId)).isEmpty();
+        assertThat(turnRepository.findByConversationIdAndRequestId(
+                conversation.getId(), started.turnId())).isEmpty();
         assertThat(conversationSummaryRepository.findByConversationId(conversation.getId())).isEmpty();
         assertThat(summaryTaskRepository.findByConversationId(conversation.getId())).isEmpty();
     }

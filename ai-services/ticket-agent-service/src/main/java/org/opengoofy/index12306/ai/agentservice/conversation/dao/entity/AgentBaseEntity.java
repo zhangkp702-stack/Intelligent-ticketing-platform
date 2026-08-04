@@ -18,16 +18,28 @@ import java.util.UUID;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public abstract class AgentBaseEntity {
 
+    /**
+     * 实体主键，创建实体时生成的 32 位无分隔符 UUID。
+     */
     @TableId(value = "id", type = IdType.INPUT)
     private String id;
 
+    /**
+     * MyBatis-Plus 乐观锁版本号。
+     */
     @Version
     @TableField("version")
     private long version;
 
+    /**
+     * 实体创建时间。
+     */
     @TableField("created_at")
     private Instant createdAt;
 
+    /**
+     * 实体最近一次更新时间。
+     */
     @TableField("updated_at")
     private Instant updatedAt;
 

@@ -18,24 +18,54 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class MessageEntity extends AgentBaseEntity {
 
+    /**
+     * 消息所属的会话标识。
+     */
     private String conversationId;
 
+    /**
+     * 消息关联的问答轮次标识。
+     */
     private String turnId;
 
+    /**
+     * 消息在会话内严格递增的序号。
+     */
     private long sequenceNo;
 
+    /**
+     * 消息发送方角色。
+     */
     private MessageRole role;
 
+    /**
+     * 消息的业务类型。
+     */
     private MessageType messageType;
 
+    /**
+     * 消息正文。
+     */
     private String content;
 
+    /**
+     * 消息正文的格式。
+     */
     private String contentFormat;
 
+    /**
+     * 消息正文估算或统计的令牌数量。
+     */
     private int tokenCount;
 
+    /**
+     * 产生或接收该消息的请求标识。
+     */
     private String requestId;
 
+    /**
+     * 消息写入幂等键，用于避免同一会话内重复落库。
+     */
     private String idempotencyKey;
 
     private MessageEntity(

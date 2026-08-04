@@ -123,20 +123,22 @@ class AgentConversationHistoryApiTests {
      * @return 测试会话标识集合
      */
     private Fixture createConversationFixture(String userId) {
-        String requestId = unique("request");
         ConversationEntity conversation = conversationMemoryService.createConversation(
                 userId, "历史恢复测试");
-        // 草案只能绑定运行中的可信轮次，因此先写入用户问题。
+        // 草案只能绑定运行中的可信轮次，因此先预创建轮次并写入用户问题。
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
         ConversationMemoryService.StartedTurn turn = conversationMemoryService.startTurn(
                 new ConversationMemoryService.StartTurnCommand(
                         userId,
                         conversation.getId(),
-                        requestId,
-                        requestId,
+                        preparedTurn.turnId(),
+                        preparedTurn.submissionToken(),
+                        "history-test-user",
                         "帮我购买测试车票",
                         8));
         AgentRequestContext context = new AgentRequestContext(
-                requestId,
+                turn.turnId(),
                 userId,
                 "history-test-user",
                 conversation.getId(),
@@ -158,7 +160,9 @@ class AgentConversationHistoryApiTests {
                         userId,
                         turn.turnId(),
                         "已为你生成购票确认卡片",
-                        10));
+                        10,
+                        turn.executionOwner(),
+                        turn.fencingToken()));
         return new Fixture(
                 conversation.getId(), turn.turnId(), actionId);
     }

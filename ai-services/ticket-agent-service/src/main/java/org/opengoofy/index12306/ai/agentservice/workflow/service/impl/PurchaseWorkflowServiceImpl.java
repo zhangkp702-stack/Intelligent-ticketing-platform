@@ -249,6 +249,7 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
             String conversationId) {
         // 规划模型只需要工作流阶段和可用于解析指代的业务事实，不需要乘车人内部标识。
         return workflowService.findActive(userId, conversationId)
+                // 只获取购票工作流
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
                 .map(workflow -> {
                     PurchaseWorkflowContext context = readContext(workflow.getContextJson());
