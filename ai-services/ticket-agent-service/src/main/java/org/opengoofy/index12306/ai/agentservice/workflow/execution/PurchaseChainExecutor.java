@@ -9,6 +9,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.Pu
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerResolutionResult;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseInputCollectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.PassengerResolutionStatus;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
@@ -92,7 +93,29 @@ public class PurchaseChainExecutor {
             return new PurchaseChainResult("已按您提供的信息生成购票草案，请核对后确认下单。");
         }
 
-        ExtractionResult extraction = validateExtractedRequest(extracted);
+        // 不完整购票意图也先落入工作流；当前轮次只覆盖明确给出的字段，旧字段由服务端上下文续用。
+        LocalDate normalizedDepartureDate = extracted == null ? null : departureDate(extracted.departureDate());
+        PurchaseInputCollectionResult collectedInput = purchaseWorkflowService.collectInput(
+                context,
+                extracted == null ? null : extracted.departure(),
+                extracted == null ? null : extracted.arrival(),
+                normalizedDepartureDate == null ? null : normalizedDepartureDate.toString(),
+                extracted == null ? null : seatClass(extracted.seatClass()),
+                extracted == null ? List.of() : extracted.passengerNames());
+        if (!collectedInput.readyForTrainQuery()) {
+            return new PurchaseChainResult("购票信息不完整：缺少"
+                    + String.join("、", collectedInput.missingFields()) + "。");
+        }
+
+        PurchaseWorkflowContext collectedContext = collectedInput.context();
+        ExtractionResult extraction = validateExtractedRequest(new PurchaseIntentData(
+                collectedContext.departure(),
+                collectedContext.arrival(),
+                collectedContext.departureDate(),
+                extracted == null ? null : extracted.trainNumber(),
+                extracted == null ? null : extracted.departureTime(),
+                PurchaseSeatClass.fromCode(collectedContext.seatType()).label(),
+                collectedContext.requestedPassengerNames()));
         if (extraction.request() == null) {
             return new PurchaseChainResult("购票信息不完整：缺少" + String.join("、", extraction.missingFields()) + "。");
         }

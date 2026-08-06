@@ -52,6 +52,28 @@ public final class PurchaseWorkflowModels {
     }
 
     /**
+     * @param workflowId 活动购票工作流标识
+     * @param stage 当前输入收集阶段
+     * @param context 已合并的服务端购票上下文
+     * @param missingFields 继续查询车次前仍缺少的字段名称
+     */
+    public record PurchaseInputCollectionResult(
+            String workflowId,
+            WorkflowStage stage,
+            PurchaseWorkflowContext context,
+            List<String> missingFields) {
+
+        /**
+         * 判断行程、席别和乘车人是否已经完整，可进入真实余票查询。
+         *
+         * @return 不存在缺失字段时返回 true
+         */
+        public boolean readyForTrainQuery() {
+            return missingFields.isEmpty();
+        }
+    }
+
+    /**
      * @param passengerId 已匹配的乘车人标识
      * @param realName 已匹配的姓名
      */

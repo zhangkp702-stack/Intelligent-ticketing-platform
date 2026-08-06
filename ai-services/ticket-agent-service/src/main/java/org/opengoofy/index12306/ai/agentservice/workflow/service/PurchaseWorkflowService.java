@@ -7,6 +7,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowMod
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionRequest;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseInputCollectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowPlanningContext;
 
@@ -17,6 +18,25 @@ import java.util.Optional;
  * 定义购票工作流中的乘车人匹配、选择和草案边界能力。
  */
 public interface PurchaseWorkflowService {
+
+    /**
+     * 合并本轮购票意图中明确给出的字段，并创建或更新同会话的购票工作流。
+     *
+     * @param requestContext 已验证请求上下文
+     * @param departure 本轮明确给出的出发站，可为空
+     * @param arrival 本轮明确给出的到达站，可为空
+     * @param departureDate 已规范化的乘车日期，可为空
+     * @param seatClass 本轮明确给出的席别，可为空
+     * @param passengerNames 本轮明确给出的乘车人姓名，可为空
+     * @return 合并后的上下文和仍需补充的字段
+     */
+    PurchaseInputCollectionResult collectInput(
+            AgentRequestContext requestContext,
+            String departure,
+            String arrival,
+            String departureDate,
+            PurchaseSeatClass seatClass,
+            List<String> passengerNames);
 
     /**
      * 根据用户输入和本人乘车人列表解析购票乘车人。

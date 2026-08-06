@@ -10,6 +10,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowMod
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionRequest;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionView;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseInputCollectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.ResolvedPassenger;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.WorkflowPlanningContext;
@@ -53,6 +54,47 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
             ObjectMapper objectMapper) {
         this.workflowService = workflowService;
         this.objectMapper = objectMapper;
+    }
+
+    /**
+     * 合并当前用户明确补充的购票字段，并让工作流停在下一项需要确定的阶段。
+     *
+     * @param requestContext 当前请求上下文
+     * @param departure 本轮明确给出的出发站，可为空
+     * @param arrival 本轮明确给出的到达站，可为空
+     * @param departureDate 已规范化的乘车日期，可为空
+     * @param seatClass 本轮明确给出的席别，可为空
+     * @param passengerNames 本轮明确给出的乘车人姓名，可为空
+     * @return 服务端合并后的购票上下文与缺失字段
+     */
+    @Override
+    public PurchaseInputCollectionResult collectInput(
+            AgentRequestContext requestContext,
+            String departure,
+            String arrival,
+            String departureDate,
+            PurchaseSeatClass seatClass,
+            List<String> passengerNames) {
+        Optional<AgentWorkflowEntity> active = workflowService.findActive(
+                requestContext.userId(), requestContext.conversationId(), WorkflowType.TICKET_PURCHASE);
+        PurchaseWorkflowContext previous = active
+                .map(workflow -> readContext(workflow.getContextJson()))
+                .orElseGet(this::emptyContext);
+
+        // 当前轮次的非空字段覆盖旧值；没有提及的字段保留，避免要求用户重复输入整段行程。
+        PurchaseWorkflowContext merged = mergeInput(
+                previous, departure, arrival, departureDate, seatClass, passengerNames);
+        WorkflowStage nextStage = nextInputStage(merged);
+        List<String> missingFields = missingFields(merged);
+        AgentWorkflowEntity activeWorkflow = active.orElse(null);
+        if (invalidatesTrainSelection(activeWorkflow, previous, merged)) {
+            // 行程或席别变更会使旧余票、车次和乘车人选择均失效，必须从新的活动工作流重新开始。
+            workflowService.expire(requestContext.userId(), activeWorkflow.getId());
+            activeWorkflow = null;
+        }
+        AgentWorkflowEntity workflow = saveCollectedInput(requestContext, activeWorkflow, merged, nextStage);
+        return new PurchaseInputCollectionResult(
+                workflow.getId(), workflow.getStage(), merged, missingFields);
     }
 
     /**
@@ -375,6 +417,13 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
             PurchaseWorkflowContext context,
             boolean selectionRequired) {
         String contextJson = writeContext(context);
+        AgentWorkflowEntity current = workflowService.findActive(
+                        requestContext.userId(), requestContext.conversationId(), WorkflowType.TICKET_PURCHASE)
+                .orElse(null);
+        if (current != null && current.getStage() != WorkflowStage.SELECTING_PASSENGERS) {
+            // 先前只收集到部分输入或等待选车的流程，必须在选定真实列车后重建为乘车人选择流程。
+            workflowService.expire(requestContext.userId(), current.getId());
+        }
         AgentWorkflowEntity workflow = workflowService.startOrResume(
                 requestContext.userId(),
                 requestContext.conversationId(),
@@ -512,5 +561,169 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
             throw new IllegalArgumentException(field + "不能为空");
         }
         return value.trim();
+    }
+
+    /**
+     * 创建不含任何用户业务事实的购票上下文。
+     *
+     * @return 可安全合并第一轮不完整意图的空上下文
+     */
+    private PurchaseWorkflowContext emptyContext() {
+        return new PurchaseWorkflowContext(
+                null, null, null, null, List.of(), List.of(), List.of(), null, List.of());
+    }
+
+    /**
+     * 将当前轮次明确提供的字段合并到旧上下文。
+     *
+     * @param previous 已持久化的旧上下文
+     * @param departure 本轮出发站
+     * @param arrival 本轮到达站
+     * @param departureDate 本轮乘车日期
+     * @param seatClass 本轮席别
+     * @param passengerNames 本轮乘车人姓名
+     * @return 合并后的脱敏工作流上下文
+     */
+    private PurchaseWorkflowContext mergeInput(
+            PurchaseWorkflowContext previous,
+            String departure,
+            String arrival,
+            String departureDate,
+            PurchaseSeatClass seatClass,
+            List<String> passengerNames) {
+        List<String> normalizedNames = normalizeNames(passengerNames);
+        return new PurchaseWorkflowContext(
+                previous.trainId(),
+                firstNonBlank(departure, previous.departure()),
+                firstNonBlank(arrival, previous.arrival()),
+                firstNonBlank(departureDate, previous.departureDate()),
+                normalizedNames.isEmpty() ? safeList(previous.requestedPassengerNames()) : normalizedNames,
+                safeList(previous.passengerOptions()),
+                safeList(previous.selectedPassengerIds()),
+                seatClass == null ? previous.seatType() : Integer.valueOf(seatClass.code()),
+                safeList(previous.chooseSeats()));
+    }
+
+    /**
+     * 按合并后的字段确定本轮继续收集信息或查询车次的工作流阶段。
+     *
+     * @param context 合并后的购票上下文
+     * @return 下一个由服务端控制的工作流阶段
+     */
+    private WorkflowStage nextInputStage(PurchaseWorkflowContext context) {
+        if (!StringUtils.hasText(context.departure())
+                || !StringUtils.hasText(context.arrival())
+                || !StringUtils.hasText(context.departureDate())) {
+            return WorkflowStage.COLLECTING_TRIP;
+        }
+        if (context.seatType() == null) {
+            return WorkflowStage.SELECTING_SEAT_CLASS;
+        }
+        // 车次需要基于实时余票查询选择；即使乘车人尚未提供，也先保留当前完整行程。
+        return WorkflowStage.SELECTING_TRAIN;
+    }
+
+    /**
+     * 返回进入实时车次查询前仍未由用户明确提供的最小字段集合。
+     *
+     * @param context 合并后的购票上下文
+     * @return 稳定顺序的缺失字段名称
+     */
+    private List<String> missingFields(PurchaseWorkflowContext context) {
+        List<String> fields = new ArrayList<>();
+        if (!StringUtils.hasText(context.departure())) {
+            fields.add("出发站");
+        }
+        if (!StringUtils.hasText(context.arrival())) {
+            fields.add("到达站");
+        }
+        if (!StringUtils.hasText(context.departureDate())) {
+            fields.add("乘车日期");
+        }
+        if (context.seatType() == null) {
+            fields.add("席别");
+        }
+        if (context.requestedPassengerNames() == null || context.requestedPassengerNames().isEmpty()) {
+            fields.add("乘车人");
+        }
+        return List.copyOf(fields);
+    }
+
+    /**
+     * 保存不完整购票输入，并在字段变化导致阶段回退时重建同类型活动工作流。
+     *
+     * @param requestContext 当前请求上下文
+     * @param active 已存在的活动购票工作流，可为空
+     * @param context 新的脱敏工作流上下文
+     * @param nextStage 下一个收集或选车阶段
+     * @return 当前有效的购票工作流
+     */
+    private AgentWorkflowEntity saveCollectedInput(
+            AgentRequestContext requestContext,
+            AgentWorkflowEntity active,
+            PurchaseWorkflowContext context,
+            WorkflowStage nextStage) {
+        String contextJson = writeContext(context);
+        if (active == null) {
+            return workflowService.startOrResume(
+                    requestContext.userId(), requestContext.conversationId(), WorkflowType.TICKET_PURCHASE,
+                    nextStage, contextJson);
+        }
+        if (active.getStage() == nextStage) {
+            return workflowService.updateContext(
+                    requestContext.userId(), active.getId(), nextStage, contextJson);
+        }
+        if (nextStage.ordinal() > active.getStage().ordinal()) {
+            return workflowService.advance(
+                    requestContext.userId(), active.getId(), active.getStage(), nextStage, contextJson);
+        }
+        // 用户修改行程或席别会使已有选车/选择结果失效，过期旧工作流后由唯一作用域创建新版本。
+        workflowService.expire(requestContext.userId(), active.getId());
+        return workflowService.startOrResume(
+                requestContext.userId(), requestContext.conversationId(), WorkflowType.TICKET_PURCHASE,
+                nextStage, contextJson);
+    }
+
+    /**
+     * 判断本轮字段修改是否会使已经进入选车后的工作流事实失效。
+     *
+     * @param active 当前活动工作流，可为空
+     * @param previous 修改前上下文
+     * @param merged 修改后上下文
+     * @return 需要过期旧流程并新建工作流时返回 true
+     */
+    private boolean invalidatesTrainSelection(
+            AgentWorkflowEntity active,
+            PurchaseWorkflowContext previous,
+            PurchaseWorkflowContext merged) {
+        if (active == null || active.getStage().ordinal() < WorkflowStage.SELECTING_TRAIN.ordinal()) {
+            return false;
+        }
+        // 这些字段决定余票集合；任何一个变化都不能复用已经展示或选择过的车次。
+        return !java.util.Objects.equals(previous.departure(), merged.departure())
+                || !java.util.Objects.equals(previous.arrival(), merged.arrival())
+                || !java.util.Objects.equals(previous.departureDate(), merged.departureDate())
+                || !java.util.Objects.equals(previous.seatType(), merged.seatType());
+    }
+
+    /**
+     * 优先使用当前轮次的有效文本，未提供时保留旧工作流已确认值。
+     *
+     * @param current 当前轮次文本
+     * @param previous 已持久化文本
+     * @return 可保存的非空文本或 null
+     */
+    private String firstNonBlank(String current, String previous) {
+        return StringUtils.hasText(current) ? current.trim() : previous;
+    }
+
+    /**
+     * 将可能为 null 的旧集合转换为空集合，避免旧版本 JSON 缺字段影响后续合并。
+     *
+     * @param values 旧上下文集合
+     * @return 不可变非空集合
+     */
+    private <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : List.copyOf(values);
     }
 }

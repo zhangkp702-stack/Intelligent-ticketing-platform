@@ -9,6 +9,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowMod
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerResolutionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionRequest;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerSelectionResult;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseInputCollectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.PassengerResolutionStatus;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
@@ -173,6 +174,49 @@ class PurchaseWorkflowServiceTests {
         assertThat(result.status()).isEqualTo(PassengerResolutionStatus.RESOLVED);
         assertThat(result.resolvedPassengers()).extracting("passengerId")
                 .containsExactly("passenger-1");
+    }
+
+    /**
+     * 验证不完整购票表达先保存到工作流，后续补充字段时保留已确认的行程信息。
+     */
+    @Test
+    void collectsPurchaseInputAcrossMessages() {
+        AgentRequestContext requestContext = requestContext();
+
+        // 第一条只给出区间，工作流必须立即存在并明确指出尚缺日期、席别和乘车人。
+        PurchaseInputCollectionResult first = purchaseWorkflowService.collectInput(
+                requestContext, "北京", "上海", null, null, List.of());
+        assertThat(first.stage()).isEqualTo(WorkflowStage.COLLECTING_TRIP);
+        assertThat(first.missingFields()).containsExactly("乘车日期", "席别", "乘车人");
+
+        // 后续补充不会要求重发出发和到达站，信息齐全后进入车次选择阶段而非直接创建草案。
+        PurchaseInputCollectionResult second = purchaseWorkflowService.collectInput(
+                requestContext, null, null, "2026-08-08", PurchaseSeatClass.SECOND_CLASS, List.of("万重山"));
+        assertThat(second.workflowId()).isEqualTo(first.workflowId());
+        assertThat(second.stage()).isEqualTo(WorkflowStage.SELECTING_TRAIN);
+        assertThat(second.readyForTrainQuery()).isTrue();
+        assertThat(second.context())
+                .extracting("departure", "arrival", "departureDate", "seatType", "requestedPassengerNames")
+                .containsExactly("北京", "上海", "2026-08-08", PurchaseSeatClass.SECOND_CLASS.code(), List.of("万重山"));
+    }
+
+    /**
+     * 验证用户修改已收集的行程字段会废弃旧选车状态并创建新的同类型活动工作流。
+     */
+    @Test
+    void replacesSelectionStateWhenTripFieldChanges() {
+        AgentRequestContext requestContext = requestContext();
+        PurchaseInputCollectionResult first = purchaseWorkflowService.collectInput(
+                requestContext, "北京", "上海", "2026-08-08", PurchaseSeatClass.SECOND_CLASS, List.of("万重山"));
+
+        // 修改日期会使旧车次候选失效，因此返回新的活动工作流而不是复用旧选择状态。
+        PurchaseInputCollectionResult changed = purchaseWorkflowService.collectInput(
+                requestContext, null, null, "2026-08-09", null, List.of());
+        assertThat(changed.workflowId()).isNotEqualTo(first.workflowId());
+        assertThat(changed.stage()).isEqualTo(WorkflowStage.SELECTING_TRAIN);
+        assertThat(changed.context().departureDate()).isEqualTo("2026-08-09");
+        assertThat(Optional.ofNullable(workflowRepository.selectById(first.workflowId())).orElseThrow().getStage())
+                .isEqualTo(WorkflowStage.EXPIRED);
     }
 
     /**

@@ -8,6 +8,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.Pu
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.mcp.context.McpToolContextFactory;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PassengerResolutionResult;
+import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseInputCollectionResult;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.PurchaseWorkflowService;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.PurchaseWorkflowContext;
 import org.opengoofy.index12306.ai.agentservice.workflow.dto.PurchaseWorkflowModels.ResolvedPassenger;
@@ -83,6 +84,15 @@ class PurchaseChainExecutorTests {
         PurchaseWorkflowService workflowService = mock(PurchaseWorkflowService.class);
         when(workflowService.findReadyDraftContext("user-1", "conversation-1"))
                 .thenReturn(Optional.empty());
+        when(workflowService.collectInput(
+                any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PurchaseInputCollectionResult(
+                        "workflow-1",
+                        org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage.SELECTING_TRAIN,
+                        new PurchaseWorkflowContext(
+                                null, "北京", "上海", "2026-07-28", List.of("万重山"),
+                                List.of(), List.of(), PurchaseSeatClass.SECOND_CLASS.code(), List.of()),
+                        List.of()));
         PurchaseChainExecutor service = new PurchaseChainExecutor(
                 providers,
                 new McpToolContextFactory(),
