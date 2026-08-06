@@ -175,7 +175,7 @@ public class CancellationWorkflowServiceImpl implements CancellationWorkflowServ
     @Override
     public Optional<OrderSelectionView> findPendingSelection(String userId, String conversationId) {
         // 页面刷新只恢复仍处于 SELECTING_ORDER 的本人工作流。
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.ORDER_CANCELLATION)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.ORDER_CANCELLATION)
                 .filter(workflow -> workflow.getStage() == WorkflowStage.SELECTING_ORDER)
                 .map(workflow -> {
@@ -197,7 +197,7 @@ public class CancellationWorkflowServiceImpl implements CancellationWorkflowServ
             String userId,
             String conversationId) {
         // 只提供用户原本给出的定位条件和最终选定订单，不传递整页候选订单详情。
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.ORDER_CANCELLATION)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.ORDER_CANCELLATION)
                 .map(workflow -> {
                     CancellationWorkflowContext context = readContext(workflow.getContextJson());
@@ -241,7 +241,7 @@ public class CancellationWorkflowServiceImpl implements CancellationWorkflowServ
     @Override
     public Optional<String> findReadyDraftOrderSn(String userId, String conversationId) {
         // 固定代码链只接受持久化工作流中已经推进到草案阶段的订单号。
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.ORDER_CANCELLATION)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.ORDER_CANCELLATION)
                 .filter(workflow -> workflow.getStage() == WorkflowStage.CREATING_DRAFT)
                 .map(workflow -> readContext(workflow.getContextJson()).selectedOrderSn())
@@ -257,7 +257,8 @@ public class CancellationWorkflowServiceImpl implements CancellationWorkflowServ
      */
     @Override
     public void validateDraft(String userId, String conversationId, String orderSn) {
-        AgentWorkflowEntity workflow = workflowService.findActive(userId, conversationId)
+        AgentWorkflowEntity workflow = workflowService.findActive(
+                userId, conversationId, WorkflowType.ORDER_CANCELLATION)
                 .filter(candidate -> candidate.getWorkflowType() == WorkflowType.ORDER_CANCELLATION)
                 .orElseThrow(() -> new IllegalStateException("取消草案缺少有效的服务端工作流"));
         if (workflow.getStage() != WorkflowStage.CREATING_DRAFT) {
@@ -281,7 +282,7 @@ public class CancellationWorkflowServiceImpl implements CancellationWorkflowServ
     @Override
     public void completeAfterDraft(String userId, String conversationId) {
         // 只有草案创建成功后才结束工作流，失败时保留当前阶段供用户重试。
-        workflowService.findActive(userId, conversationId)
+        workflowService.findActive(userId, conversationId, WorkflowType.ORDER_CANCELLATION)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.ORDER_CANCELLATION)
                 .ifPresent(workflow -> workflowService.complete(
                         userId, workflow.getId(), workflow.getStage(), workflow.getContextJson()));

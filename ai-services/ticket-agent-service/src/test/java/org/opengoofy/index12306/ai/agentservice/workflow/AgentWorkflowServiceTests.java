@@ -77,7 +77,30 @@ class AgentWorkflowServiceTests {
                 WorkflowStage.SELECTING_TRAIN,
                 "{\"trainId\":\"G1\"}");
         assertThat(completed.getStage()).isEqualTo(WorkflowStage.COMPLETED);
-        assertThat(workflowService.findActive(userId, conversationId)).isEmpty();
+        assertThat(workflowService.findActive(userId, conversationId, WorkflowType.TICKET_PURCHASE)).isEmpty();
+    }
+
+    /**
+     * 验证同一会话的不同业务类型各自只保留一条活动工作流。
+     */
+    @Test
+    void keepsIndependentActiveWorkflowForEachType() {
+        String userId = unique("user");
+        String conversationId = unique("conversation");
+
+        // 购票和退票使用不同活动作用域，创建顺序不应让其中任一条链路被拒绝或覆盖。
+        AgentWorkflowEntity purchase = workflowService.startOrResume(
+                userId, conversationId, WorkflowType.TICKET_PURCHASE, WorkflowStage.COLLECTING_TRIP, "{}");
+        AgentWorkflowEntity refund = workflowService.startOrResume(
+                userId, conversationId, WorkflowType.TICKET_REFUND, WorkflowStage.SELECTING_REFUND_ORDER, "{}");
+
+        assertThat(refund.getId()).isNotEqualTo(purchase.getId());
+        assertThat(workflowService.findActive(userId, conversationId, WorkflowType.TICKET_PURCHASE))
+                .map(AgentWorkflowEntity::getId)
+                .contains(purchase.getId());
+        assertThat(workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND))
+                .map(AgentWorkflowEntity::getId)
+                .contains(refund.getId());
     }
 
     /**

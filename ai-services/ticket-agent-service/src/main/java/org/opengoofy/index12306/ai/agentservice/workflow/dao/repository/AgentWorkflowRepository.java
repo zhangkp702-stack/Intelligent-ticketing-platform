@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.opengoofy.index12306.ai.agentservice.workflow.dao.entity.AgentWorkflowEntity;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
+import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowType;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -18,10 +19,11 @@ import java.util.Optional;
 public interface AgentWorkflowRepository extends BaseMapper<AgentWorkflowEntity> {
 
     /**
-     * 查询会话中最近一个尚未结束且未过期的工作流。
+     * 查询会话中指定类型且尚未结束、未过期的工作流。
      *
      * @param userId 当前用户标识
      * @param conversationId 所属会话标识
+     * @param workflowType 工作流类型
      * @param terminalStages 不应被恢复的终态集合
      * @param now 当前时间
      * @return 可继续推进的工作流
@@ -31,6 +33,7 @@ public interface AgentWorkflowRepository extends BaseMapper<AgentWorkflowEntity>
             SELECT * FROM t_agent_workflow
             WHERE user_id = #{userId}
               AND conversation_id = #{conversationId}
+              AND workflow_type = #{workflowType}
               AND stage NOT IN
               <foreach collection="terminalStages" item="stage" open="(" separator="," close=")">
                 #{stage}
@@ -40,11 +43,21 @@ public interface AgentWorkflowRepository extends BaseMapper<AgentWorkflowEntity>
             LIMIT 1
             </script>
             """)
-    Optional<AgentWorkflowEntity> findFirstByUserIdAndConversationIdAndStageNotInAndExpiresAtAfterOrderByUpdatedAtDesc(
+    Optional<AgentWorkflowEntity> findFirstByUserIdAndConversationIdAndWorkflowType(
             @Param("userId") String userId,
             @Param("conversationId") String conversationId,
+            @Param("workflowType") WorkflowType workflowType,
             @Param("terminalStages") Collection<WorkflowStage> terminalStages,
             @Param("now") Instant now);
+
+    /**
+     * 对活动作用域加写锁读取记录，用于串行化同类型工作流的新建或恢复。
+     *
+     * @param activeScopeKey 用户、会话和工作流类型组成的唯一作用域键
+     * @return 已锁定的工作流；不存在时返回空
+     */
+    @Select("SELECT * FROM t_agent_workflow WHERE active_scope_key = #{activeScopeKey} FOR UPDATE")
+    Optional<AgentWorkflowEntity> findLockedByActiveScopeKey(@Param("activeScopeKey") String activeScopeKey);
 
     /**
      * 使用数据库写锁读取工作流，避免同一阶段被并发请求重复推进。

@@ -207,7 +207,7 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
     @Override
     public Optional<PassengerSelectionView> findPendingSelection(String userId, String conversationId) {
         // 页面刷新只恢复数据库中仍处于 SELECTING_PASSENGERS 的购票工作流。
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_PURCHASE)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
                 .filter(workflow -> workflow.getStage() == WorkflowStage.SELECTING_PASSENGERS)
                 .map(workflow -> toSelectionView(workflow, readContext(workflow.getContextJson()), List.of()));
@@ -223,7 +223,7 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
     @Override
     public Optional<PurchaseWorkflowContext> findReadyDraftContext(String userId, String conversationId) {
         // 只有服务端明确推进到 CREATING_DRAFT 的购票工作流才允许进入确定性草案兜底。
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_PURCHASE)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
                 .filter(workflow -> workflow.getStage() == WorkflowStage.CREATING_DRAFT)
                 .map(workflow -> readContext(workflow.getContextJson()))
@@ -247,20 +247,25 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
     public Optional<WorkflowPlanningContext> activeWorkflowContext(
             String userId,
             String conversationId) {
-        // 规划模型只需要工作流阶段和可用于解析指代的业务事实，不需要乘车人内部标识。
-        return workflowService.findActive(userId, conversationId)
+        // 获取到当前还在使用的工作流并返回
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_PURCHASE)
                 // 只获取购票工作流
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
+                //
                 .map(workflow -> {
+                    // 把数据库里的 context_json 反序列化成 PurchaseWorkflowContext
                     PurchaseWorkflowContext context = readContext(workflow.getContextJson());
                     Map<String, Object> facts = new java.util.LinkedHashMap<>();
+
                     putText(facts, "departure", context.departure());
                     putText(facts, "arrival", context.arrival());
                     putText(facts, "departureDate", context.departureDate());
+                    // 用户原本要求但还没落定的乘车人姓名，以不可变副本放入；为空就不放。
                     if (context.requestedPassengerNames() != null
                             && !context.requestedPassengerNames().isEmpty()) {
                         facts.put("requestedPassengerNames", List.copyOf(context.requestedPassengerNames()));
                     }
+                    // 座位类型
                     if (context.seatType() != null) {
                         facts.put("seatClass", PurchaseSeatClass.fromCode(context.seatType()).label());
                     }
@@ -313,7 +318,7 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
             String arrival,
             String departureDate,
             List<String> passengerIds) {
-        AgentWorkflowEntity workflow = workflowService.findActive(userId, conversationId)
+        AgentWorkflowEntity workflow = workflowService.findActive(userId, conversationId, WorkflowType.TICKET_PURCHASE)
                 .filter(candidate -> candidate.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
                 .orElseThrow(() -> new IllegalStateException("购票草案缺少有效的服务端工作流"));
         if (workflow.getStage() != WorkflowStage.CREATING_DRAFT) {
@@ -353,7 +358,7 @@ public class PurchaseWorkflowServiceImpl implements PurchaseWorkflowService {
     @Override
     public void completeAfterDraft(String userId, String conversationId) {
         // 草案表已经持久化成功后再完成工作流，失败调用仍保留原阶段供用户重试。
-        workflowService.findActive(userId, conversationId)
+        workflowService.findActive(userId, conversationId, WorkflowType.TICKET_PURCHASE)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_PURCHASE)
                 .ifPresent(workflow -> workflowService.complete(
                         userId,

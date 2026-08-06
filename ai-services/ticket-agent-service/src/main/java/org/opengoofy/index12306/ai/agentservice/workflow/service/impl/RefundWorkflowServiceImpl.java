@@ -290,7 +290,7 @@ public class RefundWorkflowServiceImpl implements RefundWorkflowService {
      */
     @Override
     public Optional<WorkflowInteractionView> findPendingSelection(String userId, String conversationId) {
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
                 .flatMap(workflow -> pendingView(workflow));
     }
@@ -307,7 +307,7 @@ public class RefundWorkflowServiceImpl implements RefundWorkflowService {
             String userId,
             String conversationId) {
         // 规划模型只接收用户定位条件、已选订单和退票范围数量，不接收订单或车票候选明细。
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
                 .map(workflow -> {
                     RefundWorkflowContext context = readContext(workflow.getContextJson());
@@ -365,7 +365,7 @@ public class RefundWorkflowServiceImpl implements RefundWorkflowService {
     @Override
     public Optional<RefundWorkflowContext> findReadyDraftContext(String userId, String conversationId) {
         // 前端选择结果已经持久化时，固定代码链直接消费该范围，不再交给回答模型解释。
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getStage() == WorkflowStage.CREATING_DRAFT)
                 .map(workflow -> readContext(workflow.getContextJson()));
@@ -387,7 +387,7 @@ public class RefundWorkflowServiceImpl implements RefundWorkflowService {
             String orderSn,
             Integer refundType,
             List<String> orderItemIds) {
-        AgentWorkflowEntity workflow = workflowService.findActive(userId, conversationId)
+        AgentWorkflowEntity workflow = workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND)
                 .filter(candidate -> candidate.getWorkflowType() == WorkflowType.TICKET_REFUND)
                 .orElseThrow(() -> new IllegalStateException("退票草案缺少有效的服务端工作流"));
         if (workflow.getStage() != WorkflowStage.CREATING_DRAFT) {
@@ -417,7 +417,7 @@ public class RefundWorkflowServiceImpl implements RefundWorkflowService {
      */
     @Override
     public void completeAfterDraft(String userId, String conversationId) {
-        workflowService.findActive(userId, conversationId)
+        workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
                 .ifPresent(workflow -> workflowService.complete(
                         userId, workflow.getId(), workflow.getStage(), workflow.getContextJson()));
@@ -432,7 +432,7 @@ public class RefundWorkflowServiceImpl implements RefundWorkflowService {
      */
     @Override
     public Optional<String> selectedOrderForResolution(String userId, String conversationId) {
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getStage() == WorkflowStage.SELECTING_REFUND_TICKETS)
                 .map(workflow -> readContext(workflow.getContextJson()).selectedOrderSn())
@@ -479,7 +479,7 @@ public class RefundWorkflowServiceImpl implements RefundWorkflowService {
             String userId,
             String conversationId,
             String requestedOrderSn) {
-        return workflowService.findActive(userId, conversationId)
+        return workflowService.findActive(userId, conversationId, WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getWorkflowType() == WorkflowType.TICKET_REFUND)
                 .filter(workflow -> workflow.getStage() == WorkflowStage.SELECTING_REFUND_TICKETS
                         || workflow.getStage() == WorkflowStage.CREATING_DRAFT)

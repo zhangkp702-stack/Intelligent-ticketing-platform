@@ -5,6 +5,7 @@ import org.opengoofy.index12306.ai.agentservice.workflow.dao.repository.AgentWor
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowStage;
 import org.opengoofy.index12306.ai.agentservice.workflow.enums.WorkflowType;
 import org.opengoofy.index12306.ai.agentservice.workflow.service.AgentWorkflowService;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -64,17 +65,21 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
         requireNonTerminalStage(initialStage, "初始阶段必须是可执行阶段");
         String normalizedContext = normalizeContext(contextJson);
         Instant now = clock.instant();
+        String activeScopeKey = AgentWorkflowEntity.activeScopeKey(
+                userId.trim(), conversationId.trim(), normalizedWorkflowType);
 
-        // 同一会话只恢复尚未过期的活动工作流，防止多轮对话重复创建相同链路。
+        // 活动作用域按工作流类型隔离，购票、退票等链路可以在同一会话中分别存在。
         Optional<AgentWorkflowEntity> active = workflowRepository
-                .findFirstByUserIdAndConversationIdAndStageNotInAndExpiresAtAfterOrderByUpdatedAtDesc(
-                        userId.trim(), conversationId.trim(), TERMINAL_STAGES, now);
+                .findLockedByActiveScopeKey(activeScopeKey);
         if (active.isPresent()) {
             AgentWorkflowEntity workflow = active.get();
-            if (workflow.getWorkflowType() != normalizedWorkflowType) {
-                throw new IllegalStateException("当前会话已有其他业务工作流正在执行");
+            if (!TERMINAL_STAGES.contains(workflow.getStage()) && workflow.getExpiresAt().isAfter(now)) {
+                // 作用域唯一记录仍有效时直接恢复，避免重复创建相同业务链路。
+                return workflow;
             }
-            return workflow;
+            // 历史过期记录会先释放作用域，随后才能安全创建新的同类型工作流。
+            workflow.expire(now);
+            workflowRepository.updateById(workflow);
         }
 
         // 新工作流统一设置有限有效期，避免长期未完成的会话状态污染后续请求。
@@ -86,27 +91,41 @@ public class AgentWorkflowServiceImpl implements AgentWorkflowService {
                 normalizedContext,
                 now.plus(DEFAULT_WORKFLOW_TTL),
                 now);
-        workflowRepository.insert(workflow);
-        return workflow;
+        try {
+            workflowRepository.insert(workflow);
+            return workflow;
+        } catch (DuplicateKeyException ignored) {
+            // 极端并发下由唯一索引裁决后，读取已提交的同作用域记录并恢复，而不是向用户暴露重复创建错误。
+            return workflowRepository.findFirstByUserIdAndConversationIdAndWorkflowType(
+                            userId.trim(), conversationId.trim(), normalizedWorkflowType,
+                            TERMINAL_STAGES, clock.instant())
+                    .orElseThrow(() -> new IllegalStateException("活动工作流创建冲突，请重试"));
+        }
     }
 
     /**
-     * 查询会话中可以继续执行的工作流。
+     * 查询会话中指定类型且可以继续执行的工作流。
      *
      * @param userId 当前用户标识
      * @param conversationId 所属会话标识
+     * @param workflowType 工作流类型
      * @return 未完成且未过期的工作流
      */
     @Transactional(readOnly = true)
     @Override
-    public Optional<AgentWorkflowEntity> findActive(String userId, String conversationId) {
+    public Optional<AgentWorkflowEntity> findActive(
+            String userId,
+            String conversationId,
+            WorkflowType workflowType) {
         requireText(userId, "用户标识不能为空");
         requireText(conversationId, "会话标识不能为空");
+        WorkflowType normalizedWorkflowType = requireWorkflowType(workflowType);
 
-        // 查询条件同时限制终态和过期时间，调用方不会恢复已经失效的链路。
+        // 查询同时限定类型、终态和过期时间，调用方不会误取其他业务链路。
         return workflowRepository
-                .findFirstByUserIdAndConversationIdAndStageNotInAndExpiresAtAfterOrderByUpdatedAtDesc(
-                        userId.trim(), conversationId.trim(), TERMINAL_STAGES, clock.instant());
+                .findFirstByUserIdAndConversationIdAndWorkflowType(
+                        userId.trim(), conversationId.trim(), normalizedWorkflowType,
+                        TERMINAL_STAGES, clock.instant());
     }
 
     /**

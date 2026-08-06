@@ -29,13 +29,14 @@ public interface AgentWorkflowService {
             String contextJson);
 
     /**
-     * 查询会话最近的活动工作流。
+     * 查询会话中指定类型的活动工作流。
      *
      * @param userId 当前用户标识
      * @param conversationId 会话标识
+     * @param workflowType 工作流类型
      * @return 未终止且未过期的工作流
      */
-    Optional<AgentWorkflowEntity> findActive(String userId, String conversationId);
+    Optional<AgentWorkflowEntity> findActive(String userId, String conversationId, WorkflowType workflowType);
 
     /**
      * 按标识查询当前用户的活动工作流。

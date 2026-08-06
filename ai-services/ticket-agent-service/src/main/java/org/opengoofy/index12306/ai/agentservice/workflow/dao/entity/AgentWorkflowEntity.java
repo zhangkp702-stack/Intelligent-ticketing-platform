@@ -1,5 +1,7 @@
 package org.opengoofy.index12306.ai.agentservice.workflow.dao.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -29,6 +31,12 @@ public class AgentWorkflowEntity extends AgentBaseEntity {
     private String conversationId;
 
     /**
+     * 当前活动工作流的唯一作用域；完成或过期后置空以允许同类型新链路创建。
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String activeScopeKey;
+
+    /**
      * 由服务端推进的业务工作流类型。
      */
     private WorkflowType workflowType;
@@ -42,6 +50,16 @@ public class AgentWorkflowEntity extends AgentBaseEntity {
      * 不含敏感信息且经过服务端校验的工作流上下文 JSON。
      */
     private String contextJson;
+
+    /**
+     * 工作流上下文 JSON 的结构版本，便于后续演进时兼容历史记录。
+     */
+    private int contextSchemaVersion;
+
+    /**
+     * 已经消费到工作流的最新用户消息序号。
+     */
+    private Long lastInputSequence;
 
     /**
      * 工作流允许继续推进的截止时间。
@@ -67,6 +85,20 @@ public class AgentWorkflowEntity extends AgentBaseEntity {
     }
 
     /**
+     * 生成不会因用户或会话标识中包含分隔符而冲突的活动工作流作用域键。
+     *
+     * @param userId 当前用户标识
+     * @param conversationId 所属会话标识
+     * @param workflowType 工作流类型
+     * @return 数据库唯一索引使用的活动作用域键
+     */
+    public static String activeScopeKey(String userId, String conversationId, WorkflowType workflowType) {
+        // 使用长度前缀保留边界，避免简单字符串拼接在特殊标识下产生歧义。
+        return userId.length() + ":" + userId + "|"
+                + conversationId.length() + ":" + conversationId + "|" + workflowType.name();
+    }
+
+    /**
      * 推进工作流阶段并替换由服务端验证后的上下文。
      *
      * @param stage 下一阶段
@@ -77,6 +109,10 @@ public class AgentWorkflowEntity extends AgentBaseEntity {
         // 阶段和上下文同一实体更新，使前端提交选择后能够以乐观锁防止并发重复推进。
         this.stage = stage;
         this.contextJson = contextJson;
+        // 终态不能继续占用同类型活动作用域，否则后续新请求无法创建新的工作流。
+        if (isTerminalStage(stage)) {
+            this.activeScopeKey = null;
+        }
         touch(now);
     }
 
@@ -88,6 +124,7 @@ public class AgentWorkflowEntity extends AgentBaseEntity {
     public void expire(Instant now) {
         // 过期只终止后续推进，不删除已收集且通过服务端校验的业务上下文。
         this.stage = WorkflowStage.EXPIRED;
+        this.activeScopeKey = null;
         touch(now);
     }
 
@@ -96,10 +133,23 @@ public class AgentWorkflowEntity extends AgentBaseEntity {
         super(now);
         this.userId = userId;
         this.conversationId = conversationId;
+        this.activeScopeKey = activeScopeKey(userId, conversationId, workflowType);
         this.workflowType = workflowType;
         this.stage = stage;
         this.contextJson = contextJson;
+        this.contextSchemaVersion = 1;
         this.expiresAt = expiresAt;
+    }
+
+    /**
+     * 判断工作流阶段是否为不会再恢复的终态。
+     *
+     * @param stage 待判断阶段
+     * @return 完成或过期时返回 true
+     */
+    private static boolean isTerminalStage(WorkflowStage stage) {
+        // 工作流当前只有完成和过期两种终态；新增终态时应同步调整这里和服务层校验集合。
+        return stage == WorkflowStage.COMPLETED || stage == WorkflowStage.EXPIRED;
     }
 
 }
