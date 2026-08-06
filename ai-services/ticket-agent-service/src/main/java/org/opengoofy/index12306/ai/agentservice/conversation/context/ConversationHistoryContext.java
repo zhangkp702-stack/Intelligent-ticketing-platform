@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 会话摘要与最近完整轮次组成的历史上下文。
+ * 会话摘要与最近终态轮次组成的历史上下文。
  *
  * @param conversationId 会话标识
  * @param summaryId 摘要标识
@@ -14,7 +14,7 @@ import java.util.Objects;
  * @param structuredState 结构化业务状态
  * @param summaryVersion 摘要版本
  * @param summarizedThroughSequence 摘要覆盖到的消息序号
- * @param recentTurns 最近完成的历史轮次
+ * @param recentTurns 最近终态历史轮次；失败或取消轮次可能没有助手回答
  * @param currentQuestion 当前用户问题
  * @param messageIds 实际进入历史上下文的消息标识
  * @param fromSequence 历史消息起始序号
@@ -42,7 +42,7 @@ public record ConversationHistoryContext(
      * @param structuredState 结构化业务状态
      * @param summaryVersion 摘要版本
      * @param summarizedThroughSequence 摘要覆盖到的消息序号
-     * @param recentTurns 最近完成的历史轮次
+     * @param recentTurns 最近终态历史轮次；失败或取消轮次可能没有助手回答
      * @param currentQuestion 当前用户问题
      * @param messageIds 实际使用的消息标识
      * @param fromSequence 历史起始序号

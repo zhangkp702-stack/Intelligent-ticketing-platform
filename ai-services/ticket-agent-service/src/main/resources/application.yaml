@@ -105,7 +105,7 @@ index12306:
       internal-secret: ${TICKET_MCP_INTERNAL_SECRET:}
     memory:
       recent-turn-limit: 3
-      summary-trigger-message-count: 12
+      summary-trigger-message-count: 6
       summary-max-attempts: 3
       summary-retry-delay: 30s
       summary-lease-duration: 2m

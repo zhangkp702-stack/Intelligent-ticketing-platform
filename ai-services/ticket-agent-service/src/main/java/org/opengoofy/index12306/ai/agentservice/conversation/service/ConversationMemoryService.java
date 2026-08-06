@@ -39,6 +39,24 @@ public interface ConversationMemoryService {
     StartedTurn startTurn(StartTurnCommand command);
 
     /**
+     * 在当前执行权仍有效时保存问题重写和拆分的持久化副本。
+     *
+     * @param userId 当前用户标识
+     * @param turnId 当前轮次标识
+     * @param executionOwner 当前执行实例标识
+     * @param fencingToken 当前执行围栏令牌
+     * @param hasRewrite 是否使用了不同于原文的独立问题
+     * @param questionResolutionJson 已通过服务端校验的问题解析 JSON
+     */
+    void recordQuestionResolution(
+            String userId,
+            String turnId,
+            String executionOwner,
+            long fencingToken,
+            boolean hasRewrite,
+            String questionResolutionJson);
+
+    /**
      * 完成问答轮次并保存助手消息。
      *
      * @param command 助手回答完成命令

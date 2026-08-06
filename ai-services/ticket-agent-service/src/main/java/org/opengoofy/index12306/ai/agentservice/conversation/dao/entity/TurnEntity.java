@@ -17,6 +17,11 @@ import java.util.Objects;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class TurnEntity extends AgentBaseEntity {
 
+    private static final String REWRITE_STATUS_PENDING = "PENDING";
+    private static final String REWRITE_STATUS_SUCCEEDED = "SUCCEEDED";
+    private static final String REWRITE_STATUS_FAILED = "FAILED";
+    private static final String INPUT_CONSUMPTION_STATUS_PENDING = "PENDING";
+
     /**
      * 轮次所属的会话标识。
      */
@@ -97,6 +102,26 @@ public class TurnEntity extends AgentBaseEntity {
      */
     private String failureCategory;
 
+    /**
+     * 用户问题重写的处理状态；后续阶段以该字段区分未处理、成功和失败。
+     */
+    private String rewriteStatus;
+
+    /**
+     * 当前轮最终加载的问题是否使用了重写后的文本。
+     */
+    private boolean hasRewrite;
+
+    /**
+     * 问题重写、意图和字段解析得到的结构化结果 JSON。
+     */
+    private String questionResolutionJson;
+
+    /**
+     * 当前用户输入被摘要和工作流消费的处理状态。
+     */
+    private String inputConsumptionStatus;
+
     private TurnEntity(String conversationId, Instant submissionExpiresAt, Instant now) {
         super(now);
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId");
@@ -160,6 +185,11 @@ public class TurnEntity extends AgentBaseEntity {
         this.leaseUntil = Objects.requireNonNull(leaseUntil, "leaseUntil");
         this.fencingToken += 1L;
         this.lastHeartbeatAt = now;
+        // 用户问题先进入待解析状态；即使后续模型失败，原始消息仍能被摘要链路消费。
+        this.rewriteStatus = REWRITE_STATUS_PENDING;
+        this.hasRewrite = false;
+        this.questionResolutionJson = null;
+        this.inputConsumptionStatus = INPUT_CONSUMPTION_STATUS_PENDING;
         this.status = TurnStatus.RUNNING;
         this.startedAt = now;
         touch(now);
@@ -265,6 +295,24 @@ public class TurnEntity extends AgentBaseEntity {
     }
 
     /**
+     * 保存已通过服务端校验的问题拆分和重写结果，供后续历史上下文复用。
+     *
+     * @param hasRewrite 是否存在与原文不同的独立问题
+     * @param questionResolutionJson 已校验的问题解析 JSON
+     * @param now 保存时间
+     */
+    public void recordQuestionResolution(boolean hasRewrite, String questionResolutionJson, Instant now) {
+        if (status != TurnStatus.RUNNING) {
+            throw new IllegalStateException("轮次已经结束，不能保存问题解析结果");
+        }
+        // 原始用户消息永远不改写；仅保存可审计的解析副本，供后续请求按需选择。
+        this.hasRewrite = hasRewrite;
+        this.questionResolutionJson = Objects.requireNonNull(questionResolutionJson, "questionResolutionJson");
+        this.rewriteStatus = REWRITE_STATUS_SUCCEEDED;
+        touch(now);
+    }
+
+    /**
      * 记录本轮在生成最终回答前失败。
      *
      * @param category 稳定失败分类
@@ -278,6 +326,10 @@ public class TurnEntity extends AgentBaseEntity {
             long expectedFencingToken,
             Instant now) {
         requireOwner(owner, expectedFencingToken);
+        // 未完成问题解析时显式记录失败，历史加载器会回退到已持久化的原始用户消息。
+        if (REWRITE_STATUS_PENDING.equals(rewriteStatus)) {
+            this.rewriteStatus = REWRITE_STATUS_FAILED;
+        }
         // 只保存稳定分类，不把可能含敏感正文的异常消息写入轮次表。
         this.failureCategory = category;
         this.status = TurnStatus.FAILED;

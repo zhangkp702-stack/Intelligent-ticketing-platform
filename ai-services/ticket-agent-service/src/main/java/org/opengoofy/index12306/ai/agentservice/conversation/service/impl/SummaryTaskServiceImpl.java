@@ -84,6 +84,11 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
             taskRepository.insert(task);
             return Optional.of(task);
         }
+        if (task.getStatus() != SummaryTaskStatus.SUCCEEDED
+                && task.getStatus() != SummaryTaskStatus.FAILED) {
+            // 已排队批次冻结原始边界：下一轮请求可同步补齐该批次，不能把当前问题塞进历史摘要。
+            return Optional.of(task);
+        }
         task.request(throughSequence, summaryVersion, clock.instant());
         // 摘要目标边界在 MyBatis-Plus 下需要显式更新，防止后续消息覆盖该请求。
         taskRepository.updateById(task);
@@ -174,6 +179,42 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
         // 领取状态和租约必须先持久化，避免另一个消费者重复领取同一摘要任务。
         taskRepository.updateById(task);
 
+        return Optional.of(toWorkItem(task));
+    }
+
+    /**
+     * 为上下文加载领取完全位于当前问题之前的已排队摘要批次。
+     *
+     * @param conversationId 会话标识
+     * @param beforeSequence 当前用户消息之前的最大消息序号
+     * @param workerId 当前执行节点标识
+     * @return 成功领取时返回不可变摘要输入；无可领取历史批次时为空
+     */
+    @Transactional
+    @Override
+    public Optional<SummaryWorkItem> claimForContext(
+            String conversationId,
+            long beforeSequence,
+            String workerId) {
+        SummaryTaskEntity task = taskRepository.findLockedByConversationId(conversationId).orElse(null);
+        if (task == null || task.getDesiredThroughSequence() >= beforeSequence) {
+            return Optional.empty();
+        }
+        if (!task.claim(task.getEventVersion(), workerId, clock.instant(), properties.summaryLeaseDuration())) {
+            return Optional.empty();
+        }
+        // 先持久化领取状态，再在事务外调用模型，避免与 MQ 消费者重复处理同一批次。
+        taskRepository.updateById(task);
+        return Optional.of(toWorkItem(task));
+    }
+
+    /**
+     * 读取已领取任务对应的旧摘要和冻结消息范围。
+     *
+     * @param task 已领取摘要任务
+     * @return 不再依赖持久化会话状态的摘要模型输入
+     */
+    private SummaryWorkItem toWorkItem(SummaryTaskEntity task) {
         // 领取事务只冻结边界并读取输入，耗时模型调用不会持有数据库锁。
         ConversationSummaryEntity summary = summaryRepository.findByConversationId(task.getConversationId())
                 .orElse(null);
@@ -189,15 +230,15 @@ public class SummaryTaskServiceImpl implements SummaryTaskService {
             throw new IllegalStateException("摘要任务没有可处理的消息");
         }
 
-        return Optional.of(new SummaryWorkItem(
+        return new SummaryWorkItem(
                 task.getId(),
                 task.getConversationId(),
-                eventVersion,
+                task.getEventVersion(),
                 task.getExpectedSummaryVersion(),
                 processingThrough,
                 summary == null ? null : summary.getSummaryContent(),
                 summary == null ? null : summary.getStructuredState(),
-                messages));
+                messages);
     }
 
     /**

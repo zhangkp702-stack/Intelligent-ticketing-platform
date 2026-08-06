@@ -30,25 +30,25 @@ public interface TurnRepository extends BaseMapper<TurnEntity> {
             @Param("requestId") String requestId);
 
     /**
-     * 查询摘要边界之后最近完成的问答轮次。
+     * 查询摘要边界之后最近可进入上下文的终态轮次。
      *
      * @param conversationId 会话标识
-     * @param status 轮次状态
      * @param sequenceNo 摘要覆盖到的消息序号
      * @param excludedTurnId 当前正在执行、需要排除的轮次标识
      * @param limit 最近轮次数量限制
-     * @return 按助手消息序号倒序排列的完整轮次
+     * @return 按用户消息序号倒序排列的轮次；失败或取消轮次没有助手消息
      */
     @Select("SELECT t.* FROM t_agent_turn t "
             + "JOIN t_agent_message user_message ON t.user_message_id = user_message.id "
-            + "JOIN t_agent_message assistant_message ON t.assistant_message_id = assistant_message.id "
-            + "WHERE t.conversation_id = #{conversationId} AND t.status = #{status} "
-            + "AND user_message.sequence_no > #{sequenceNo} AND assistant_message.sequence_no > #{sequenceNo} "
+            + "LEFT JOIN t_agent_message assistant_message ON t.assistant_message_id = assistant_message.id "
+            + "WHERE t.conversation_id = #{conversationId} "
+            + "AND t.status IN ('COMPLETED', 'FAILED', 'CANCELLED') "
+            + "AND user_message.sequence_no > #{sequenceNo} "
+            + "AND (assistant_message.id IS NULL OR assistant_message.sequence_no > #{sequenceNo}) "
             + "AND (#{excludedTurnId} IS NULL OR t.id <> #{excludedTurnId}) "
-            + "ORDER BY assistant_message.sequence_no DESC LIMIT #{limit}")
-    List<TurnEntity> findRecentCompletedTurns(
+            + "ORDER BY user_message.sequence_no DESC LIMIT #{limit}")
+    List<TurnEntity> findRecentTerminalTurns(
             @Param("conversationId") String conversationId,
-            @Param("status") TurnStatus status,
             @Param("sequenceNo") long sequenceNo,
             @Param("excludedTurnId") String excludedTurnId,
             @Param("limit") int limit);

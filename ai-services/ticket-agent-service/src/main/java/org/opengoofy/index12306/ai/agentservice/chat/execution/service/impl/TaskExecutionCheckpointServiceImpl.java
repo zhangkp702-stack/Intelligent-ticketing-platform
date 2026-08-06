@@ -92,36 +92,51 @@ public class TaskExecutionCheckpointServiceImpl implements TaskExecutionCheckpoi
     @Transactional
     @Override
     public TaskPlan persistPlan(AgentRequestContext context, TaskPlan candidatePlan) {
+        // 防御性校验：计划或任务列表为空时无法固化，后续调度将拿不到任何可执行任务
         if (candidatePlan == null || candidatePlan.tasks() == null || candidatePlan.tasks().isEmpty()) {
             throw new IllegalArgumentException("任务计划不能为空");
         }
         // 所有写路径维持“会话 -> 轮次 -> 任务”锁顺序，并校验当前 Turn fencing token。
         TurnEntity turn = lockOwnedTurn(context);
+        // 幂等检查：查询当前轮次是否已有固化任务行，防止并发重试时重复固化计划
         List<TaskExecutionEntity> existing = taskRepository.findByTurnIdOrderBySequenceNoAsc(context.turnId());
+        // 已有任务行说明该轮次计划之前已固化，按 sequence 顺序解码复用，不再重复写入
         if (!existing.isEmpty()) {
             return decodePlan(existing);
         }
 
+        // 统一取当前时钟时间，作为本次创建全部任务行的创建时间戳
         Instant now = clock.instant();
+        // 收集待落库的任务实体，供最后批量插入使用
         List<TaskExecutionEntity> entities = new ArrayList<>();
+        // 记录“模型临时 taskId -> 服务端主键”的映射，供依赖引用重写使用
         Map<String, String> serverTaskIds = new HashMap<>();
+        // 遍历模型计划中的每个任务，先为它们生成服务端稳定标识
         for (PlannedTask task : candidatePlan.tasks()) {
+            // 创建状态为 PENDING 的任务检查点实体，服务端主键在此刻生成
             TaskExecutionEntity entity = TaskExecutionEntity.pending(
                     context.turnId(), task.sequence(), task.intent(), now);
+            // 收集实体用于后续统一插入
             entities.add(entity);
+            // 建立模型 taskId 与服务端主键的对应关系
             serverTaskIds.put(task.taskId(), entity.getId());
         }
 
         // 依赖引用与任务主键一起重写，模型生成的 task-1 等文本不进入业务幂等边界。
         List<PlannedTask> durableTasks = new ArrayList<>();
+        // 遍历每个任务，组装重写后的持久化版本
         for (int index = 0; index < candidatePlan.tasks().size(); index++) {
+            // 取出当前待重写的模型任务
             PlannedTask source = candidatePlan.tasks().get(index);
+            // 把 dependsOn 中的模型 taskId 通过映射表翻译为服务端主键
             List<String> dependencies = source.dependsOn().stream()
                     .map(serverTaskIds::get)
                     .toList();
+            // 翻译结果存在 null 说明依赖指向了本计划之外的任务，重写阶段直接拦截，不让坏数据落库
             if (dependencies.stream().anyMatch(java.util.Objects::isNull)) {
                 throw new IllegalArgumentException("任务依赖缺少服务端标识");
             }
+            // 组装重写后的不可变计划：taskId 换成服务端主键，业务内容原样保留
             PlannedTask durable = new PlannedTask(
                     entities.get(index).getId(),
                     source.sequence(),
@@ -133,11 +148,16 @@ public class TaskExecutionCheckpointServiceImpl implements TaskExecutionCheckpoi
                     dependencies,
                     source.workflowRelation(),
                     source.unresolvedReferences());
+            // 收集中间产物，最后统一返回
             durableTasks.add(durable);
+            // 把重写后的单任务计划 JSON 绑定到实体，保证恢复时始终读取同一份输入
             entities.get(index).bindPlan(writeJson(durable), now);
         }
+        // 一次性批量插入全部任务检查点，本轮计划固化完成
         entities.forEach(taskRepository::insert);
+        // 计划固化成功后同步顺延轮次租约，保证后续领取任务时执行权仍然有效
         heartbeatOwnedTurn(turn, context, now);
+        // 返回使用服务端主键的持久化计划，供调度执行使用
         return new TaskPlan(List.copyOf(durableTasks));
     }
 
@@ -247,8 +267,10 @@ public class TaskExecutionCheckpointServiceImpl implements TaskExecutionCheckpoi
      * @return 已锁定且归当前 token 所有的轮次
      */
     private TurnEntity lockOwnedTurn(AgentRequestContext context) {
+        // 先快照读，根据turnid获取轮次
         TurnEntity observed = Optional.ofNullable(turnRepository.selectById(context.turnId()))
                 .orElseThrow(() -> new ExecutionLeaseLostException("轮次不存在"));
+        // 根据轮次获取会话
         ConversationEntity conversation = conversationRepository.findLockedById(observed.getConversationId())
                 .orElseThrow(() -> new ExecutionLeaseLostException("会话不存在"));
         if (!conversation.getId().equals(context.conversationId())

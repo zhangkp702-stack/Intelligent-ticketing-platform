@@ -2,6 +2,7 @@ package org.opengoofy.index12306.ai.agentservice.conversation.context;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.opengoofy.index12306.ai.agentservice.conversation.config.AgentMemoryProperties;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationHistoryService;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
@@ -14,7 +15,6 @@ import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.MessageE
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageType;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.entity.TurnEntity;
-import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ContextSnapshotRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationRepository;
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.ConversationSummaryRepository;
@@ -22,6 +22,7 @@ import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.Mess
 import org.opengoofy.index12306.ai.agentservice.conversation.dao.repository.TurnRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -113,10 +114,9 @@ public class ConversationContextLoader {
         ConversationSummaryEntity summary = summaryRepository.findByConversationId(conversationId).orElse(null);
         // 如果是null，说明第一次，不为null就获取最后覆盖的消息的序列id
         long summarizedThrough = summary == null ? 0 : summary.getSummarizedThroughSequence();
-        // 加载最近三轮问答
-        List<TurnEntity> recentTurns = turnRepository.findRecentCompletedTurns(
+        // 最近窗口同时保留完成、失败和取消轮次，避免只有用户问题的失败轮次被静默遗漏。
+        List<TurnEntity> recentTurns = turnRepository.findRecentTerminalTurns(
                 conversationId,
-                TurnStatus.COMPLETED,
                 summarizedThrough,
                 currentTurnId,
                 properties.recentTurnLimit());
@@ -159,9 +159,11 @@ public class ConversationContextLoader {
 
         List<String> messageIds = new ArrayList<>();
         for (TurnEntity turn : turns) {
-            // 完成轮次必须同时引用用户消息和助手消息，批量读取可避免循环访问数据库。
+            // 每条终态轮次都有用户消息；失败或取消轮次可能没有助手消息。
             messageIds.add(turn.getUserMessageId());
-            messageIds.add(turn.getAssistantMessageId());
+            if (turn.getAssistantMessageId() != null) {
+                messageIds.add(turn.getAssistantMessageId());
+            }
         }
         Map<String, MessageEntity> messagesById = new LinkedHashMap<>();
         messageRepository.selectByIds(messageIds)
@@ -180,21 +182,50 @@ public class ConversationContextLoader {
         // 取出用户消息
         MessageEntity userMessage = requireMessage(
                 turn.getUserMessageId(), MessageRole.USER, messagesById);
-        // 取出助手消息
-        MessageEntity assistantMessage = requireMessage(
-                turn.getAssistantMessageId(), MessageRole.ASSISTANT, messagesById);
+        MessageEntity assistantMessage = turn.getAssistantMessageId() == null
+                ? null : requireMessage(turn.getAssistantMessageId(), MessageRole.ASSISTANT, messagesById);
 
-        // 历史上下文只接收文本问答，工具消息仍保留在数据库审计记录中。
+        // 用户问题必须是文本；存在助手消息时也只允许文本，工具审计消息不进入模型历史。
         if (userMessage.getMessageType() != MessageType.TEXT
-                || assistantMessage.getMessageType() != MessageType.TEXT) {
-            throw new IllegalStateException("完整历史轮次必须由文本用户消息和文本助手消息组成");
+                || assistantMessage != null && assistantMessage.getMessageType() != MessageType.TEXT) {
+            throw new IllegalStateException("历史轮次只能包含文本用户消息和文本助手消息");
         }
-        // 转换为大模型需要的文本信息
+        // 解析成功且确有改写时优先使用已持久化的独立问题；原始消息仍作为审计真相保留。
         ConversationTurnContext context = new ConversationTurnContext(
                 turn.getId(),
-                AgentChatMessage.user(userMessage.getContent()),
-                AgentChatMessage.assistant(assistantMessage.getContent()));
+                AgentChatMessage.user(resolveHistoricalQuestion(turn, userMessage.getContent())),
+                assistantMessage == null ? null : AgentChatMessage.assistant(assistantMessage.getContent()));
         return new LoadedTurn(context, userMessage, assistantMessage);
+    }
+
+    /**
+     * 从已校验的问题解析结果中恢复历史轮次的独立问题，异常时安全回退原文。
+     *
+     * @param turn 历史轮次
+     * @param originalQuestion 原始用户问题
+     * @return 可供后续模型理解的历史问题文本
+     */
+    private String resolveHistoricalQuestion(TurnEntity turn, String originalQuestion) {
+        if (!turn.isHasRewrite()
+                || !"SUCCEEDED".equals(turn.getRewriteStatus())
+                || !StringUtils.hasText(turn.getQuestionResolutionJson())) {
+            return originalQuestion;
+        }
+        try {
+            // 只读取经过服务端问题解析校验的独立问题字段，解析异常绝不能导致历史原文丢失。
+            JsonNode tasks = objectMapper.readTree(turn.getQuestionResolutionJson()).path("tasks");
+            List<String> questions = new ArrayList<>();
+            for (JsonNode task : tasks) {
+                String standaloneQuestion = task.path("standaloneQuestion").asText();
+                if (StringUtils.hasText(standaloneQuestion)) {
+                    questions.add(standaloneQuestion.trim());
+                }
+            }
+            return questions.isEmpty() ? originalQuestion : String.join("；", questions);
+        } catch (JsonProcessingException exception) {
+            // 历史 JSON 兼容异常仅影响重写副本，不影响不可变的用户原始消息。
+            return originalQuestion;
+        }
     }
 
     /**
@@ -245,18 +276,23 @@ public class ConversationContextLoader {
         List<String> messageIds = new ArrayList<>();
         // 获取到id
         for (LoadedTurn loadedTurn : loadedDescending) {
-            // 用户消息id
+            // 用户消息 id 始终存在。
             messageIds.add(loadedTurn.userMessage().getId());
-            // 助手回复消息id
-            messageIds.add(loadedTurn.assistantMessage().getId());
+            if (loadedTurn.assistantMessage() != null) {
+                // 完成轮次才有助手回复消息。
+                messageIds.add(loadedTurn.assistantMessage().getId());
+            }
         }
         // 这里是在获取范围，首先获取最高的消息序号
         Long fromSequence = loadedDescending.isEmpty()
                 ? null : loadedDescending.get(0).userMessage().getSequenceNo();
         // 这里是获取结尾的序号
-        Long throughSequence = loadedDescending.isEmpty()
-                ? null : loadedDescending.get(loadedDescending.size() - 1)
-                        .assistantMessage().getSequenceNo();
+        Long throughSequence = loadedDescending.isEmpty() ? null : loadedDescending.stream()
+                .mapToLong(loadedTurn -> loadedTurn.assistantMessage() == null
+                        ? loadedTurn.userMessage().getSequenceNo()
+                        : loadedTurn.assistantMessage().getSequenceNo())
+                .max()
+                .orElseThrow();
         // turns 是消息具体内容，然后是消息的范围，消息的起始id，消息的终止id
         return new LoadedHistory(turns, List.copyOf(messageIds), fromSequence, throughSequence);
     }
@@ -314,7 +350,10 @@ public class ConversationContextLoader {
             }
             for (ConversationTurnContext turn : context.recentTurns()) {
                 updateDigest(digest, turn.userMessage());
-                updateDigest(digest, turn.assistantMessage());
+                if (turn.assistantMessage() != null) {
+                    // 用户问题没有回答时只记录已实际加载的用户消息。
+                    updateDigest(digest, turn.assistantMessage());
+                }
             }
             updateDigest(digest, context.currentQuestion());
             return HexFormat.of().formatHex(digest.digest());

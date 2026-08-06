@@ -51,6 +51,7 @@ public class TaskPlanner {
             助手展示的已核验结果或服务端活动工作流。不得把一个子任务的路线、日期、乘车人、席别或订单号复制给
             另一个无关子任务，不得猜测任何字段。
             当前用户消息覆盖历史中的同一字段。能够根据“当前日期”确定的今天、明天、后天应转换为 yyyy-MM-dd。
+            历史轮次中 assistantMessage 为 null 表示该用户问题没有得到有效回答，不得为它编造助手回复。
 
             用户要求购买“最早”“最晚”或“最便宜”的车次时，必须拆分为一个查票任务和一个购买查询结果的任务，
             不得在问题补全阶段自行选择车次。unresolvedReferences 只填写原文中无法确定所指对象的短语，例如
@@ -193,7 +194,7 @@ public class TaskPlanner {
         Objects.requireNonNull(resolutionPlan, "问题解析结果不能为空");
         Objects.requireNonNull(attemptContext, "模型审计上下文不能为空");
 
-        // 第二阶段只返回业务分类字段，第一阶段的原文和独立问题由服务端保留并合并。
+        // 构造提示词
         Prompt prompt = buildTaskPlanningPrompt(resolutionPlan, activeWorkflowContext);
         ModelCallResult<TaskClassificationPlan> result = structuredModelInvoker.call(
                 ModelRole.TASK_PLANNING,
@@ -226,7 +227,7 @@ public class TaskPlanner {
                 .stream()
                 .map(turn -> new PlanningHistoryTurn(
                         turn.userMessage().content(),
-                        turn.assistantMessage().content()))
+                        turn.assistantMessage() == null ? null : turn.assistantMessage().content()))
                 .toList();
         QuestionResolutionPromptInput input = new QuestionResolutionPromptInput(
                 currentDate.toString(),
@@ -282,7 +283,7 @@ public class TaskPlanner {
      * @param currentDate 上海时区业务日期
      * @param previousSummary 摘要边界前的模型累积摘要
      * @param previousStructuredState 摘要模型生成的结构化状态
-     * @param recentTurns 摘要边界后的最近完整轮次
+     * @param recentTurns 摘要边界后的最近终态轮次；失败轮次的助手回答为空
      * @param activeWorkflowContext 服务端筛选后的活动工作流上下文
      * @param currentQuestion 当前用户原始问题
      */
@@ -307,10 +308,10 @@ public class TaskPlanner {
     }
 
     /**
-     * 供规划模型解析指代的最近完整问答。
+     * 供规划模型解析指代的最近终态问答。
      *
      * @param userMessage 历史用户消息
-     * @param assistantMessage 历史助手回复
+     * @param assistantMessage 历史助手回复；失败或取消轮次为空
      */
     private record PlanningHistoryTurn(
             String userMessage,

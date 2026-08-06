@@ -56,6 +56,19 @@ public interface SummaryTaskService {
     Optional<SummaryWorkItem> claim(String taskId, long eventVersion, String workerId);
 
     /**
+     * 在加载新一轮上下文前领取仅覆盖历史消息的摘要任务。
+     *
+     * @param conversationId 会话标识
+     * @param beforeSequence 当前用户消息之前的最大消息序号
+     * @param workerId 当前执行节点标识
+     * @return 成功领取的历史摘要工作项；任务尚未形成完整历史批次时为空
+     */
+    Optional<SummaryWorkItem> claimForContext(
+            String conversationId,
+            long beforeSequence,
+            String workerId);
+
+    /**
      * 提交新的完整摘要版本并完成任务。
      *
      * @param taskId 任务标识

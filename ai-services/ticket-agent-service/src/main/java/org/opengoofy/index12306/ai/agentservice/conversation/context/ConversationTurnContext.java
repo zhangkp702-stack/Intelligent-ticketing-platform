@@ -5,11 +5,11 @@ import org.opengoofy.index12306.ai.agentservice.conversation.enums.MessageRole;
 import java.util.Objects;
 
 /**
- * 最近上下文中的一轮完整用户问答。
+ * 最近上下文中的一轮用户问答；失败轮次只保留用户问题。
  *
  * @param turnId 已完成轮次标识
  * @param userMessage 用户问题
- * @param assistantMessage 助手回答
+ * @param assistantMessage 助手回答；模型失败或取消时为空
  */
 public record ConversationTurnContext(
         String turnId,
@@ -17,21 +17,20 @@ public record ConversationTurnContext(
         AgentChatMessage assistantMessage) {
 
     /**
-     * 创建完整历史轮次。
+     * 创建历史轮次。
      *
      * @param turnId 已完成轮次标识
      * @param userMessage 用户问题
-     * @param assistantMessage 助手回答
+     * @param assistantMessage 助手回答；失败或取消时为空
      */
     public ConversationTurnContext {
-        // 历史轮次必须同时拥有确定的用户问题和助手回答。
+        // 用户问题始终存在；失败轮次没有助手回答时必须保留该问题，避免它从上下文中静默丢失。
         Objects.requireNonNull(turnId, "turnId");
         Objects.requireNonNull(userMessage, "userMessage");
-        Objects.requireNonNull(assistantMessage, "assistantMessage");
         if (userMessage.role() != MessageRole.USER) {
             throw new IllegalArgumentException("历史轮次用户消息角色必须为 USER");
         }
-        if (assistantMessage.role() != MessageRole.ASSISTANT) {
+        if (assistantMessage != null && assistantMessage.role() != MessageRole.ASSISTANT) {
             throw new IllegalArgumentException("历史轮次助手消息角色必须为 ASSISTANT");
         }
     }

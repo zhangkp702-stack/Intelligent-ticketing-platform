@@ -40,6 +40,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.model.IntentActionModels.Re
 import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentExecutionRouter;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.AgentChatMessage;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationSummaryBarrier;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationTurnContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationContextLoader;
@@ -150,6 +151,9 @@ class AgentChatServiceTests {
                 })
                 .verifyComplete();
         verify(test.memory()).completeTurn(any());
+        // 问题解析完成后必须先持久化，后续轮次才能复用同一份已校验的独立问题。
+        verify(test.memory()).recordQuestionResolution(
+                eq(command.userId()), eq("turn-1"), eq("test-owner"), eq(1L), eq(false), any(String.class));
         verify(test.contextService()).load(
                 command.userId(), command.requestId(), command.conversationId(),
                 "turn-1", "message-1", 1L, command.message());
@@ -790,6 +794,7 @@ class AgentChatServiceTests {
         // 测试上下文只注入固定业务链和最终回答模型，不再创建模型工具提供器。
         ConversationMemoryService memory = mock(ConversationMemoryService.class);
         ConversationContextLoader contextService = mock(ConversationContextLoader.class);
+        ConversationSummaryBarrier summaryBarrier = mock(ConversationSummaryBarrier.class);
         TaskPlanner taskPlanner = mock(TaskPlanner.class);
         ReadTaskChain readTaskChain = mock(ReadTaskChain.class);
         RoutedChatModelService model = mock(RoutedChatModelService.class);
@@ -868,6 +873,7 @@ class AgentChatServiceTests {
         AgentChatPipeline pipeline = new AgentChatPipeline(
                 memory,
                 contextService,
+                summaryBarrier,
                 taskPlanner,
                 new TaskPlanExecutor(chatProperties, chatMetrics),
                 taskCheckpointService,

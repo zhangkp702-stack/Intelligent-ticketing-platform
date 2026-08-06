@@ -35,6 +35,7 @@ import org.opengoofy.index12306.ai.agentservice.chat.planning.TaskPlanner;
 import org.opengoofy.index12306.ai.agentservice.chat.routing.IntentExecutionRouter;
 import org.opengoofy.index12306.ai.agentservice.context.AgentRequestContext;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationHistoryContext;
+import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationSummaryBarrier;
 import org.opengoofy.index12306.ai.agentservice.conversation.enums.TurnStatus;
 import org.opengoofy.index12306.ai.agentservice.conversation.context.ConversationContextLoader;
 import org.opengoofy.index12306.ai.agentservice.conversation.service.ConversationMemoryService;
@@ -82,6 +83,7 @@ public class AgentChatPipeline {
     private static final Logger LOGGER = LoggerFactory.getLogger(AgentChatPipeline.class);
     private final ConversationMemoryService conversationMemoryService;
     private final ConversationContextLoader conversationContextLoader;
+    private final ConversationSummaryBarrier conversationSummaryBarrier;
     private final TaskPlanner taskPlanner;
     private final TaskPlanExecutor taskPlanExecutor;
     private final TaskExecutionCheckpointService taskExecutionCheckpointService;
@@ -197,6 +199,7 @@ public class AgentChatPipeline {
      *
      * @param conversationMemoryService 会话和轮次持久化服务
      * @param conversationContextLoader 会话摘要与最近消息加载器
+     * @param conversationSummaryBarrier 防止历史窗口缺口的摘要兜底器
      * @param taskPlanner 一次完成问题补全、拆分和字段提取的任务规划器
      * @param taskPlanExecutor 依赖感知的多任务执行器
      * @param taskExecutionCheckpointService 服务端任务计划和结果检查点服务
@@ -218,6 +221,7 @@ public class AgentChatPipeline {
     public AgentChatPipeline(
             ConversationMemoryService conversationMemoryService,
             ConversationContextLoader conversationContextLoader,
+            ConversationSummaryBarrier conversationSummaryBarrier,
             TaskPlanner taskPlanner,
             TaskPlanExecutor taskPlanExecutor,
             TaskExecutionCheckpointService taskExecutionCheckpointService,
@@ -237,6 +241,7 @@ public class AgentChatPipeline {
             ObjectMapper objectMapper) {
         this.conversationMemoryService = conversationMemoryService;
         this.conversationContextLoader = conversationContextLoader;
+        this.conversationSummaryBarrier = conversationSummaryBarrier;
         this.taskPlanner = taskPlanner;
         this.taskPlanExecutor = taskPlanExecutor;
         this.taskExecutionCheckpointService = taskExecutionCheckpointService;
@@ -282,7 +287,7 @@ public class AgentChatPipeline {
             // 加载上下文，包括摘要和最近几轮对话，并记录耗时指标，以及全局成功率指标
             ConversationHistoryContext conversationHistory = loadObservedConversationHistory(
                     context, started, currentQuestion, performanceTrace);
-            // 服务端工作流状态只用于补全可信的“继续”“这个”等省略表达。
+            // 获取当前还在允许的工作流
             WorkflowPlanningContext workflowContext = loadActiveWorkflowContext(context);
             // 规划模型只产生受校验的任务计划，不直接调用任何交易工具。
             TaskPlan taskPlan = resolveTaskPlan(
@@ -313,6 +318,11 @@ public class AgentChatPipeline {
         // 记录当前时间
         long contextStartedNanos = System.nanoTime();
         try {
+            // 最近窗口之前的消息必须已有摘要覆盖；MQ 落后时在这里领取已冻结批次补齐。
+            conversationSummaryBarrier.ensureCoveredBeforeCurrentQuestion(
+                    context.conversationId(),
+                    context.turnId(),
+                    started.sequenceNo());
             // 当前问题保持独立，加载历史摘要。
             ConversationHistoryContext conversationHistory =
                     loadConversationHistory(context, started, currentQuestion);
@@ -339,8 +349,10 @@ public class AgentChatPipeline {
         // 工作流优先级与交易固定链一致，规划模型只能读取服务端筛选后的可信状态。
         return purchaseWorkflowService
                 .activeWorkflowContext(context.userId(), context.conversationId())
+                // 没有购票的就查询取消的
                 .or(() -> cancellationWorkflowService.activeWorkflowContext(
                         context.userId(), context.conversationId()))
+                //
                 .or(() -> refundWorkflowService.activeWorkflowContext(
                         context.userId(), context.conversationId()))
                 .orElse(null);
@@ -360,13 +372,15 @@ public class AgentChatPipeline {
             ConversationHistoryContext conversationHistory,
             WorkflowPlanningContext workflowContext,
             RequestPerformanceTrace performanceTrace) {
+        // 大模型调用上下文
         ModelAttemptContext routingAttemptContext = new ModelAttemptContext(
                 context.requestId(), context.conversationId(), context.turnId());
 
         // 第一阶段只拆分问题和补全可信上下文，第二阶段再识别业务意图、槽位和依赖。
         long planningStartedNanos = System.nanoTime();
         QuestionResolutionPlan resolutionPlan = resolveQuestions(
-                conversationHistory, workflowContext, routingAttemptContext, performanceTrace);
+                context, conversationHistory, workflowContext, routingAttemptContext, performanceTrace);
+        // 第二次调用大模型
         TaskPlan taskPlan = planResolvedTasks(
                 resolutionPlan, workflowContext, routingAttemptContext, performanceTrace);
         logTaskPlanningResult(context, taskPlan, performanceTrace, planningStartedNanos);
@@ -376,13 +390,15 @@ public class AgentChatPipeline {
     /**
      * 调用问题解析模型完成任务拆分、指代消解和独立问题补全。
      *
-     * @param conversationHistory 当前会话历史和独立用户问题
+     * @param context 当前请求上下文
+     * @param conversationHistory 会话历史(摘要+近几轮+当前问题)
      * @param workflowContext 当前活动工作流上下文
      * @param attemptContext 模型调用审计上下文
      * @param performanceTrace 本轮性能数据容器
      * @return 已通过服务端校验的问题解析结果
      */
     private QuestionResolutionPlan resolveQuestions(
+            AgentRequestContext context,
             ConversationHistoryContext conversationHistory,
             WorkflowPlanningContext workflowContext,
             ModelAttemptContext attemptContext,
@@ -391,8 +407,18 @@ public class AgentChatPipeline {
         // 问题解析阶段可以读取最近历史和可信工作流，但不会接收意图目录。
         QuestionResolutionPlan resolutionPlan = taskPlanner.resolveQuestions(
                 conversationHistory, workflowContext, attemptContext);
+        // 遍历所有任务，判断是否发生改写
         boolean rewritten = resolutionPlan.tasks().stream()
                 .anyMatch(task -> !task.originalClause().equals(task.standaloneQuestion()));
+        // 重写结果先持久化，历史上下文才能在后续轮次使用同一份已校验文本而非再次猜测。
+        conversationMemoryService.recordQuestionResolution(
+                context.userId(),
+                context.turnId(),
+                context.executionOwner(),
+                context.fencingToken(),
+                rewritten,
+                writeJson(resolutionPlan));
+        // 计算耗时
         performanceTrace.rewriteDurationMs = RequestPerformanceTrace.elapsedMillis(rewriteStartedNanos);
         performanceTrace.rewriteModelInvoked = true;
         performanceTrace.rewritten = rewritten;
@@ -414,11 +440,14 @@ public class AgentChatPipeline {
             WorkflowPlanningContext workflowContext,
             ModelAttemptContext attemptContext,
             RequestPerformanceTrace performanceTrace) {
+        // 记录时间
         long routingStartedNanos = System.nanoTime();
         // 第二阶段只能补充业务字段，第一阶段确定的原文和独立问题由服务端合并保留。
         TaskPlan taskPlan = taskPlanner.planResolvedTasks(
                 resolutionPlan, workflowContext, attemptContext);
+        // 记录二阶段耗时
         performanceTrace.routingDurationMs = RequestPerformanceTrace.elapsedMillis(routingStartedNanos);
+        // 意图识别
         performanceTrace.route = taskPlan.tasks().size() > 1
                 ? "MULTI_TASK_DIRECT_CHAIN"
                 : intentExecutionRouter.route(taskPlan.tasks().get(0).intent()).route().name();
@@ -482,12 +511,15 @@ public class AgentChatPipeline {
             ConversationHistoryContext history,
             WorkflowPlanningContext workflowContext,
             RequestPerformanceTrace performanceTrace) {
+        // 先查询是否有现成的
         TaskPlan persistedPlan = taskExecutionCheckpointService.findPlan(context).orElse(null);
+        // 判断plan是否为空
         if (persistedPlan != null) {
             // 接管实例直接复用原计划，避免模型再次规划导致任务拆分、依赖或参数漂移。
             recordRecoveredPlan(context, performanceTrace, persistedPlan);
             return persistedPlan;
         }
+        // 如果为空，就重新创建一个新的
         TaskPlan candidate = planTasks(context, history, workflowContext, performanceTrace);
         return taskExecutionCheckpointService.persistPlan(context, candidate);
     }
@@ -503,6 +535,7 @@ public class AgentChatPipeline {
             AgentRequestContext context,
             RequestPerformanceTrace performanceTrace,
             TaskPlan taskPlan) {
+        // 确认是多人物还是单任务？
         performanceTrace.route = taskPlan.tasks().size() > 1
                 ? "MULTI_TASK_DIRECT_CHAIN" : "SINGLE_TASK_DIRECT_CHAIN";
         performanceTrace.matchedGroups = taskPlan.tasks().stream()

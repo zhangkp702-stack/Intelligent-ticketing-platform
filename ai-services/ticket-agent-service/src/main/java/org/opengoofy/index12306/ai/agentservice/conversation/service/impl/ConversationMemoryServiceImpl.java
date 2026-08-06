@@ -203,7 +203,47 @@ public class ConversationMemoryServiceImpl implements ConversationMemoryService 
         turnRepository.updateById(turn);
         // 消息序号保存在会话行中，MyBatis-Plus 下需显式更新以保持下一轮递增。
         conversationRepository.updateById(conversation);
+        // 用户消息一旦落库就参与摘要目标计算，后续模型失败也不会让它永久缺席长期记忆。
+        summaryTaskService.requestIfNeeded(turn.getConversationId(), sequence);
         return toStartedTurn(conversation, turn, userMessage, true);
+    }
+
+    /**
+     * 在数据库行锁和执行围栏保护下保存问题重写结果。
+     *
+     * @param userId 当前用户标识
+     * @param turnId 当前轮次标识
+     * @param executionOwner 当前执行实例标识
+     * @param fencingToken 当前执行围栏令牌
+     * @param hasRewrite 是否使用了不同于原文的独立问题
+     * @param questionResolutionJson 已校验的问题解析 JSON
+     */
+    @Transactional
+    @Override
+    public void recordQuestionResolution(
+            String userId,
+            String turnId,
+            String executionOwner,
+            long fencingToken,
+            boolean hasRewrite,
+            String questionResolutionJson) {
+        requireText(userId, "用户标识不能为空");
+        requireText(turnId, "轮次标识不能为空");
+        requireText(questionResolutionJson, "问题解析结果不能为空");
+
+        // 按会话再轮次的固定顺序加锁，防止旧执行者把解析结果写入已接管的轮次。
+        TurnEntity observedTurn = Optional.ofNullable(turnRepository.selectById(turnId))
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        requireLockedConversation(userId, observedTurn.getConversationId());
+        TurnEntity turn = turnRepository.findLockedById(turnId)
+                .orElseThrow(() -> new IllegalArgumentException("轮次不存在"));
+        if (!turn.isOwnedBy(executionOwner, fencingToken)) {
+            throw new IllegalStateException("轮次执行权已经失效");
+        }
+
+        // 只有当前执行者的已校验解析结果才能成为后续历史上下文的可选重写副本。
+        turn.recordQuestionResolution(hasRewrite, questionResolutionJson.trim(), clock.instant());
+        turnRepository.updateById(turn);
     }
 
     /**

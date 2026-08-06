@@ -17,7 +17,7 @@ import java.time.Duration;
 @ConfigurationProperties(prefix = "index12306.agent.memory")
 public record AgentMemoryProperties(
         @DefaultValue("3") int recentTurnLimit,
-        @DefaultValue("12") int summaryTriggerMessageCount,
+        @DefaultValue("6") int summaryTriggerMessageCount,
         @DefaultValue("3") int summaryMaxAttempts,
         @DefaultValue("30s") Duration summaryRetryDelay,
         @DefaultValue("2m") Duration summaryLeaseDuration) {

@@ -215,6 +215,135 @@ class AgentMemoryPersistenceTests {
     }
 
     /**
+     * 验证历史上下文优先使用已经持久化且校验成功的问题重写副本。
+     */
+    @Test
+    void conversationContextUsesPersistedQuestionRewrite() {
+        String userId = unique("rewrite-user");
+        ConversationEntity conversation = conversationMemoryService.createConversation(userId, "问题重写测试");
+        ConversationMemoryService.PreparedTurn prepared = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
+        ConversationMemoryService.StartedTurn started = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), prepared.turnId(), prepared.submissionToken(),
+                        "test-user", "二等座还有吗", 6));
+
+        // 原始消息不改写，独立问题仅作为当前轮已校验的上下文副本保存。
+        conversationMemoryService.recordQuestionResolution(
+                userId,
+                started.turnId(),
+                started.executionOwner(),
+                started.fencingToken(),
+                true,
+                "{\"tasks\":[{\"standaloneQuestion\":\"查询明天北京到上海的二等座余票\"}]}");
+        conversationMemoryService.completeTurn(new ConversationMemoryService.CompleteTurnCommand(
+                userId, started.turnId(), "明天仍有余票", 6,
+                started.executionOwner(), started.fencingToken()));
+
+        ConversationMemoryService.PreparedTurn currentPrepared = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
+        ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), currentPrepared.turnId(), currentPrepared.submissionToken(),
+                        "test-user", "帮我看看一等座", 6));
+        ConversationHistoryContext context = conversationContextLoader.load(
+                userId, current.turnId(), conversation.getId(), current.turnId(),
+                current.userMessageId(), current.sequenceNo(), "帮我看看一等座");
+
+        assertThat(context.recentTurns()).singleElement()
+                .extracting(turn -> turn.userMessage().content())
+                .isEqualTo("查询明天北京到上海的二等座余票");
+    }
+
+    /**
+     * 验证模型失败但已经持久化的用户问题不会从后续上下文中丢失。
+     */
+    @Test
+    void conversationContextRetainsFailedTurnUserMessage() {
+        Fixture fixture = createCompletedTurn("查询北京到上海的余票", "已有可选车次");
+        ConversationMemoryService.PreparedTurn failedPrepared = conversationMemoryService.prepareTurn(
+                fixture.userId(), fixture.conversationId());
+        ConversationMemoryService.StartedTurn failed = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        fixture.userId(), fixture.conversationId(), failedPrepared.turnId(),
+                        failedPrepared.submissionToken(), "test-user", "改成明天出发", 6));
+
+        // 模型不可用后轮次没有助手消息，但用户补充的日期仍需进入后续请求的历史。
+        conversationMemoryService.failTurn(
+                fixture.userId(), failed.turnId(), failed.executionOwner(), failed.fencingToken(), "MODEL_UNAVAILABLE");
+        ConversationMemoryService.PreparedTurn currentPrepared = conversationMemoryService.prepareTurn(
+                fixture.userId(), fixture.conversationId());
+        ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        fixture.userId(), fixture.conversationId(), currentPrepared.turnId(),
+                        currentPrepared.submissionToken(), "test-user", "二等座还有吗", 6));
+        ConversationHistoryContext context = conversationContextLoader.load(
+                fixture.userId(), current.turnId(), fixture.conversationId(), current.turnId(),
+                current.userMessageId(), current.sequenceNo(), "二等座还有吗");
+
+        assertThat(context.recentTurns())
+                .extracting(turn -> turn.userMessage().content())
+                .contains("改成明天出发");
+        assertThat(context.recentTurns())
+                .anySatisfy(turn -> {
+                    assertThat(turn.userMessage().content()).isEqualTo("改成明天出发");
+                    assertThat(turn.assistantMessage()).isNull();
+                });
+        TurnEntity failedTurn = Optional.ofNullable(turnRepository.selectById(failed.turnId())).orElseThrow();
+        assertThat(failedTurn.getRewriteStatus()).isEqualTo("FAILED");
+    }
+
+    /**
+     * 验证摘要阈值达到时，即使没有助手回答也会为用户消息创建异步摘要任务。
+     */
+    @Test
+    void userOnlyMessagesTriggerSummaryTask() {
+        String userId = unique("summary-user");
+        ConversationEntity conversation = conversationMemoryService.createConversation(userId, "失败轮次摘要测试");
+        ConversationMemoryService.PreparedTurn firstPrepared = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
+        ConversationMemoryService.StartedTurn first = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), firstPrepared.turnId(), firstPrepared.submissionToken(),
+                        "test-user", "第一条尚未回答的问题", 6));
+        conversationMemoryService.failTurn(
+                userId, first.turnId(), first.executionOwner(), first.fencingToken(), "MODEL_UNAVAILABLE");
+
+        // 测试阈值为两条消息；第二条用户消息落库时不依赖助手回答即可创建任务。
+        ConversationMemoryService.PreparedTurn secondPrepared = conversationMemoryService.prepareTurn(
+                userId, conversation.getId());
+        ConversationMemoryService.StartedTurn second = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        userId, conversation.getId(), secondPrepared.turnId(), secondPrepared.submissionToken(),
+                        "test-user", "第二条尚未回答的问题", 6));
+
+        SummaryTaskEntity task = summaryTaskRepository.findByConversationId(conversation.getId()).orElseThrow();
+        assertThat(task.getDesiredThroughSequence()).isEqualTo(second.sequenceNo());
+        assertThat(task.getStatus()).isEqualTo(SummaryTaskStatus.PENDING);
+    }
+
+    /**
+     * 验证下一轮加载上下文时只能领取当前问题之前已经冻结的摘要批次。
+     */
+    @Test
+    void contextClaimKeepsCurrentQuestionOutsideSummaryBatch() {
+        Fixture fixture = createCompletedTurn("第一轮问题", "第一轮回答");
+        ConversationMemoryService.PreparedTurn prepared = conversationMemoryService.prepareTurn(
+                fixture.userId(), fixture.conversationId());
+        ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        fixture.userId(), fixture.conversationId(), prepared.turnId(), prepared.submissionToken(),
+                        "test-user", "当前独立问题", 6));
+
+        // 测试阈值为两条消息；上一轮任务边界保持为 2，不得被当前用户消息推进到 3。
+        SummaryTaskService.SummaryWorkItem workItem = summaryTaskService.claimForContext(
+                fixture.conversationId(), current.sequenceNo(), "context-test-worker").orElseThrow();
+        assertThat(workItem.throughSequence()).isEqualTo(2L);
+        assertThat(workItem.messages()).extracting(SummaryTaskService.SummarySourceMessage::content)
+                .containsExactly("第一轮问题", "第一轮回答");
+    }
+
+    /**
      * 验证每个会话只保留一个任务和一份摘要，摘要成功后原地推进版本与边界。
      */
     @Test
