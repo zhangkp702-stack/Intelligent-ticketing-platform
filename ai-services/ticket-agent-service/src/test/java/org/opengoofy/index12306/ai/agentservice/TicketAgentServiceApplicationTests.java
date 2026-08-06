@@ -65,7 +65,7 @@ class TicketAgentServiceApplicationTests {
         assertThat(modelProperties.routes().get(ModelRole.QUESTION_REWRITE))
                 .startsWith("bailian-flash", "siliconflow-summary-primary");
         assertThat(modelProperties.routes().get(ModelRole.TASK_PLANNING))
-                .startsWith("bailian-flash", "siliconflow-summary-primary");
+                .startsWith("bailian-answer-primary", "bailian-flash");
         assertThat(modelProperties.routes().get(ModelRole.MEMORY_SUMMARY))
                 .startsWith("siliconflow-summary-primary", "bailian-flash");
         assertThat(modelProperties.candidates().get("bailian-answer-primary").model())

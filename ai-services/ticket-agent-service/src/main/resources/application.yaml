@@ -191,6 +191,7 @@ index12306:
           - bailian-flash
           - siliconflow-summary-primary
         TASK_PLANNING:
+          - bailian-answer-primary
           - bailian-flash
           - siliconflow-summary-primary
         MEMORY_SUMMARY:
