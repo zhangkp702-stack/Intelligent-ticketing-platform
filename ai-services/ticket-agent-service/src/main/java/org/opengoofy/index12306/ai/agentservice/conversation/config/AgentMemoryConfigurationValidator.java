@@ -28,6 +28,9 @@ public class AgentMemoryConfigurationValidator implements SmartInitializingSingl
     public void afterSingletonsInstantiated() {
         // 最近完整轮次数量必须为正，避免上下文加载配置无效。
         Assert.isTrue(properties.recentTurnLimit() > 0, "最近完整轮次数量必须大于零");
+        // 全量回退上限不能小于正常窗口，否则摘要稍有延迟就会直接拒绝请求。
+        Assert.isTrue(properties.maxUncoveredTurnFallback() >= properties.recentTurnLimit(),
+                "未摘要轮次回退上限不能小于最近完整轮次数量");
 
         // 摘要阈值和有限重试共同约束后台任务量，防止失败任务无限循环。
         Assert.isTrue(properties.summaryTriggerMessageCount() > 0, "摘要触发消息数必须大于零");

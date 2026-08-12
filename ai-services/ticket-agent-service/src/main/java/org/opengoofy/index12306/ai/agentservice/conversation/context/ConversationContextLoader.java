@@ -38,6 +38,9 @@ import java.util.Optional;
 
 /**
  * 按会话唯一摘要和摘要边界后的完整轮次装配回答上下文。
+ * <p>
+ * 摘要正常覆盖历史时只加载最近窗口；摘要积压或失败导致未覆盖轮次超过窗口时，
+ * 在回退上限内加载全部未覆盖终态轮次，超过上限则返回可重试提示。
  */
 @Service
 public class ConversationContextLoader {
@@ -83,7 +86,9 @@ public class ConversationContextLoader {
     }
 
     /**
-     * 加载会话摘要和最近完整轮次，并保存包含当前问题的输入快照。
+     * 加载会话摘要和完整历史窗口，并保存包含当前问题的输入快照。
+     * <p>
+     * 摘要积压时最多加载配置上限内的全部未覆盖轮次，避免一次性把过大的历史上下文传给模型。
      *
      * @param userId 当前用户标识
      * @param requestId 请求标识
@@ -115,16 +120,25 @@ public class ConversationContextLoader {
         // 如果是null，说明第一次，不为null就获取最后覆盖的消息的序列id
         long summarizedThrough = summary == null ? 0 : summary.getSummarizedThroughSequence();
         // 最近窗口同时保留完成、失败和取消轮次，避免只有用户问题的失败轮次被静默遗漏。
+        // 一次查询到“回退上限 + 1”条即可同时判断是否需要全量回退或拒绝，避免无上限读取数据库。
         List<TurnEntity> recentTurns = turnRepository.findRecentTerminalTurns(
                 conversationId,
                 summarizedThrough,
                 currentTurnId,
-                properties.recentTurnLimit());
+                properties.maxUncoveredTurnFallback() + 1);
+        if (recentTurns.size() > properties.recentTurnLimit()) {
+            if (recentTurns.size() > properties.maxUncoveredTurnFallback()) {
+                // 超过安全回退上限时不加载更多原文，等待摘要任务推进后由用户重试。
+                throw new ConversationHistoryUnavailableException("会话历史较多，系统正在整理，请稍后重试");
+            }
+            // 摘要未及时推进但仍在安全范围内时，探测查询已经包含全部未覆盖轮次。
+            // 不再截断为最近窗口，优先保证模型不遗漏用户已经提供的信息。
+        }
 
         // 一次性加载不同轮次不同角色的消息，避免按轮次逐条查询形成 N+1，key是消息id，value是消息体
         Map<String, MessageEntity> messagesById = loadMessagesById(recentTurns);
 
-        // 最近三个完整轮次全部进入上下文
+        // 正常只进入最近窗口；摘要落后时这里会接收全部未覆盖轮次。
         LoadedHistory loadedHistory = loadRecentHistory(recentTurns, messagesById);
         ConversationHistoryContext context = new ConversationHistoryContext(
                 conversationId,
@@ -143,6 +157,21 @@ public class ConversationContextLoader {
         // todo
         saveSnapshot(requestId, context, currentUserMessageId, currentUserSequence);
         return context;
+    }
+
+    /**
+     * 表示未覆盖历史超过安全回退上限，当前请求应等待摘要推进后重试。
+     */
+    public static final class ConversationHistoryUnavailableException extends IllegalStateException {
+
+        /**
+         * 创建历史回退上限异常。
+         *
+         * @param message 用户可读的重试提示
+         */
+        public ConversationHistoryUnavailableException(String message) {
+            super(message);
+        }
     }
 
     /**
@@ -262,7 +291,7 @@ public class ConversationContextLoader {
             Map<String, MessageEntity> messagesById) {
         List<LoadedTurn> loadedDescending = new ArrayList<>();
 
-        // 轮次已由数据库限制为最近三个，此处仅完成消息校验和对象转换。
+        // 轮次查询已经完成窗口或全量选择，此处只完成消息校验和对象转换。
         for (TurnEntity turn : recentDescending) {
             loadedDescending.add(toLoadedTurn(turn, messagesById));
         }

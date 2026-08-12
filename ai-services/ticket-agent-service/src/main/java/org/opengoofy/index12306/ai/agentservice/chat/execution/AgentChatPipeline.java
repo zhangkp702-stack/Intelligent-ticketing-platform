@@ -321,7 +321,6 @@ public class AgentChatPipeline {
             // 最近窗口之前的消息必须已有摘要覆盖；MQ 落后时在这里领取已冻结批次补齐。
             conversationSummaryBarrier.ensureCoveredBeforeCurrentQuestion(
                     context.conversationId(),
-                    context.turnId(),
                     started.sequenceNo());
             // 当前问题保持独立，加载历史摘要。
             ConversationHistoryContext conversationHistory =
@@ -535,7 +534,7 @@ public class AgentChatPipeline {
             AgentRequestContext context,
             RequestPerformanceTrace performanceTrace,
             TaskPlan taskPlan) {
-        // 确认是多人物还是单任务？
+        // 确认是多任务还是单任务？
         performanceTrace.route = taskPlan.tasks().size() > 1
                 ? "MULTI_TASK_DIRECT_CHAIN" : "SINGLE_TASK_DIRECT_CHAIN";
         performanceTrace.matchedGroups = taskPlan.tasks().stream()
@@ -572,8 +571,11 @@ public class AgentChatPipeline {
             RequestPerformanceTrace performanceTrace) {
         // 查询任务按依赖图并行执行，唯一交易任务在全部只读任务结束后进入固定代码链。
         Flux<ChatEvent> processingEvents = taskPlanExecutor
-                .execute(taskPlan, (task, dependencies) ->
-                        executePlannedTask(context, task, dependencies),
+                        // 已经校验过后的计划
+                .execute(taskPlan,
+                        // 如何执行单个任务
+                        (task, dependencies) -> executePlannedTask(context, task, dependencies),
+                        // 生命周期持久化
                         (task, execution) -> durableTaskExecutionCoordinator.execute(
                                 context, task, execution))
                 .map(summary -> rehydrateTaskViews(context, summary))
@@ -745,13 +747,15 @@ public class AgentChatPipeline {
             AgentRequestContext context,
             PlannedTask task,
             List<TaskExecutionResult> dependencyResults) {
+        // 非交易意图，只读链路
         if (!isTransaction(task.intent())) {
             // 普通交流和所有查询意图都由只读固定链处理，模型看不到任何工具定义。
-        return readTaskChain.execute(context, task, dependencyResults);
+            return readTaskChain.execute(context, task, dependencyResults);
         }
 
         // 交易任务先用固定规则消费显式依赖结果，无法安全选车时不创建任何草案。
         DependencyResolution resolution = taskDependencyResolver.resolve(task, dependencyResults);
+        // 消费失败
         if (!resolution.resolved()) {
             return Mono.just(new TaskExecutionResult(
                     task.taskId(),

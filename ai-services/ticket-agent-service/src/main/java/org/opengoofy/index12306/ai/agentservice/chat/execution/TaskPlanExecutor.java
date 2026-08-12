@@ -87,13 +87,22 @@ public class TaskPlanExecutor {
         }
 
         // 每个任务 Mono 只允许执行一次，依赖订阅和最终汇总共享同一个缓存结果。
+        // 任务索引表
         Map<String, PlannedTask> taskById = new HashMap<>();
+        // taskId → PlannedTask
         plan.tasks().forEach(task -> taskById.put(task.taskId(), task));
+
+        // 执行流缓存表
         Map<String, Mono<TaskExecutionResult>> executions = new HashMap<>();
+
+        // 获取所有的查询类的任务
         List<String> readTaskIds = plan.tasks().stream()
+                // 过滤，只保留非交易意图清单
                 .filter(task -> !isTransaction(task.intent()))
+                // 转成taskid存储起来
                 .map(PlannedTask::taskId)
                 .toList();
+        // 为每个任务建立执行流
         for (PlannedTask task : plan.tasks()) {
             // 递归建立依赖 Mono，使排在交易任务之后的独立查询也能进入只读屏障。
             createExecution(task, taskById, readTaskIds, executions, taskRunner, lifecycle);
@@ -132,19 +141,24 @@ public class TaskPlanExecutor {
             return existing;
         }
 
-        // 校验器已经排除循环依赖，此处可以安全地先递归创建依赖任务。
+        // 当前任务在开始执行之前必须等待其完成的任务 id 列表
         List<String> requiredTaskIds = requiredTaskIds(task, readTaskIds);
+        // 把依赖 id 列表转成一个响应式流，逐个元素（即每个依赖 id）向下游推送。
         Mono<List<TaskExecutionResult>> dependencyResults = Flux.fromIterable(requiredTaskIds)
                 .concatMap(taskId -> {
+                    // 根据id获取依赖任务
                     PlannedTask dependency = taskById.get(taskId);
                     if (dependency == null) {
                         return Mono.error(new IllegalArgumentException("任务依赖不存在: " + taskId));
                     }
+                    // 开始递归，依赖任务进行递归
                     return createExecution(
                             dependency, taskById, readTaskIds, executions, taskRunner, lifecycle);
                 })
                 .collectList();
+        // 我依赖的这堆任务全部跑完,把它们的结果收集成一个 List
         Mono<TaskExecutionResult> execution = dependencyResults.flatMap(results -> {
+            // 判断依赖的任务是否正常执行，如果正常执行就调用固定链路，如果不正常就阻塞
             Mono<TaskExecutionResult> recoveredExecution = executeTask(task, results, taskRunner)
                     .onErrorResume(exception -> recoverTaskFailure(task, exception));
             // 依赖完成后再领取任务，避免把尚未具备执行条件的任务提前标记为运行中。
@@ -191,9 +205,11 @@ public class TaskPlanExecutor {
     private List<String> requiredTaskIds(
             PlannedTask task,
             List<String> readTaskIds) {
+        // 这里是当前任务的依赖
         LinkedHashSet<String> required = new LinkedHashSet<>(task.dependsOn());
+        // 判断当前意图是否命中了交易类的意图
         if (isTransaction(task.intent())) {
-            // 写操作统一等待全部只读任务结束，防止查询尚未收口时提前创建交易草案。
+            // 如果是交易类的任务需要等待所有的查询类的任务
             readTaskIds.stream()
                     .filter(taskId -> !task.taskId().equals(taskId))
                     .forEach(required::add);
@@ -227,12 +243,15 @@ public class TaskPlanExecutor {
         // 交易任务的只读屏障包含所有查询，其中只有模型显式 dependsOn 的失败才会阻塞交易。
         List<TaskExecutionResult> declaredDependencies = new ArrayList<>();
         for (TaskExecutionResult result : dependencyResults) {
+            //如果等待任务是当前任务的依赖就加入list
             if (task.dependsOn().contains(result.taskId())) {
                 declaredDependencies.add(result);
             }
         }
+        // 判断依赖任务里面是否有没有成功的
         boolean declaredDependencyFailed = declaredDependencies.stream()
                 .anyMatch(result -> result.status() != TaskExecutionStatus.SUCCESS);
+        // 如果有未成功的就阻塞
         if (declaredDependencyFailed) {
             return Mono.just(TaskExecutionResult.blocked(
                     task.taskId(),
@@ -240,8 +259,8 @@ public class TaskPlanExecutor {
                     task.intent(),
                     task.standaloneQuestion()));
         }
-        Mono<TaskExecutionResult> execution =
-                taskRunner.execute(task, List.copyOf(declaredDependencies));
+        // 如果检验通过，开始执行taskRunner.execute。开始执行固定链路
+        Mono<TaskExecutionResult> execution = taskRunner.execute(task, List.copyOf(declaredDependencies));
         if (isTransaction(task.intent())) {
             // 同步交易链即使取消订阅也可能继续改变草案状态，不能用响应式超时制造“已停止”的假象。
             return execution;

@@ -32,7 +32,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * 验证会话消息、唯一摘要和会话级上下文在真实 MyBatis-Plus 映射下的核心约束。
  */
 @ActiveProfiles("test")
-@SpringBootTest(properties = "index12306.agent.memory.summary-trigger-message-count=2")
+@SpringBootTest(properties = {
+        "index12306.agent.memory.summary-trigger-message-count=2",
+        "index12306.agent.memory.max-uncovered-turn-fallback=4"
+})
 class AgentMemoryPersistenceTests {
 
     @Autowired
@@ -188,12 +191,12 @@ class AgentMemoryPersistenceTests {
     }
 
     /**
-     * 验证会话上下文固定保留最近三个完整轮次，不再按 Token 数二次筛选。
+     * 验证摘要尚未推进且未覆盖轮次超过窗口时，会话上下文完整加载全部未覆盖轮次。
      */
     @Test
-    void conversationContextLoadsLatestThreeCompletedTurns() {
+    void conversationContextLoadsAllUncoveredTurnsWhenSummaryBehind() {
         Fixture fixture = createCompletedTurn("第一轮问题", "第一轮回答");
-        // 在同一会话中追加三个完整轮次，使可查历史超过配置上限。
+        // 在同一会话中追加三个完整轮次，使可查历史超过最近窗口但仍在回退上限内。
         appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第二轮问题", "第二轮回答");
         appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第三轮问题", "第三轮回答");
         appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第四轮问题", "第四轮回答");
@@ -211,7 +214,32 @@ class AgentMemoryPersistenceTests {
 
         assertThat(context.recentTurns())
                 .extracting(turn -> turn.userMessage().content())
-                .containsExactly("第二轮问题", "第三轮问题", "第四轮问题");
+                .containsExactly("第一轮问题", "第二轮问题", "第三轮问题", "第四轮问题");
+    }
+
+    /**
+     * 验证未覆盖轮次超过回退上限时不再加载更多原文，而是返回可重试的历史整理提示。
+     */
+    @Test
+    void conversationContextRejectsWhenUncoveredTurnsExceedFallbackLimit() {
+        Fixture fixture = createCompletedTurn("第一轮问题", "第一轮回答");
+        appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第二轮问题", "第二轮回答");
+        appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第三轮问题", "第三轮回答");
+        appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第四轮问题", "第四轮回答");
+        appendCompletedTurn(fixture.userId(), fixture.conversationId(), "第五轮问题", "第五轮回答");
+
+        ConversationMemoryService.PreparedTurn preparedTurn = conversationMemoryService.prepareTurn(
+                fixture.userId(), fixture.conversationId());
+        ConversationMemoryService.StartedTurn current = conversationMemoryService.startTurn(
+                new ConversationMemoryService.StartTurnCommand(
+                        fixture.userId(), fixture.conversationId(), preparedTurn.turnId(),
+                        preparedTurn.submissionToken(), "test-user", "当前问题", 4));
+
+        assertThatThrownBy(() -> conversationContextLoader.load(
+                fixture.userId(), current.turnId(), fixture.conversationId(), current.turnId(),
+                current.userMessageId(), current.sequenceNo(), "当前问题"))
+                .isInstanceOf(ConversationContextLoader.ConversationHistoryUnavailableException.class)
+                .hasMessage("会话历史较多，系统正在整理，请稍后重试");
     }
 
     /**
