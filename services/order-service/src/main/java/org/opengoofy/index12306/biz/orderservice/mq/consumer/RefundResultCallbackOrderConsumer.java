@@ -79,6 +79,9 @@ public class RefundResultCallbackOrderConsumer implements RocketMQListener<Messa
         if (status.equals(OrderStatusEnum.PARTIAL_REFUND.getStatus())) {
             OrderItemStatusReversalDTO partialRefundOrderItemStatusReversalDTO = OrderItemStatusReversalDTO.builder()
                     .orderSn(orderSn)
+                    .expectedOrderStatuses(List.of(
+                            OrderStatusEnum.ALREADY_PAID.getStatus(), OrderStatusEnum.PARTIAL_REFUND.getStatus()))
+                    .expectedOrderItemStatus(OrderItemStatusEnum.ALREADY_PAID.getStatus())
                     .orderStatus(OrderStatusEnum.PARTIAL_REFUND.getStatus())
                     .orderItemStatus(OrderItemStatusEnum.REFUNDED.getStatus())
                     .orderItemDOList(orderItemDOList)
@@ -87,6 +90,9 @@ public class RefundResultCallbackOrderConsumer implements RocketMQListener<Messa
         } else if (status.equals(OrderStatusEnum.FULL_REFUND.getStatus())) {
             OrderItemStatusReversalDTO fullRefundOrderItemStatusReversalDTO = OrderItemStatusReversalDTO.builder()
                     .orderSn(orderSn)
+                    .expectedOrderStatuses(List.of(
+                            OrderStatusEnum.ALREADY_PAID.getStatus(), OrderStatusEnum.PARTIAL_REFUND.getStatus()))
+                    .expectedOrderItemStatus(OrderItemStatusEnum.ALREADY_PAID.getStatus())
                     .orderStatus(OrderStatusEnum.FULL_REFUND.getStatus())
                     .orderItemStatus(OrderItemStatusEnum.REFUNDED.getStatus())
                     .orderItemDOList(orderItemDOList)

@@ -42,11 +42,23 @@ public final class OrderIdGeneratorManager implements InitializingBean {
     /**
      * 生成订单全局唯一 ID
      *
-     * @param userId 用户名
+     * @param userId 用户 ID
      * @return 订单 ID
      */
     public static String generateId(long userId) {
-        return DISTRIBUTED_ID_GENERATOR.generateId() + String.valueOf(userId % 1000000);
+        // 固定保留六位用户分片基因，确保按用户 ID 和订单号计算出的订单分片一致。
+        return DISTRIBUTED_ID_GENERATOR.generateId() + formatUserIdShardingSuffix(userId);
+    }
+
+    /**
+     * 把用户 ID 的末六位格式化为订单号分片后缀。
+     *
+     * @param userId 用户 ID
+     * @return 固定六位、包含前导零的用户分片后缀
+     */
+    static String formatUserIdShardingSuffix(long userId) {
+        // 数值取模会丢失前导零，必须在拼接订单号前恢复为固定六位字符串。
+        return String.format("%06d", userId % 1000000);
     }
 
     @Override

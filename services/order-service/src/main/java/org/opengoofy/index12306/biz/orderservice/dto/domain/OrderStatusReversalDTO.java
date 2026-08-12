@@ -38,6 +38,16 @@ public final class OrderStatusReversalDTO {
     private String orderSn;
 
     /**
+     * 订单反转前的期望状态
+     */
+    private Integer expectedOrderStatus;
+
+    /**
+     * 订单明细反转前的期望状态
+     */
+    private Integer expectedOrderItemStatus;
+
+    /**
      * 订单反转后状态
      */
     private Integer orderStatus;
