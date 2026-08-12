@@ -58,7 +58,10 @@ import java.util.stream.Collectors;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.Index12306Constant.ADVANCE_TICKET_DAY;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_TICKET_AVAILABILITY_TOKEN_BUCKET;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TICKET_AVAILABILITY_TOKEN_BUCKET;
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TICKET_RESERVATION_TOKEN_ROLLBACK_MARKER;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_INFO;
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_CARRIAGE_REMAINING_TICKET;
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
 
 /**
  * 列车车票余量令牌桶，应对海量并发场景下满足并行、限流以及防超卖等场景
@@ -67,7 +70,7 @@ import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKe
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public final class TicketAvailabilityTokenBucket {
+public class TicketAvailabilityTokenBucket {
 
     private final TrainStationService trainStationService;
     private final DistributedCache distributedCache;
@@ -210,6 +213,80 @@ public final class TicketAvailabilityTokenBucket {
             log.error("回滚列车余票令牌失败，订单信息：{}", JSON.toJSONString(requestParam));
             throw new ServiceException("回滚列车余票令牌失败");
         }
+    }
+
+    /**
+     * 按稳定 reservationId 原子回滚令牌桶和车厢摘要缓存，重复调用不会再次增加余票。
+     *
+     * @param requestParam 已关闭订单的完整车票信息
+     * @param rollbackKey reservationId 等稳定幂等键
+     * @param includeRemainingTicketCache 是否同时恢复全局区间余票缓存
+     * @return 本次实际执行缓存回滚时返回 true，已执行过时返回 false
+     */
+    public boolean rollbackInBucketIfNecessary(
+            TicketOrderDetailRespDTO requestParam,
+            String rollbackKey,
+            boolean includeRemainingTicketCache) {
+        // 复用令牌桶脚本，在写入订单去重标记后一次性完成令牌和车厢摘要增量。
+        DefaultRedisScript<Long> actual = Singleton.get(LUA_TICKET_AVAILABILITY_ROLLBACK_TOKEN_BUCKET_PATH, () -> {
+            DefaultRedisScript<Long> redisScript = new DefaultRedisScript<>();
+            redisScript.setScriptSource(new ResourceScriptSource(new ClassPathResource(LUA_TICKET_AVAILABILITY_ROLLBACK_TOKEN_BUCKET_PATH)));
+            redisScript.setResultType(Long.class);
+            return redisScript;
+        });
+        Assert.notNull(actual);
+
+        List<TicketOrderPassengerDetailRespDTO> passengerDetails = requestParam.getPassengerDetails();
+        Map<Integer, Long> seatTypeCountMap = passengerDetails.stream()
+                .collect(Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType, Collectors.counting()));
+        JSONArray seatTypeCountArray = seatTypeCountMap.entrySet().stream()
+                .map(entry -> {
+                    JSONObject jsonObject = new JSONObject();
+                    jsonObject.put("seatType", String.valueOf(entry.getKey()));
+                    jsonObject.put("count", String.valueOf(entry.getValue()));
+                    return jsonObject;
+                })
+                .collect(Collectors.toCollection(JSONArray::new));
+        JSONArray carriageSummaryArray = passengerDetails.stream()
+                .collect(Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType,
+                        Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getCarriageNumber, Collectors.counting())))
+                .entrySet().stream()
+                .flatMap(seatTypeEntry -> seatTypeEntry.getValue().entrySet().stream().map(carriageEntry -> {
+                    JSONObject jsonObject = new JSONObject();
+                    jsonObject.put("summaryKey", TRAIN_STATION_CARRIAGE_REMAINING_TICKET + StrUtil.join("_",
+                            requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), seatTypeEntry.getKey()));
+                    jsonObject.put("carriageNumber", carriageEntry.getKey());
+                    jsonObject.put("count", String.valueOf(carriageEntry.getValue()));
+                    return jsonObject;
+                }))
+                .collect(Collectors.toCollection(JSONArray::new));
+
+        // reservation 标记与所有缓存增量在同一 Lua 脚本内提交，进程崩溃后重试不会出现半次回滚。
+        StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
+        String actualHashKey = TICKET_AVAILABILITY_TOKEN_BUCKET + requestParam.getTrainId();
+        String luaScriptKey = StrUtil.join("_", requestParam.getDeparture(), requestParam.getArrival());
+        List<RouteDTO> takeoutRouteDTOList = trainStationService.listTakeoutTrainStationRoute(
+                String.valueOf(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival());
+        JSONArray remainingTicketArray = takeoutRouteDTOList.stream()
+                .flatMap(route -> seatTypeCountMap.entrySet().stream().map(entry -> {
+                    JSONObject jsonObject = new JSONObject();
+                    jsonObject.put("remainingKey", TRAIN_STATION_REMAINING_TICKET + StrUtil.join("_",
+                            requestParam.getTrainId(), route.getStartStation(), route.getEndStation()));
+                    jsonObject.put("seatType", String.valueOf(entry.getKey()));
+                    jsonObject.put("count", String.valueOf(entry.getValue()));
+                    return jsonObject;
+                }))
+                .collect(Collectors.toCollection(JSONArray::new));
+        Long result = stringRedisTemplate.execute(actual, Lists.newArrayList(
+                        actualHashKey, luaScriptKey, String.format(TICKET_RESERVATION_TOKEN_ROLLBACK_MARKER, rollbackKey)),
+                JSON.toJSONString(seatTypeCountArray), JSON.toJSONString(takeoutRouteDTOList),
+                JSON.toJSONString(carriageSummaryArray),
+                includeRemainingTicketCache ? JSON.toJSONString(remainingTicketArray) : "");
+        if (result == null || (result != 0L && result != 1L)) {
+            log.error("reservation 回滚列车余票缓存失败，回滚键：{}", rollbackKey);
+            throw new ServiceException("订单关闭回滚列车余票缓存失败");
+        }
+        return Objects.equals(result, 0L);
     }
 
     /**

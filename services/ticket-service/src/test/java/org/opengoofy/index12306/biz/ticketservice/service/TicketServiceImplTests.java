@@ -67,7 +67,7 @@ class TicketServiceImplTests {
                 List.of(new TrainRefundTicketParamNotNullChainFilter()));
         ticketService = new TicketServiceImpl(
                 null, null, null, null, ticketOrderRemoteService, payRemoteService, null, null, null, null,
-                null, null, null, null, refundChain, null, null, null, null);
+                null, null, null, null, null, refundChain, null, null, null, null);
     }
 
     /**

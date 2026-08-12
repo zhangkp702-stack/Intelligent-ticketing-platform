@@ -4,18 +4,27 @@ for bit in string.gmatch(ARGV[2], '([^,]+)') do
     table.insert(seat_bits, tonumber(bit))
 end
 local segment_count = #KEYS / 2
+if hold_id == nil or hold_id == '' then
+    return -1
+end
 
+local owner_changed = false
 for i = 1, segment_count do
     local bitmap_key = KEYS[i]
     local owner_key = KEYS[segment_count + i]
     for _, seat_bit in ipairs(seat_bits) do
         local field = tostring(seat_bit)
         local owner = redis.call('HGET', owner_key, field)
-        if hold_id == '' or owner == hold_id then
+        if owner == hold_id then
             redis.call('SETBIT', bitmap_key, seat_bit, 0)
             redis.call('HDEL', owner_key, field)
+        elseif owner ~= false then
+            owner_changed = true
         end
     end
 end
 
+if owner_changed then
+    return 2
+end
 return 1

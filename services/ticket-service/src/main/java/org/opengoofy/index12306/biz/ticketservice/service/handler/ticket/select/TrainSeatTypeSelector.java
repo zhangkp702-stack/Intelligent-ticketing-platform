@@ -105,7 +105,15 @@ public final class TrainSeatTypeSelector {
     @Value("${ticket.seat.redis-bitmap-select-retry-times:12}")
     private Integer redisBitmapSelectRetryTimes;
 
-    public List<TrainPurchaseTicketRespDTO> select(Integer trainType, PurchaseTicketReqDTO requestParam) {
+    /**
+     * 为一次购票请求选择座位，并把同一 reservationId 写入 Redis 临时占位 owner。
+     *
+     * @param trainType 列车类型
+     * @param requestParam 已校验的购票请求
+     * @param reservationId 服务端生成且不可复用的座位占用标识
+     * @return 已锁定的座位明细
+     */
+    public List<TrainPurchaseTicketRespDTO> select(Integer trainType, PurchaseTicketReqDTO requestParam, String reservationId) {
         List<PurchaseTicketPassengerDetailDTO> passengerDetails = requestParam.getPassengers();
         // 按照座位类型分组
         Map<Integer, List<PurchaseTicketPassengerDetailDTO>> seatTypeMap = passengerDetails.stream()
@@ -115,7 +123,7 @@ public final class TrainSeatTypeSelector {
             // 这里并发执行
             List<Future<List<TrainPurchaseTicketRespDTO>>> futureResults = new ArrayList<>(seatTypeMap.size());
             seatTypeMap.forEach((seatType, passengerSeatDetails) -> futureResults.add(selectSeatThreadPoolExecutor
-                    .submit(() -> distributeSeats(trainType, seatType, requestParam, passengerSeatDetails))));
+                    .submit(() -> distributeSeats(trainType, seatType, requestParam, passengerSeatDetails, reservationId))));
             futureResults.parallelStream().forEach(future -> {
                 try {
                     actualResult.addAll(future.get());
@@ -125,7 +133,7 @@ public final class TrainSeatTypeSelector {
                 }
             });
         } else {
-            seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(distributeSeats(trainType, seatType, requestParam, passengerSeatDetails)));
+            seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(distributeSeats(trainType, seatType, requestParam, passengerSeatDetails, reservationId)));
         }
         // 校验选座结果是否完整
         if (CollUtil.isEmpty(actualResult) || !Objects.equals(actualResult.size(), passengerDetails.size())) {
@@ -135,10 +143,22 @@ public final class TrainSeatTypeSelector {
         return actualResult;
     }
 
-    private List<TrainPurchaseTicketRespDTO> distributeSeats(Integer trainType, Integer seatType, PurchaseTicketReqDTO requestParam, List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+    /**
+     * 优先通过 Redis 位图选择座位，Redis 不可用时回退到数据库座位锁。
+     *
+     * @param trainType 列车类型
+     * @param seatType 座位类型
+     * @param requestParam 购票请求
+     * @param passengerSeatDetails 当前座位类型的乘客
+     * @param reservationId 当前购票的座位占用标识
+     * @return 已锁定座位
+     */
+    private List<TrainPurchaseTicketRespDTO> distributeSeats(Integer trainType, Integer seatType, PurchaseTicketReqDTO requestParam,
+                                                             List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails,
+                                                             String reservationId) {
         if (Boolean.TRUE.equals(redisSeatBitmapEnabled)) {
             try {
-                return distributeSeatsByRedisBitmap(trainType, seatType, requestParam, passengerSeatDetails);
+                return distributeSeatsByRedisBitmap(trainType, seatType, requestParam, passengerSeatDetails, reservationId);
             } catch (ServiceException ex) {
                 throw ex;
             } catch (Throwable ex) {
@@ -165,10 +185,21 @@ public final class TrainSeatTypeSelector {
         });
     }
 
+    /**
+     * 使用 Redis 位图临时占位后再写入数据库座位位图。
+     *
+     * @param trainType 列车类型
+     * @param seatType 座位类型
+     * @param requestParam 购票请求
+     * @param passengerSeatDetails 当前座位类型的乘客
+     * @param reservationId 当前购票的座位占用标识
+     * @return 已锁定座位
+     */
     private List<TrainPurchaseTicketRespDTO> distributeSeatsByRedisBitmap(Integer trainType,
                                                                           Integer seatType,
                                                                           PurchaseTicketReqDTO requestParam,
-                                                                          List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+                                                                          List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails,
+                                                                          String reservationId) {
         String strategyKey = VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
         List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
                 requestParam.getTrainId(),
@@ -213,7 +244,8 @@ public final class TrainSeatTypeSelector {
                         requestParam.getDeparture(),
                         requestParam.getArrival(),
                         seatType,
-                        selectedSeats
+                        selectedSeats,
+                        reservationId
                 );
                 if (StrUtil.isBlank(holdId)) {
                     selectedSeats.stream().map(this::buildCarriageSeatKey).forEach(excludedSeatKeys::add);

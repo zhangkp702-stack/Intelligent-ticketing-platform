@@ -1,0 +1,73 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.opengoofy.index12306.biz.ticketservice.dao.entity;
+
+import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.opengoofy.index12306.framework.starter.database.base.BaseDO;
+
+import java.util.Date;
+
+/**
+ * 订单一次座位占用的持久化记录。
+ *
+ * <p>该表保存订单、座位区间与 Redis owner 的稳定关联，并分别记录数据库座位、Redis 位图和令牌桶的释放进度。</p>
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+@TableName("t_ticket_seat_reservation")
+public class TicketSeatReservationDO extends BaseDO {
+
+    /** 主键。 */
+    private Long id;
+
+    /** 不可复用的座位占用标识，同时作为 Redis 位图 owner。 */
+    private String reservationId;
+
+    /** 订单号。 */
+    private String orderSn;
+
+    /** 列车标识。 */
+    private Long trainId;
+
+    /** 乘车日期。 */
+    private Date ridingDate;
+
+    /** 出发站。 */
+    private String departure;
+
+    /** 到达站。 */
+    private String arrival;
+
+    /** 本次占用的座位明细 JSON。 */
+    private String seatPayload;
+
+    /** 数据库座位释放状态。 */
+    private Integer dbSeatReleaseStatus;
+
+    /** Redis 位图释放状态。 */
+    private Integer redisBitmapReleaseStatus;
+
+    /** 令牌桶回滚状态。 */
+    private Integer tokenRollbackStatus;
+}

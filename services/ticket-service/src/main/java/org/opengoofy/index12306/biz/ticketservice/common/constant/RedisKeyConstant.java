@@ -94,11 +94,6 @@ public final class RedisKeyConstant {
     public static final String TRAIN_CARRIAGE_SEAT_STATUS = "index12306-ticket-service:train_carriage_seat_status:";
 
     /**
-     * 用户购票分布式锁 Key
-     */
-    public static final String LOCK_PURCHASE_TICKETS = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_%s";
-
-    /**
      * 用户购票分布式锁 Key v2
      */
     public static final String LOCK_PURCHASE_TICKETS_V2 = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_%s_%d";
@@ -144,6 +139,11 @@ public final class RedisKeyConstant {
      * 列车购买令牌桶，Key Prefix + 列车ID
      */
     public static final String TICKET_AVAILABILITY_TOKEN_BUCKET = "index12306-ticket-service:ticket_availability_token_bucket:";
+
+    /**
+     * reservation 令牌桶回滚标记，reservationId 作为稳定去重键
+     */
+    public static final String TICKET_RESERVATION_TOKEN_ROLLBACK_MARKER = "index12306-ticket-service:ticket_reservation_token_rollback:%s";
 
     /**
      * 获取全部地点集合分布式锁 Key

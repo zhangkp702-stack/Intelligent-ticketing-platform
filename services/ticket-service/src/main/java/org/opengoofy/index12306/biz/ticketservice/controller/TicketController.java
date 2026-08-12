@@ -71,16 +71,6 @@ public class TicketController {
     }
 
     /**
-     * 购买车票
-     */
-    @RateLimiter(permitsPerSecond = 3, dimension = RateLimitDimensionEnum.USER, message = "下单过于频繁，请稍后再试")
-    @RiskGuard(dimension = RateLimitDimensionEnum.USER)
-    @PostMapping("/api/ticket-service/ticket/purchase")
-    public Result<TicketPurchaseRespDTO> purchaseTickets(@RequestBody PurchaseTicketReqDTO requestParam) {
-        return Results.success(ticketService.purchaseTicketsV1(requestParam));
-    }
-
-    /**
      * 执行 V2 购票流程；Agent 请求携带操作标识时同时提供持久化幂等保护。
      *
      * @param requestParam 购票参数以及可选的 Agent 操作标识

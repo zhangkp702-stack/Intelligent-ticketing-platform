@@ -80,6 +80,27 @@ CREATE TABLE `t_ticket`
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=1682790903965503489 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='车票表';
 
+CREATE TABLE `t_ticket_seat_reservation`
+(
+    `id`                          bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',
+    `reservation_id`              varchar(64)  NOT NULL COMMENT '不可复用的座位占用标识',
+    `order_sn`                    varchar(128) NOT NULL COMMENT '订单号',
+    `train_id`                    bigint(20)   NOT NULL COMMENT '列车ID',
+    `riding_date`                 date         DEFAULT NULL COMMENT '乘车日期',
+    `departure`                   varchar(64)  NOT NULL COMMENT '出发站',
+    `arrival`                     varchar(64)  NOT NULL COMMENT '到达站',
+    `seat_payload`                mediumtext   NOT NULL COMMENT '座位明细JSON快照',
+    `db_seat_release_status`      tinyint(1)   NOT NULL DEFAULT 0 COMMENT '数据库座位释放状态：0待处理 1完成',
+    `redis_bitmap_release_status` tinyint(1)   NOT NULL DEFAULT 0 COMMENT 'Redis位图释放状态：0待处理 1完成 2owner已变化',
+    `token_rollback_status`       tinyint(1)   NOT NULL DEFAULT 0 COMMENT '令牌桶回滚状态：0待处理 1完成',
+    `create_time`                 datetime     DEFAULT NULL COMMENT '创建时间',
+    `update_time`                 datetime     DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                    tinyint(1)   DEFAULT NULL COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_reservation_id` (`reservation_id`),
+    KEY `idx_order_sn` (`order_sn`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单座位占用及释放状态表';
+
 CREATE TABLE `t_business_operation`
 (
     `operation_id`        varchar(64)  NOT NULL COMMENT '调用方生成的全局操作标识',

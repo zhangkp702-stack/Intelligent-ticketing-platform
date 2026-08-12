@@ -45,7 +45,6 @@ import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationRelationMapper;
-import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatClassDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.TicketListDTO;
@@ -70,8 +69,9 @@ import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRe
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderItemCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
+import org.opengoofy.index12306.biz.ticketservice.service.OrderCloseRollbackService;
+import org.opengoofy.index12306.biz.ticketservice.service.TicketSeatReservationReleaseService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketService;
-import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.cache.SeatMarginCacheLoader;
 import org.opengoofy.index12306.biz.ticketservice.service.cache.TicketAvailabilityLocalCache;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TokenResultDTO;
@@ -84,7 +84,6 @@ import org.opengoofy.index12306.biz.ticketservice.toolkit.TimeStringComparator;
 import org.opengoofy.index12306.framework.starter.bases.ApplicationContextHolder;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.cache.toolkit.CacheUtil;
-import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.designpattern.chain.AbstractChainContext;
@@ -123,7 +122,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.Index12306Constant.ADVANCE_TICKET_DAY;
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_PURCHASE_TICKETS;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_PURCHASE_TICKETS_V2;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_REGION_TRAIN_STATION;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_REGION_TRAIN_STATION_MAPPING;
@@ -154,7 +152,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     private final PayRemoteService payRemoteService;
     private final StationMapper stationMapper;
     private final SeatService seatService;
-    private final TrainStationService trainStationService;
+    private final OrderCloseRollbackService orderCloseRollbackService;
+    private final TicketSeatReservationReleaseService ticketSeatReservationReleaseService;
     private final TrainSeatTypeSelector trainSeatTypeSelector;
     private final SeatMarginCacheLoader seatMarginCacheLoader;
     private final TicketAvailabilityLocalCache ticketAvailabilityLocalCache;
@@ -167,8 +166,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     private final RedisSeatBitmapService redisSeatBitmapService;
     private TicketService ticketService;
 
-    @Value("${ticket.availability.cache-update.type:}")
-    private String ticketAvailabilityCacheUpdateType;
     @Value("${framework.cache.redis.prefix:}")
     private String cacheRedisPrefix;
 
@@ -379,41 +376,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                 .build();
     }
 
-    /**
-     * 使用全局区间锁执行第一版购票流程，并将请求中的实际乘车日期写入订单。
-     *
-     * @param requestParam 购票请求参数
-     * @return 新建订单及车票明细
-     */
-    @ILog
-    @Idempotent(
-            uniqueKeyPrefix = "index12306-ticket:lock_purchase-tickets:",
-            key = "T(org.opengoofy.index12306.framework.starter.bases.ApplicationContextHolder).getBean('environment').getProperty('unique-name', '')"
-                    + "+'_'+"
-                    + "T(org.opengoofy.index12306.frameworks.starter.user.core.UserContext).getUsername()",
-            message = "正在执行下单流程，请稍后...",
-            scene = IdempotentSceneEnum.RESTAPI,
-            type = IdempotentTypeEnum.SPEL
-    )
-
-    @Override
-    public TicketPurchaseRespDTO purchaseTicketsV1(PurchaseTicketReqDTO requestParam) {
-        // 在锁定库存前确认乘车日期存在，避免生成无法正确展示行程日期的订单。
-        validatePurchaseDate(requestParam);
-        // 责任链模式，验证 1：参数必填 2：参数正确性 3：乘客是否已买当前车次等...
-        purchaseTicketAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_PURCHASE_TICKET_FILTER.name(), requestParam);
-        // v1 版本购票存在 4 个较为严重的问题，v2 版本相比较 v1 版本更具有业务特点以及性能，整体提升较大
-        // 写了详细的 v2 版本购票升级指南，详情查看：https://nageoffer.com/12306/question
-        String lockKey = environment.resolvePlaceholders(String.format(LOCK_PURCHASE_TICKETS, requestParam.getTrainId()));
-        RLock lock = redissonClient.getLock(lockKey);
-        lock.lock();
-        try {
-            return ticketService.executePurchaseTickets(requestParam);
-        } finally {
-            lock.unlock();
-        }
-    }
-
     // 本地锁缓存，确保每个区间锁独立，避免并发问题
     // 令牌缓存，确保令牌是唯一的，避免重复使用
     private final Cache<String, Object> tokenTicketsRefreshMap = Caffeine.newBuilder()
@@ -478,6 +440,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         List<TicketOrderDetailRespDTO> ticketOrderDetailResults = new ArrayList<>();
         // 获取车次信息
         String trainId = requestParam.getTrainId();
+        // reservationId 只能由服务端生成，并贯穿 Redis 临时占位、订单映射和后续关闭补偿。
+        String reservationId = UUID.randomUUID().toString().replace("-", "");
         // 先查缓存有没有，没有就查数据库并加载到缓存里面，查询列车信息
         TrainDO trainDO = distributedCache.safeGet(
                 TRAIN_INFO + trainId,
@@ -486,7 +450,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                 ADVANCE_TICKET_DAY,
                 TimeUnit.DAYS);
         // 根据列车类型以及本次购票请求，查询座位信息，这里返回的包含客户的各种信息以及座位信息
-        List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults = trainSeatTypeSelector.select(trainDO.getTrainType(), requestParam);
+        List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults = trainSeatTypeSelector.select(
+                trainDO.getTrainType(), requestParam, reservationId);
         // 把座位信息转换成数据库需要的数据格式,准备落库
         List<TicketDO> ticketDOList = trainPurchaseTicketResults.stream()
                 .map(each -> TicketDO.builder()
@@ -571,6 +536,10 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             log.error("远程调用订单服务创建错误，请求参数：{}", JSON.toJSONString(requestParam), ex);
             throw ex;
         }
+        // 订单创建成功后持久化座位与 reservationId 的归属，关闭任务只能释放这条记录声明的座位。
+        ticketSeatReservationReleaseService.createReservation(ticketOrderResult.getData(), reservationId,
+                Long.parseLong(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival(),
+                requestParam.getDepartureDate(), trainPurchaseTicketResults);
         return new TicketPurchaseRespDTO(ticketOrderResult.getData(), ticketOrderDetailResults);
     }
 
@@ -634,38 +603,11 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         if (!cancelOrderResult.isSuccess()) {
             throw new ServiceException("取消订单失败");
         }
-        String trainId = String.valueOf(ticketOrderDetail.getTrainId());
-        String departure = ticketOrderDetail.getDeparture();
-        String arrival = ticketOrderDetail.getArrival();
-        List<TicketOrderPassengerDetailRespDTO> trainPurchaseTicketResults = ticketOrderDetail.getPassengerDetails();
-        redisSeatBitmapService.releaseAnyway(trainId, departure, arrival, BeanUtil.convert(trainPurchaseTicketResults, TrainPurchaseTicketRespDTO.class));
         try {
-            seatService.unlock(trainId, departure, arrival, BeanUtil.convert(trainPurchaseTicketResults, TrainPurchaseTicketRespDTO.class));
-        } catch (Throwable ex) {
-            log.error("[取消订单] 订单号：{} 回滚列车DB座位状态失败", requestParam.getOrderSn(), ex);
-            throw ex;
-        }
-        trainPurchaseTicketResults.stream()
-                .collect(Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType,
-                        Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getCarriageNumber, Collectors.counting())))
-                .forEach((seatType, carriageCountMap) -> carriageCountMap.forEach((carriageNumber, count) ->
-                        seatService.adjustCarriageRemainingSummary(trainId, departure, arrival, seatType, carriageNumber, count)));
-        ticketAvailabilityTokenBucket.rollbackInBucket(ticketOrderDetail);
-        if (!StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
-            try {
-                StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-                Map<Integer, Long> seatTypeCountMap = trainPurchaseTicketResults.stream()
-                        .collect(Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType, Collectors.counting()));
-                List<RouteDTO> routeDTOList = trainStationService.listTakeoutTrainStationRoute(trainId, departure, arrival);
-                routeDTOList.forEach(each -> {
-                    String keySuffix = StrUtil.join("_", trainId, each.getStartStation(), each.getEndStation());
-                    seatTypeCountMap.forEach((seatType, count) -> stringRedisTemplate.opsForHash()
-                            .increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), count));
-                });
-            } catch (Throwable ex) {
-                log.error("[取消订单] 订单号：{} 回滚列车Cache余票失败", requestParam.getOrderSn(), ex);
-                throw ex;
-            }
+            // 用户请求只确认订单关闭；资源释放失败交给持久化命令和 Canal 重投，不把已关闭订单误报为取消失败。
+            orderCloseRollbackService.rollback(requestParam.getOrderSn());
+        } catch (RuntimeException exception) {
+            log.error("[取消订单] 订单号：{} 已关闭，等待异步恢复票务资源", requestParam.getOrderSn(), exception);
         }
     }
 

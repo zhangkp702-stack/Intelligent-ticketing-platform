@@ -19,18 +19,9 @@ package org.opengoofy.index12306.biz.ticketservice.canal;
 
 import cn.hutool.core.collection.CollUtil;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.CanalExecuteStrategyMarkEnum;
 import org.opengoofy.index12306.biz.ticketservice.mq.event.CanalBinlogEvent;
-import org.opengoofy.index12306.biz.ticketservice.remote.TicketOrderRemoteService;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
-import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
-import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.tokenbucket.TicketAvailabilityTokenBucket;
-import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
-import org.opengoofy.index12306.framework.starter.convention.result.Result;
+import org.opengoofy.index12306.biz.ticketservice.service.OrderCloseRollbackService;
 import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractExecuteStrategy;
 import org.springframework.stereotype.Component;
 
@@ -42,16 +33,17 @@ import java.util.Objects;
  * 订单关闭或取消后置处理组件
  * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
-@Slf4j
 @Component
 @RequiredArgsConstructor
 public class OrderCloseCacheAndTokenUpdateHandler implements AbstractExecuteStrategy<CanalBinlogEvent, Void> {
 
-    private final TicketOrderRemoteService ticketOrderRemoteService;
-    private final SeatService seatService;
-    private final TicketAvailabilityTokenBucket ticketAvailabilityTokenBucket;
-    private final RedisSeatBitmapService redisSeatBitmapService;
+    private final OrderCloseRollbackService orderCloseRollbackService;
 
+    /**
+     * 过滤订单关闭 Binlog，并按订单号认领唯一的座位和余票回滚操作。
+     *
+     * @param message Canal 推送的订单表变更消息
+     */
     @Override
     public void execute(CanalBinlogEvent message) {
         List<Map<String, Object>> messageDataList = message.getData().stream()
@@ -62,20 +54,8 @@ public class OrderCloseCacheAndTokenUpdateHandler implements AbstractExecuteStra
             return;
         }
         for (Map<String, Object> each : messageDataList) {
-            Result<TicketOrderDetailRespDTO> orderDetailResult = ticketOrderRemoteService.queryTicketOrderByOrderSn(each.get("order_sn").toString());
-            TicketOrderDetailRespDTO orderDetailResultData = orderDetailResult.getData();
-            if (orderDetailResult.isSuccess() && orderDetailResultData != null) {
-                String trainId = String.valueOf(orderDetailResultData.getTrainId());
-                List<TicketOrderPassengerDetailRespDTO> passengerDetails = orderDetailResultData.getPassengerDetails();
-                redisSeatBitmapService.releaseAnyway(trainId, orderDetailResultData.getDeparture(), orderDetailResultData.getArrival(), BeanUtil.convert(passengerDetails, TrainPurchaseTicketRespDTO.class));
-                seatService.unlock(trainId, orderDetailResultData.getDeparture(), orderDetailResultData.getArrival(), BeanUtil.convert(passengerDetails, TrainPurchaseTicketRespDTO.class));
-                passengerDetails.stream()
-                        .collect(java.util.stream.Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getSeatType,
-                                java.util.stream.Collectors.groupingBy(TicketOrderPassengerDetailRespDTO::getCarriageNumber, java.util.stream.Collectors.counting())))
-                        .forEach((seatType, carriageCountMap) -> carriageCountMap.forEach((carriageNumber, count) ->
-                                seatService.adjustCarriageRemainingSummary(trainId, orderDetailResultData.getDeparture(), orderDetailResultData.getArrival(), seatType, carriageNumber, count)));
-                ticketAvailabilityTokenBucket.rollbackInBucket(orderDetailResultData);
-            }
+            // Canal 至少一次投递，具体回滚服务用持久化命令记录和缓存幂等标记裁决唯一执行者。
+            orderCloseRollbackService.rollback(each.get("order_sn").toString());
         }
     }
 
