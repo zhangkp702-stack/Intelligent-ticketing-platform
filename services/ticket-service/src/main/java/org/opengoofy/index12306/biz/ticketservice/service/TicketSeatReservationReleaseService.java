@@ -65,10 +65,11 @@ public class TicketSeatReservationReleaseService {
      * @param departure 出发站
      * @param arrival 到达站
      * @param ridingDate 乘车日期
+     * @param serviceDate 列车始发日期
      * @param tickets 已锁定的座位明细
      */
     public void createReservation(String orderSn, String reservationId, Long trainId, String departure,
-                                  String arrival, java.util.Date ridingDate,
+                                  String arrival, java.util.Date ridingDate, java.util.Date serviceDate,
                                   List<TrainPurchaseTicketRespDTO> tickets) {
         // 订单返回成功后，把 Redis owner 与数据库座位锁的共同归属持久化，供关闭任务恢复。
         TicketSeatReservationDO reservation = TicketSeatReservationDO.builder()
@@ -76,6 +77,7 @@ public class TicketSeatReservationReleaseService {
                 .orderSn(orderSn)
                 .trainId(trainId)
                 .ridingDate(ridingDate)
+                .serviceDate(serviceDate)
                 .departure(departure)
                 .arrival(arrival)
                 .seatPayload(JSON.toJSONString(tickets))

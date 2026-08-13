@@ -53,6 +53,9 @@ public class TicketSeatReservationDO extends BaseDO {
     /** 乘车日期。 */
     private Date ridingDate;
 
+    /** 列车从始发站出发的日期，用于隔离不同开行日的运行库存。 */
+    private Date serviceDate;
+
     /** 出发站。 */
     private String departure;
 

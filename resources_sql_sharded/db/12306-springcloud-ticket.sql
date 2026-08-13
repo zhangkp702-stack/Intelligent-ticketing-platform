@@ -87,6 +87,7 @@ CREATE TABLE `t_ticket_seat_reservation`
     `order_sn`                    varchar(128) NOT NULL COMMENT '订单号',
     `train_id`                    bigint(20)   NOT NULL COMMENT '列车ID',
     `riding_date`                 date         DEFAULT NULL COMMENT '乘车日期',
+    `service_date`                date         DEFAULT NULL COMMENT '列车始发日期',
     `departure`                   varchar(64)  NOT NULL COMMENT '出发站',
     `arrival`                     varchar(64)  NOT NULL COMMENT '到达站',
     `seat_payload`                mediumtext   NOT NULL COMMENT '座位明细JSON快照',
@@ -98,7 +99,8 @@ CREATE TABLE `t_ticket_seat_reservation`
     `del_flag`                    tinyint(1)   DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_reservation_id` (`reservation_id`),
-    KEY `idx_order_sn` (`order_sn`)
+    KEY `idx_order_sn` (`order_sn`),
+    KEY `idx_train_service_date` (`train_id`, `service_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单座位占用及释放状态表';
 
 CREATE TABLE `t_business_operation`

@@ -72,6 +72,7 @@ import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.OrderCloseRollbackService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketSeatReservationReleaseService;
 import org.opengoofy.index12306.biz.ticketservice.service.TicketService;
+import org.opengoofy.index12306.biz.ticketservice.service.TrainServiceDateResolver;
 import org.opengoofy.index12306.biz.ticketservice.service.cache.SeatMarginCacheLoader;
 import org.opengoofy.index12306.biz.ticketservice.service.cache.TicketAvailabilityLocalCache;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TokenResultDTO;
@@ -168,6 +169,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     private final TicketAvailabilityTokenBucket ticketAvailabilityTokenBucket;
     private final RedisSeatBitmapService redisSeatBitmapService;
     private final TicketPurchaseMetrics ticketPurchaseMetrics;
+    private final TrainServiceDateResolver trainServiceDateResolver;
     private TicketService ticketService;
 
     @Value("${framework.cache.redis.prefix:}")
@@ -473,7 +475,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         }
     }
     /**
-     * 持久化车票和订单，并使用请求携带的乘车日期替代基础时刻表中的固定日期。
+     * 持久化车票和订单，并计算列车始发日期以供后续运行库存隔离使用。
      *
      * @param requestParam 已通过购票校验的请求参数
      * @return 新建订单及车票明细
@@ -493,14 +495,16 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                 () -> trainMapper.selectById(trainId),
                 ADVANCE_TICKET_DAY,
                 TimeUnit.DAYS);
+        // 用户上车日期可能晚于列车始发日期，必须先按基础时刻表换算出运行库存所属的始发日期。
+        Date serviceDate = trainServiceDateResolver.resolve(trainDO, requestParam.getDepartureDate(), requestParam.getDeparture());
         Timer.Sample seatSelectionTimer = ticketPurchaseMetrics.startStageTimer();
         List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults;
         try {
             // 根据列车类型以及本次购票请求选择并锁定座位，内部包含 Redis 临时占位和数据库确认。
             trainPurchaseTicketResults = trainSeatTypeSelector.select(trainDO.getTrainType(), requestParam, reservationId);
             ticketPurchaseMetrics.recordStage(seatSelectionTimer, "seat_selection", "success");
-            log.info("ticket_seat_selected reservationId={}, trainId={}, boardingDate={}, departure={}, arrival={}, seatCount={}",
-                    reservationId, requestParam.getTrainId(), requestParam.getDepartureDate(), requestParam.getDeparture(),
+            log.info("ticket_seat_selected reservationId={}, trainId={}, boardingDate={}, serviceDate={}, departure={}, arrival={}, seatCount={}",
+                    reservationId, requestParam.getTrainId(), requestParam.getDepartureDate(), serviceDate, requestParam.getDeparture(),
                     requestParam.getArrival(), trainPurchaseTicketResults.size());
         } catch (Throwable ex) {
             // 选座失败单独计数，便于区分无票与后续订单服务异常。
@@ -605,10 +609,10 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             // 订单创建成功后持久化座位与 reservationId 的归属，关闭任务只能释放这条记录声明的座位。
             ticketSeatReservationReleaseService.createReservation(ticketOrderResult.getData(), reservationId,
                     Long.parseLong(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival(),
-                    requestParam.getDepartureDate(), trainPurchaseTicketResults);
+                    requestParam.getDepartureDate(), serviceDate, trainPurchaseTicketResults);
             ticketPurchaseMetrics.recordStage(reservationPersistTimer, "reservation_persist", "success");
-            log.info("ticket_reservation_persisted reservationId={}, orderSn={}, trainId={}",
-                    reservationId, ticketOrderResult.getData(), requestParam.getTrainId());
+            log.info("ticket_reservation_persisted reservationId={}, orderSn={}, trainId={}, serviceDate={}",
+                    reservationId, ticketOrderResult.getData(), requestParam.getTrainId(), serviceDate);
         } catch (Throwable ex) {
             // 订单已创建但预订关系失败需要告警，由后续可靠恢复阶段处理，不直接释放已创建订单的座位。
             ticketPurchaseMetrics.recordStage(reservationPersistTimer, "reservation_persist", "failed");
