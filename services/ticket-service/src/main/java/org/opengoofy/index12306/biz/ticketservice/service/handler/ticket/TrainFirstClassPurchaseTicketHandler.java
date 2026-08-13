@@ -72,7 +72,8 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
         if (StrUtil.isNotBlank(requestParam.getPreferredCarriageNumber())) {
             carriageNumbers = List.of(requestParam.getPreferredCarriageNumber());
         } else {
-            carriageNumbers = new ArrayList<>(seatService.listUsableCarriageNumber(trainId, requestParam.getSeatType(), departure, arrival));
+            carriageNumbers = new ArrayList<>(seatService.listUsableCarriageNumber(
+                    trainId, requestParam.getRequestParam().getServiceDate(), requestParam.getSeatType(), departure, arrival));
             Collections.shuffle(carriageNumbers, ThreadLocalRandom.current());
         }
         // 获取用户选座意愿
@@ -82,7 +83,8 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
         // 开始逐车厢开始选座
         for (String carriageNumber : carriageNumbers) {
             // 查找所有可用座位
-            List<String> availableSeats = new ArrayList<>(seatService.listAvailableSeat(trainId, carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
+            List<String> availableSeats = new ArrayList<>(seatService.listAvailableSeat(
+                    trainId, requestParam.getRequestParam().getServiceDate(), carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
                     .filter(each -> !isExcludedSeat(excludedSeatNumbers, carriageNumber, each))
                     .toList());
             rotateAvailableSeats(availableSeats, requestParam.getSeatScanOffset());

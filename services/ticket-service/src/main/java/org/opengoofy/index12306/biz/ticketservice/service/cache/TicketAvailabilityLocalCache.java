@@ -20,7 +20,7 @@ package org.opengoofy.index12306.biz.ticketservice.service.cache;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
-import org.opengoofy.index12306.framework.starter.cache.toolkit.CacheUtil;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -28,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -47,18 +48,24 @@ public class TicketAvailabilityLocalCache {
                 .build();
     }
 
-    public Integer getSeatQuantity(String trainId, String departure, String arrival, String seatType) {
-        return Optional.ofNullable(cache.getIfPresent(buildKey(trainId, departure, arrival)))
+    /**
+     * 获取指定始发日期下的本地余票摘要。
+     */
+    public Integer getSeatQuantity(String trainId, Date serviceDate, String departure, String arrival, String seatType) {
+        return Optional.ofNullable(cache.getIfPresent(buildKey(trainId, serviceDate, departure, arrival)))
                 .map(each -> each.get(seatType))
                 .map(Integer::parseInt)
                 .orElse(null);
     }
 
-    public void putSeatQuantity(String trainId, String departure, String arrival, String seatType, Object quantity) {
+    /**
+     * 写入指定始发日期下的单个座位类型余票摘要。
+     */
+    public void putSeatQuantity(String trainId, Date serviceDate, String departure, String arrival, String seatType, Object quantity) {
         if (quantity == null) {
             return;
         }
-        String cacheKey = buildKey(trainId, departure, arrival);
+        String cacheKey = buildKey(trainId, serviceDate, departure, arrival);
         Map<String, String> seatQuantityMap = Optional.ofNullable(cache.getIfPresent(cacheKey))
                 .map(LinkedHashMap::new)
                 .orElseGet(LinkedHashMap::new);
@@ -66,25 +73,37 @@ public class TicketAvailabilityLocalCache {
         cache.put(cacheKey, seatQuantityMap);
     }
 
-    public void putRemainingTickets(String trainId, String departure, String arrival, Map<String, String> remainingTickets) {
+    /**
+     * 写入指定始发日期下的完整区间余票摘要。
+     */
+    public void putRemainingTickets(String trainId, Date serviceDate, String departure, String arrival, Map<String, String> remainingTickets) {
         if (remainingTickets == null || remainingTickets.isEmpty()) {
             return;
         }
-        cache.put(buildKey(trainId, departure, arrival), new LinkedHashMap<>(remainingTickets));
+        cache.put(buildKey(trainId, serviceDate, departure, arrival), new LinkedHashMap<>(remainingTickets));
     }
 
-    public void invalidate(String trainId, String departure, String arrival) {
-        cache.invalidate(buildKey(trainId, departure, arrival));
+    /**
+     * 失效指定始发日期下的区间余票摘要。
+     */
+    public void invalidate(String trainId, Date serviceDate, String departure, String arrival) {
+        cache.invalidate(buildKey(trainId, serviceDate, departure, arrival));
     }
 
-    public void invalidateRoutes(String trainId, List<RouteDTO> routeDTOList) {
+    /**
+     * 批量失效指定始发日期下的一组区间余票摘要。
+     */
+    public void invalidateRoutes(String trainId, Date serviceDate, List<RouteDTO> routeDTOList) {
         if (routeDTOList == null) {
             return;
         }
-        routeDTOList.forEach(each -> invalidate(trainId, each.getStartStation(), each.getEndStation()));
+        routeDTOList.forEach(each -> invalidate(trainId, serviceDate, each.getStartStation(), each.getEndStation()));
     }
 
-    private String buildKey(String trainId, String departure, String arrival) {
-        return CacheUtil.buildKey(trainId, departure, arrival);
+    /**
+     * 构造始发日期隔离的本地缓存键。
+     */
+    private String buildKey(String trainId, Date serviceDate, String departure, String arrival) {
+        return ServiceDateKeyUtil.buildKey(trainId, serviceDate, departure, arrival);
     }
 }

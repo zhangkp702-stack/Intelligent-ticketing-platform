@@ -70,14 +70,16 @@ public class TrainBusinessClassPurchaseTicketHandler extends AbstractTrainPurcha
         if (StrUtil.isNotBlank(requestParam.getPreferredCarriageNumber())) {
             carriageNumbers = List.of(requestParam.getPreferredCarriageNumber());
         } else {
-            carriageNumbers = new ArrayList<>(seatService.listUsableCarriageNumber(trainId, requestParam.getSeatType(), departure, arrival));
+            carriageNumbers = new ArrayList<>(seatService.listUsableCarriageNumber(
+                    trainId, requestParam.getRequestParam().getServiceDate(), requestParam.getSeatType(), departure, arrival));
             Collections.shuffle(carriageNumbers, ThreadLocalRandom.current());
         }
         Set<String> excludedSeatNumbers = CollUtil.isEmpty(requestParam.getExcludeSeatNumbers())
                 ? Set.of()
                 : new LinkedHashSet<>(requestParam.getExcludeSeatNumbers());
         for (String carriageNumber : carriageNumbers) {
-            List<String> availableSeats = new ArrayList<>(seatService.listAvailableSeat(trainId, carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
+            List<String> availableSeats = new ArrayList<>(seatService.listAvailableSeat(
+                    trainId, requestParam.getRequestParam().getServiceDate(), carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
                     .filter(each -> !isExcludedSeat(excludedSeatNumbers, carriageNumber, each))
                     .toList());
             rotateAvailableSeats(availableSeats, requestParam.getSeatScanOffset());

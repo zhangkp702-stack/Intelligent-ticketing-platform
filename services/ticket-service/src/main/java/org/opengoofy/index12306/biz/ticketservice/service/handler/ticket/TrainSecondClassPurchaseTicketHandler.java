@@ -82,7 +82,8 @@ public class TrainSecondClassPurchaseTicketHandler extends AbstractTrainPurchase
         if (StrUtil.isNotBlank(requestParam.getPreferredCarriageNumber())) {
             carriageNumbers = List.of(requestParam.getPreferredCarriageNumber());
         } else {
-            carriageNumbers = new ArrayList<>(seatService.listUsableCarriageNumber(trainId, requestParam.getSeatType(), departure, arrival));
+            carriageNumbers = new ArrayList<>(seatService.listUsableCarriageNumber(
+                    trainId, requestParam.getRequestParam().getServiceDate(), requestParam.getSeatType(), departure, arrival));
             Collections.shuffle(carriageNumbers, ThreadLocalRandom.current());
         }
         // 去重车厢号
@@ -91,7 +92,8 @@ public class TrainSecondClassPurchaseTicketHandler extends AbstractTrainPurchase
                 : new LinkedHashSet<>(requestParam.getExcludeSeatNumbers());
         for (String carriageNumber : carriageNumbers) {
             // 获取当前车厢可用座位，使用当前站台区间的位图和座位进行与运算
-            List<String> availableSeats = new ArrayList<>(seatService.listAvailableSeat(trainId, carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
+            List<String> availableSeats = new ArrayList<>(seatService.listAvailableSeat(
+                    trainId, requestParam.getRequestParam().getServiceDate(), carriageNumber, requestParam.getSeatType(), departure, arrival).stream()
                     .filter(each -> !isExcludedSeat(excludedSeatNumbers, carriageNumber, each))
                     .toList());
             // 按扫描偏移量旋转可用座位列表，避免所有请求都从同一批座位开始尝试

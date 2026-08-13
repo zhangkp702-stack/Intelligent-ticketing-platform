@@ -137,7 +137,7 @@ public class TicketSeatReservationReleaseService {
             }
             if (locked.getDbSeatReleaseStatus() != STEP_DONE) {
                 // 只按当前 reservation 记录中的座位与区间解锁，不能从迟到消息直接构造座位。
-                seatService.unlock(String.valueOf(locked.getTrainId()), locked.getDeparture(), locked.getArrival(),
+                seatService.unlock(String.valueOf(locked.getTrainId()), locked.getServiceDate(), locked.getDeparture(), locked.getArrival(),
                         deserializeTickets(locked));
                 locked.setDbSeatReleaseStatus(STEP_DONE);
                 if (ticketSeatReservationMapper.updateById(locked) != 1) {
@@ -164,7 +164,7 @@ public class TicketSeatReservationReleaseService {
             return;
         }
         RedisSeatBitmapReleaseResult result = redisSeatBitmapService.releaseByReservationId(
-                String.valueOf(reservation.getTrainId()), reservation.getDeparture(), reservation.getArrival(),
+                String.valueOf(reservation.getTrainId()), reservation.getServiceDate(), reservation.getDeparture(), reservation.getArrival(),
                 tickets, reservation.getReservationId());
 
         // owner 已变更不是可重试的异常；旧 reservation 无权继续清理当前位图。
@@ -188,7 +188,7 @@ public class TicketSeatReservationReleaseService {
         }
         // 令牌桶仍复用既有聚合算法，但唯一幂等键改为 reservationId 而非订单号。
         ticketAvailabilityTokenBucket.rollbackInBucketIfNecessary(
-                buildTokenRollbackOrder(reservation, tickets), reservation.getReservationId(),
+                buildTokenRollbackOrder(reservation, tickets), reservation.getServiceDate(), reservation.getReservationId(),
                 !"binlog".equals(ticketAvailabilityCacheUpdateType));
         reservation.setTokenRollbackStatus(STEP_DONE);
         if (ticketSeatReservationMapper.updateById(reservation) != 1) {

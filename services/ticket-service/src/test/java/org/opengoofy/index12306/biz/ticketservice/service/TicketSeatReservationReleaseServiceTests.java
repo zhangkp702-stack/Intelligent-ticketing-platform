@@ -30,6 +30,7 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.Date;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -65,7 +66,7 @@ class TicketSeatReservationReleaseServiceTests {
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
-        when(redisSeatBitmapService.releaseByReservationId(eq("1"), eq("A"), eq("B"), anyList(), eq("reservation-a")))
+        when(redisSeatBitmapService.releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), anyList(), eq("reservation-a")))
                 .thenReturn(RedisSeatBitmapReleaseResult.OWNER_CHANGED);
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
                 reservationMapper, seatService, redisSeatBitmapService, tokenBucket, transactionTemplate);
@@ -75,10 +76,10 @@ class TicketSeatReservationReleaseServiceTests {
         assertEquals(1, reservation.getDbSeatReleaseStatus());
         assertEquals(2, reservation.getRedisBitmapReleaseStatus());
         assertEquals(1, reservation.getTokenRollbackStatus());
-        verify(seatService).unlock(eq("1"), eq("A"), eq("B"), anyList());
-        verify(redisSeatBitmapService).releaseByReservationId(eq("1"), eq("A"), eq("B"), anyList(), eq("reservation-a"));
+        verify(seatService).unlock(eq("1"), any(Date.class), eq("A"), eq("B"), anyList());
+        verify(redisSeatBitmapService).releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), anyList(), eq("reservation-a"));
         verify(tokenBucket).rollbackInBucketIfNecessary(any(TicketOrderDetailRespDTO.class),
-                eq("reservation-a"), anyBoolean());
+                any(Date.class), eq("reservation-a"), anyBoolean());
     }
 
     /**
@@ -96,6 +97,7 @@ class TicketSeatReservationReleaseServiceTests {
                 .reservationId("reservation-a")
                 .orderSn("order-1")
                 .trainId(1L)
+                .serviceDate(new Date())
                 .departure("A")
                 .arrival("B")
                 .seatPayload(JSON.toJSONString(List.of(ticket)))

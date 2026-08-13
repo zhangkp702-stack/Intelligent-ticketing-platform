@@ -111,7 +111,7 @@ public final class RedisKeyConstant {
     /**
      * 购票主资源锁：车厢 + 基础区间段粒度
      */
-    public static final String LOCK_PURCHASE_TICKETS_RESOURCE_SEGMENT = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_resource_%s_%d_%s_%d";
+    public static final String LOCK_PURCHASE_TICKETS_RESOURCE_SEGMENT = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_resource_%s_%s_%d_%s_%d";
 
     /**
      * 车厢维度余票粗筛游标
@@ -129,6 +129,16 @@ public final class RedisKeyConstant {
      * 车厢区间段临时占座归属，field 为座位 bit，value 为 holdId
      */
     public static final String TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER = "index12306-ticket-service:seat_owner:{%s:%d:%s}:%d";
+
+    /**
+     * 带列车始发日期的车厢区间座位占用位图。
+     */
+    public static final String TRAIN_CARRIAGE_SEGMENT_SEAT_BITMAP_BY_SERVICE_DATE = "index12306-ticket-service:seat_bitmap:{%s:%s:%d:%s}:%d";
+
+    /**
+     * 带列车始发日期的车厢区间座位归属映射。
+     */
+    public static final String TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER_BY_SERVICE_DATE = "index12306-ticket-service:seat_owner:{%s:%s:%d:%s}:%d";
 
     /**
      * 获取全部地点集合 Key

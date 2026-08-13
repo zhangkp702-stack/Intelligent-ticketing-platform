@@ -22,6 +22,7 @@ import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.cache.SeatMarginCacheLoader;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -50,7 +51,8 @@ public class TrainPurchaseTicketParamStockChainHandler implements TrainPurchaseT
     public void handler(PurchaseTicketReqDTO requestParam) {
         // 车次站点是否还有余票。如果用户提交多个乘车人非同一座位类型，拆分验证
         // 凭借车次 ID、出发站、到达站作为缓存键，获取车次站点的余票信息
-        String keySuffix = StrUtil.join("_", requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
+        String keySuffix = StrUtil.join("_", requestParam.getTrainId(), ServiceDateKeyUtil.format(requestParam.getServiceDate()),
+                requestParam.getDeparture(), requestParam.getArrival());
         // 从缓存组件中获取StringRedisTemplate实例
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
         // 获取所有乘车人
@@ -69,6 +71,7 @@ public class TrainPurchaseTicketParamStockChainHandler implements TrainPurchaseT
                     .orElseGet(() -> {
                         Map<String, String> seatMarginMap = seatMarginCacheLoader.load(
                                 String.valueOf(requestParam.getTrainId()),
+                                requestParam.getServiceDate(),
                                 String.valueOf(seatType), requestParam.getDeparture(),
                                 requestParam.getArrival());
                         // 返回获取到的座位位置

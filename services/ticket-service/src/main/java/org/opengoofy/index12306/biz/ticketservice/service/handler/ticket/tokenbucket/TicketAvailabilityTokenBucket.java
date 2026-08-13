@@ -36,6 +36,7 @@ import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassenge
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TokenResultDTO;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.opengoofy.index12306.framework.starter.bases.Singleton;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.common.toolkit.Assert;
@@ -49,6 +50,7 @@ import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -104,13 +106,14 @@ public class TicketAvailabilityTokenBucket {
         // 获取redis的stringRedisTemplate
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
         // 定义redis的令牌桶的key
-        String tokenBucketHashKey = TICKET_AVAILABILITY_TOKEN_BUCKET + requestParam.getTrainId();
+        String tokenBucketHashKey = buildTokenBucketHashKey(requestParam.getTrainId(), requestParam.getServiceDate());
         // 判断redis有没有这个桶，此处判断有没有这个redis的hash是为了后面lua脚本可以扣除
         Boolean hasKey = distributedCache.hasKey(tokenBucketHashKey);
         // 如令牌桶不存在才去初始化
         if (!hasKey) {
             // 获取分布式锁，防止超卖
-            RLock lock = redissonClient.getLock(String.format(LOCK_TICKET_AVAILABILITY_TOKEN_BUCKET, requestParam.getTrainId()));
+            RLock lock = redissonClient.getLock(String.format(LOCK_TICKET_AVAILABILITY_TOKEN_BUCKET,
+                    buildTokenBucketLockKey(requestParam.getTrainId(), requestParam.getServiceDate())));
             if (!lock.tryLock()) {
                 throw new ServiceException("购票异常，请稍候再试");
             }
@@ -126,6 +129,7 @@ public class TicketAvailabilityTokenBucket {
                         // 获取该区间可用的座位数量，并按照类型分类统计
                         List<SeatTypeCountDTO> seatTypeCountDTOList = seatService.listSeatTypeCount(
                                 Long.parseLong(requestParam.getTrainId()),
+                                requestParam.getServiceDate(),
                                 each.getStartStation(),
                                 each.getEndStation(),
                                 seatTypes);
@@ -137,7 +141,7 @@ public class TicketAvailabilityTokenBucket {
                         }
                     }
                     // 把缓存数据设置到redis
-                    stringRedisTemplate.opsForHash().putAll(TICKET_AVAILABILITY_TOKEN_BUCKET + requestParam.getTrainId(), ticketAvailabilityTokenMap);
+                    stringRedisTemplate.opsForHash().putAll(tokenBucketHashKey, ticketAvailabilityTokenMap);
                 }
             } finally {
                 lock.unlock();
@@ -227,6 +231,23 @@ public class TicketAvailabilityTokenBucket {
             TicketOrderDetailRespDTO requestParam,
             String rollbackKey,
             boolean includeRemainingTicketCache) {
+        return rollbackInBucketIfNecessary(requestParam, null, rollbackKey, includeRemainingTicketCache);
+    }
+
+    /**
+     * 按预订所属的列车始发日期回滚令牌和余票摘要。
+     *
+     * @param requestParam 已关闭订单的完整车票信息
+     * @param serviceDate 列车始发日期；历史预订为空时回退旧键
+     * @param rollbackKey reservationId 等稳定幂等键
+     * @param includeRemainingTicketCache 是否同时恢复区间余票缓存
+     * @return 本次实际回滚时返回 true，已回滚时返回 false
+     */
+    public boolean rollbackInBucketIfNecessary(
+            TicketOrderDetailRespDTO requestParam,
+            Date serviceDate,
+            String rollbackKey,
+            boolean includeRemainingTicketCache) {
         // 复用令牌桶脚本，在写入订单去重标记后一次性完成令牌和车厢摘要增量。
         DefaultRedisScript<Long> actual = Singleton.get(LUA_TICKET_AVAILABILITY_ROLLBACK_TOKEN_BUCKET_PATH, () -> {
             DefaultRedisScript<Long> redisScript = new DefaultRedisScript<>();
@@ -253,8 +274,9 @@ public class TicketAvailabilityTokenBucket {
                 .entrySet().stream()
                 .flatMap(seatTypeEntry -> seatTypeEntry.getValue().entrySet().stream().map(carriageEntry -> {
                     JSONObject jsonObject = new JSONObject();
-                    jsonObject.put("summaryKey", TRAIN_STATION_CARRIAGE_REMAINING_TICKET + StrUtil.join("_",
-                            requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), seatTypeEntry.getKey()));
+                    jsonObject.put("summaryKey", TRAIN_STATION_CARRIAGE_REMAINING_TICKET + ServiceDateKeyUtil.buildKey(
+                            String.valueOf(requestParam.getTrainId()), serviceDate, requestParam.getDeparture(),
+                            requestParam.getArrival(), String.valueOf(seatTypeEntry.getKey())));
                     jsonObject.put("carriageNumber", carriageEntry.getKey());
                     jsonObject.put("count", String.valueOf(carriageEntry.getValue()));
                     return jsonObject;
@@ -263,15 +285,15 @@ public class TicketAvailabilityTokenBucket {
 
         // reservation 标记与所有缓存增量在同一 Lua 脚本内提交，进程崩溃后重试不会出现半次回滚。
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-        String actualHashKey = TICKET_AVAILABILITY_TOKEN_BUCKET + requestParam.getTrainId();
+        String actualHashKey = buildTokenBucketHashKey(requestParam.getTrainId(), serviceDate);
         String luaScriptKey = StrUtil.join("_", requestParam.getDeparture(), requestParam.getArrival());
         List<RouteDTO> takeoutRouteDTOList = trainStationService.listTakeoutTrainStationRoute(
                 String.valueOf(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival());
         JSONArray remainingTicketArray = takeoutRouteDTOList.stream()
                 .flatMap(route -> seatTypeCountMap.entrySet().stream().map(entry -> {
                     JSONObject jsonObject = new JSONObject();
-                    jsonObject.put("remainingKey", TRAIN_STATION_REMAINING_TICKET + StrUtil.join("_",
-                            requestParam.getTrainId(), route.getStartStation(), route.getEndStation()));
+                    jsonObject.put("remainingKey", TRAIN_STATION_REMAINING_TICKET + ServiceDateKeyUtil.buildKey(
+                            String.valueOf(requestParam.getTrainId()), serviceDate, route.getStartStation(), route.getEndStation()));
                     jsonObject.put("seatType", String.valueOf(entry.getKey()));
                     jsonObject.put("count", String.valueOf(entry.getValue()));
                     return jsonObject;
@@ -296,8 +318,36 @@ public class TicketAvailabilityTokenBucket {
      */
     public void delTokenInBucket(PurchaseTicketReqDTO requestParam) {
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-        String tokenBucketHashKey = TICKET_AVAILABILITY_TOKEN_BUCKET + requestParam.getTrainId();
+        String tokenBucketHashKey = buildTokenBucketHashKey(requestParam.getTrainId(), requestParam.getServiceDate());
         stringRedisTemplate.delete(tokenBucketHashKey);
+    }
+
+    /**
+     * 构造按始发日期隔离的令牌桶键，并兼容未保存始发日期的历史订单。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @return 令牌桶 Redis 键
+     */
+    private String buildTokenBucketHashKey(Object trainId, Date serviceDate) {
+        // 历史订单没有始发日期时必须继续命中旧桶，避免异步释放向新空桶错误归还令牌。
+        return serviceDate == null
+                ? TICKET_AVAILABILITY_TOKEN_BUCKET + trainId
+                : TICKET_AVAILABILITY_TOKEN_BUCKET + trainId + ':' + ServiceDateKeyUtil.format(serviceDate);
+    }
+
+    /**
+     * 构造令牌桶初始化锁的业务键。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @return 锁模板使用的业务键
+     */
+    private String buildTokenBucketLockKey(Object trainId, Date serviceDate) {
+        // 新订单始终携带始发日期；保留空日期分支便于历史数据修复时复用旧锁。
+        return serviceDate == null
+                ? String.valueOf(trainId)
+                : trainId + ":" + ServiceDateKeyUtil.format(serviceDate);
     }
 
     public void putTokenInBucket() {

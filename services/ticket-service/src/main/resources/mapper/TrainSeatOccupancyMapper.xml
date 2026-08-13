@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one or more
+  ~ contributor license agreements.  See the NOTICE file distributed with
+  ~ this work for additional information regarding copyright ownership.
+  ~ The ASF licenses this file to You under the Apache License, Version 2.0
+  ~ (the "License"); you may not use this file except in compliance with
+  ~ the License.  You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainSeatOccupancyMapper">
+
+    <insert id="initializeServiceDateInventory">
+        insert ignore into t_train_seat_occupancy
+            (train_id, service_date, seat_id, occupy_bitmap, version, create_time, update_time, del_flag)
+        select train_id, #{serviceDate}, id, 0, 0, now(), now(), 0
+        from t_seat
+        where train_id = #{trainId}
+    </insert>
+
+    <select id="listAvailableSeatByCarriage" resultType="org.opengoofy.index12306.biz.ticketservice.dao.entity.SeatDO">
+        select s.id,
+               s.train_id,
+               s.carriage_number,
+               s.seat_number,
+               s.seat_type,
+               s.price,
+               o.occupy_bitmap,
+               o.version,
+               s.seat_layout_code,
+               s.seat_feature_mask
+        from t_seat s
+                 inner join t_train_seat_occupancy o
+                            on o.train_id = s.train_id
+                                and o.seat_id = s.id
+                                and o.service_date = #{serviceDate}
+                                and o.del_flag = 0
+        where s.train_id = #{trainId}
+          and s.carriage_number = #{carriageNumber}
+          and s.seat_type = #{seatType}
+          and (o.occupy_bitmap &amp; #{requestMask}) = 0
+        order by s.seat_number asc
+        limit #{limit}
+    </select>
+
+    <select id="listSeatTypeCount" resultType="org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO">
+        select s.seat_type as seatType, count(*) as seatCount
+        from t_seat s
+                 inner join t_train_seat_occupancy o
+                            on o.train_id = s.train_id
+                                and o.seat_id = s.id
+                                and o.service_date = #{serviceDate}
+                                and o.del_flag = 0
+        where s.train_id = #{trainId}
+          and (o.occupy_bitmap &amp; #{requestMask}) = 0
+          and s.seat_type in
+        <foreach collection="seatTypes" item="seatType" open="(" separator="," close=")">
+            #{seatType}
+        </foreach>
+        group by s.seat_type
+        having seatCount &gt; 0
+    </select>
+
+    <select id="listSeatRemainingTicket" resultType="Integer">
+        select count(*) as seatCount
+        from t_seat s
+                 inner join t_train_seat_occupancy o
+                            on o.train_id = s.train_id
+                                and o.seat_id = s.id
+                                and o.service_date = #{serviceDate}
+                                and o.del_flag = 0
+        where s.train_id = #{trainId}
+          and (o.occupy_bitmap &amp; #{requestMask}) = 0
+          and s.carriage_number in
+        <foreach collection="carriageNumbers" item="carriageNumber" open="(" separator="," close=")">
+            #{carriageNumber}
+        </foreach>
+        group by s.carriage_number
+    </select>
+
+    <select id="listCarriageAvailabilitySummary" resultType="org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilityDTO">
+        select s.carriage_number as carriageNumber, count(*) as seatCount
+        from t_seat s
+                 inner join t_train_seat_occupancy o
+                            on o.train_id = s.train_id
+                                and o.seat_id = s.id
+                                and o.service_date = #{serviceDate}
+                                and o.del_flag = 0
+        where s.train_id = #{trainId}
+          and s.seat_type = #{seatType}
+          and (o.occupy_bitmap &amp; #{requestMask}) = 0
+        group by s.carriage_number
+        having seatCount &gt; 0
+    </select>
+
+    <update id="tryLockSeatByBitmap">
+        update t_train_seat_occupancy
+        set occupy_bitmap = occupy_bitmap | #{requestMask},
+            version = version + 1,
+            update_time = now()
+        where train_id = #{trainId}
+          and service_date = #{serviceDate}
+          and seat_id = #{seatId}
+          and version = #{version}
+          and del_flag = 0
+          and (occupy_bitmap &amp; #{requestMask}) = 0
+    </update>
+
+    <update id="unlockSeatByBitmap">
+        update t_train_seat_occupancy
+        set occupy_bitmap = occupy_bitmap &amp; ~#{requestMask},
+            version = version + 1,
+            update_time = now()
+        where train_id = #{trainId}
+          and service_date = #{serviceDate}
+          and seat_id = #{seatId}
+          and del_flag = 0
+          and (occupy_bitmap &amp; #{requestMask}) != 0
+    </update>
+</mapper>

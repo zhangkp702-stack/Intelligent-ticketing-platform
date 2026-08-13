@@ -18,6 +18,7 @@
 package org.opengoofy.index12306.biz.ticketservice.dto.req;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 
@@ -46,6 +47,12 @@ public class PurchaseTicketReqDTO {
      */
     @JsonFormat(pattern = "yyyy-MM-dd", timezone = "GMT+8")
     private Date departureDate;
+
+    /**
+     * 服务端根据基础时刻表计算的列车始发日期，不接受客户端传入。
+     */
+    @JsonIgnore
+    private Date serviceDate;
 
     /**
      * 乘车人

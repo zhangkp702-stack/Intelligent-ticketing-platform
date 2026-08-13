@@ -278,6 +278,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                 int quantity = queryRemainingTicketQuantity(
                         stringRedisTemplate,
                         String.valueOf(each.getTrainId()),
+                        requestParam.getDepartureDate(),
                         item.getDeparture(),
                         item.getArrival(),
                         seatType);
@@ -352,7 +353,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             }
         }
         // 查询余票
-        List<Object> trainStationRemainingObjs = batchQueryRemainingTicketQuantity(stringRedisTemplate, trainStationPriceDOList);
+        List<Object> trainStationRemainingObjs = batchQueryRemainingTicketQuantity(
+                stringRedisTemplate, trainStationPriceDOList, requestParam.getDepartureDate());
         // 按照车次一个一个把余票装填
         for (TicketListDTO each : seatResults) {
             List<Integer> seatTypesByCode = VehicleTypeEnum.findSeatTypesByCode(each.getTrainType());
@@ -417,6 +419,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             Timer.Sample validationTimer = ticketPurchaseMetrics.startStageTimer();
             // 在扣减令牌前确认乘车日期存在，避免无效请求占用库存令牌。
             validatePurchaseDate(requestParam);
+            // 始发日期必须在责任链、令牌桶和选座之前统一计算，禁止以用户上车日期直接作为库存维度。
+            initializePurchaseServiceDate(requestParam);
             // 责任链模式，验证参数、站点及乘客是否允许购买当前车次。
             purchaseTicketAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_PURCHASE_TICKET_FILTER.name(), requestParam);
             ticketPurchaseMetrics.recordStage(validationTimer, "request_validation", "success");
@@ -496,7 +500,12 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                 ADVANCE_TICKET_DAY,
                 TimeUnit.DAYS);
         // 用户上车日期可能晚于列车始发日期，必须先按基础时刻表换算出运行库存所属的始发日期。
-        Date serviceDate = trainServiceDateResolver.resolve(trainDO, requestParam.getDepartureDate(), requestParam.getDeparture());
+        Date serviceDate = requestParam.getServiceDate();
+        if (serviceDate == null) {
+            // 事务入口兼容内部调用，仍以基础时刻表重新计算并覆盖运行库存日期。
+            serviceDate = trainServiceDateResolver.resolve(trainDO, requestParam.getDepartureDate(), requestParam.getDeparture());
+            requestParam.setServiceDate(serviceDate);
+        }
         Timer.Sample seatSelectionTimer = ticketPurchaseMetrics.startStageTimer();
         List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults;
         try {
@@ -637,7 +646,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         Timer.Sample compensationTimer = ticketPurchaseMetrics.startStageTimer();
         try {
             // 释放动作只使用本次已持有座位携带的 reservationId，避免误释放其他请求的座位。
-            redisSeatBitmapService.releaseHeld(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), tickets);
+            redisSeatBitmapService.releaseHeld(requestParam.getTrainId(), requestParam.getServiceDate(),
+                    requestParam.getDeparture(), requestParam.getArrival(), tickets);
             ticketPurchaseMetrics.recordStage(compensationTimer, "redis_compensation", "success");
         } catch (Throwable releaseEx) {
             // 原始异常仍需继续抛出，补偿异常通过指标和日志交给后续可靠恢复机制处理。
@@ -662,6 +672,23 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         if (requestParam == null || requestParam.getDepartureDate() == null) {
             throw new ServiceException("乘车日期不能为空");
         }
+    }
+
+    /**
+     * 根据列车基础时刻表计算并写入本次请求的始发日期库存维度。
+     *
+     * @param requestParam 已完成基础日期校验的购票请求
+     */
+    private void initializePurchaseServiceDate(PurchaseTicketReqDTO requestParam) {
+        // 读取基础车次而非订单日期，避免夜间列车的中途上车日期错误地参与库存分片。
+        TrainDO trainDO = distributedCache.safeGet(
+                TRAIN_INFO + requestParam.getTrainId(),
+                TrainDO.class,
+                () -> trainMapper.selectById(requestParam.getTrainId()),
+                ADVANCE_TICKET_DAY,
+                TimeUnit.DAYS);
+        requestParam.setServiceDate(trainServiceDateResolver.resolve(
+                trainDO, requestParam.getDepartureDate(), requestParam.getDeparture()));
     }
 
     @Override
@@ -929,23 +956,34 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         return seatResults.stream().map(TicketListDTO::getDeparture).distinct().collect(Collectors.toList());
     }
 
-    private int queryRemainingTicketQuantity(StringRedisTemplate stringRedisTemplate, String trainId, String departure, String arrival, String seatType) {
-        Integer localQuantity = ticketAvailabilityLocalCache.getSeatQuantity(trainId, departure, arrival, seatType);
+    /**
+     * 查询用户乘车日期对应始发日的区间余票，展示链路与购票链路使用同一库存键。
+     */
+    private int queryRemainingTicketQuantity(StringRedisTemplate stringRedisTemplate, String trainId, Date ridingDate,
+                                             String departure, String arrival, String seatType) {
+        Date serviceDate = resolveServiceDate(trainId, ridingDate, departure);
+        Integer localQuantity = ticketAvailabilityLocalCache.getSeatQuantity(trainId, serviceDate, departure, arrival, seatType);
         if (localQuantity != null) {
             return localQuantity;
         }
-        String keySuffix = StrUtil.join("_", trainId, departure, arrival);
+        String keySuffix = StrUtil.join("_", trainId,
+                org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil.format(serviceDate), departure, arrival);
         Object quantityObj = stringRedisTemplate.opsForHash().get(TRAIN_STATION_REMAINING_TICKET + keySuffix, seatType);
         if (quantityObj != null) {
-            ticketAvailabilityLocalCache.putSeatQuantity(trainId, departure, arrival, seatType, quantityObj);
+            ticketAvailabilityLocalCache.putSeatQuantity(trainId, serviceDate, departure, arrival, seatType, quantityObj);
             return Integer.parseInt(quantityObj.toString());
         }
-        Map<String, String> seatMarginMap = seatMarginCacheLoader.load(trainId, seatType, departure, arrival);
-        ticketAvailabilityLocalCache.putRemainingTickets(trainId, departure, arrival, seatMarginMap);
+        Map<String, String> seatMarginMap = seatMarginCacheLoader.load(trainId, serviceDate, seatType, departure, arrival);
+        ticketAvailabilityLocalCache.putRemainingTickets(trainId, serviceDate, departure, arrival, seatMarginMap);
         return Optional.ofNullable(seatMarginMap.get(seatType)).map(Integer::parseInt).orElse(0);
     }
 
-    private List<Object> batchQueryRemainingTicketQuantity(StringRedisTemplate stringRedisTemplate, List<TrainStationPriceDO> trainStationPriceDOList) {
+    /**
+     * 批量查询用户乘车日期对应始发日的余票，避免查询结果与实际锁座库存不一致。
+     */
+    private List<Object> batchQueryRemainingTicketQuantity(StringRedisTemplate stringRedisTemplate,
+                                                            List<TrainStationPriceDO> trainStationPriceDOList,
+                                                            Date ridingDate) {
         if (CollUtil.isEmpty(trainStationPriceDOList)) {
             return Collections.emptyList();
         }
@@ -953,10 +991,25 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                 .map(each -> queryRemainingTicketQuantity(
                         stringRedisTemplate,
                         String.valueOf(each.getTrainId()),
+                        ridingDate,
                         each.getDeparture(),
                         each.getArrival(),
                         String.valueOf(each.getSeatType())))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 根据用户乘车站和日期计算列车实际运行库存所属的始发日期。
+     */
+    private Date resolveServiceDate(String trainId, Date ridingDate, String departure) {
+        // 车次基础时刻表作为唯一换算依据，确保查询、令牌和锁座共享同一日期语义。
+        TrainDO trainDO = distributedCache.safeGet(
+                TRAIN_INFO + trainId,
+                TrainDO.class,
+                () -> trainMapper.selectById(trainId),
+                ADVANCE_TICKET_DAY,
+                TimeUnit.DAYS);
+        return trainServiceDateResolver.resolve(trainDO, ridingDate, departure);
     }
 
     private List<String> buildArrivalStationList(List<TicketListDTO> seatResults) {
@@ -986,7 +1039,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     private final ScheduledExecutorService tokenIsNullRefreshExecutor = Executors.newScheduledThreadPool(1);
 
     private void tokenIsNullRefreshToken(PurchaseTicketReqDTO requestParam, TokenResultDTO tokenResult) {
-        RLock lock = redissonClient.getLock(String.format(LOCK_TOKEN_BUCKET_ISNULL, requestParam.getTrainId()));
+        RLock lock = redissonClient.getLock(String.format(LOCK_TOKEN_BUCKET_ISNULL,
+                requestParam.getTrainId() + ':' + org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil.format(requestParam.getServiceDate())));
         if (!lock.tryLock()) {
             return;
         }
@@ -1001,7 +1055,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                             seatTypes.add(seatType);
                             tokenCountMap.put(seatType, Integer.parseInt(split[1]));
                         });
-                List<SeatTypeCountDTO> seatTypeCountDTOList = seatService.listSeatTypeCount(Long.parseLong(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival(), seatTypes);
+                List<SeatTypeCountDTO> seatTypeCountDTOList = seatService.listSeatTypeCount(Long.parseLong(requestParam.getTrainId()),
+                        requestParam.getServiceDate(), requestParam.getDeparture(), requestParam.getArrival(), seatTypes);
                 for (SeatTypeCountDTO each : seatTypeCountDTOList) {
                     Integer tokenCount = tokenCountMap.get(each.getSeatType());
                     if (tokenCount <= each.getSeatCount()) {

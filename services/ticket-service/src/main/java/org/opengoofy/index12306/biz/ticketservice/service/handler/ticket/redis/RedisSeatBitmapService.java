@@ -25,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.SeatLayoutBitmapUtil;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.StationSegmentBitmapUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.springframework.core.io.ClassPathResource;
@@ -36,6 +37,7 @@ import org.springframework.util.Assert;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +46,8 @@ import java.util.stream.Collectors;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_CARRIAGE_SEGMENT_SEAT_BITMAP;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER;
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_CARRIAGE_SEGMENT_SEAT_BITMAP_BY_SERVICE_DATE;
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER_BY_SERVICE_DATE;
 
 /**
  * Redis bitmap temporary seat hold service.
@@ -88,6 +92,23 @@ public class RedisSeatBitmapService {
      */
     public String tryHold(String trainId, String departure, String arrival, Integer seatType,
                           List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {
+        return tryHold(trainId, null, departure, arrival, seatType, tickets, reservationId);
+    }
+
+    /**
+     * 在指定始发日期的 Redis 运行库存中尝试占用座位。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @param seatType 座位类型
+     * @param tickets 待占用座位
+     * @param reservationId 座位归属标识
+     * @return 占用成功时返回 reservationId，冲突时返回空
+     */
+    public String tryHold(String trainId, Date serviceDate, String departure, String arrival, Integer seatType,
+                          List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {
         if (CollUtil.isEmpty(tickets)) {
             return null;
         }
@@ -95,7 +116,7 @@ public class RedisSeatBitmapService {
             throw new IllegalArgumentException("reservationId 不能为空");
         }
         // Redis owner 直接写入 reservationId，后续重试无需依赖进程内随机 holdId。
-        boolean holdSuccess = executeHold(trainId, departure, arrival, seatType, tickets, reservationId);
+        boolean holdSuccess = executeHold(trainId, serviceDate, departure, arrival, seatType, tickets, reservationId);
         if (!holdSuccess) {
             return null;
         }
@@ -115,11 +136,27 @@ public class RedisSeatBitmapService {
      */
     public RedisSeatBitmapReleaseResult releaseByHoldId(String trainId, String departure, String arrival,
                                                         Integer seatType, List<TrainPurchaseTicketRespDTO> tickets) {
+        return releaseByHoldId(trainId, null, departure, arrival, seatType, tickets);
+    }
+
+    /**
+     * 根据临时占用标识释放指定始发日期的 Redis 座位位图。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @param seatType 座位类型
+     * @param tickets 待释放座位
+     * @return 释放结果
+     */
+    public RedisSeatBitmapReleaseResult releaseByHoldId(String trainId, Date serviceDate, String departure, String arrival,
+                                                        Integer seatType, List<TrainPurchaseTicketRespDTO> tickets) {
         String holdId = resolveHoldId(tickets);
         if (StrUtil.isBlank(holdId)) {
             return RedisSeatBitmapReleaseResult.RELEASED;
         }
-        return release(trainId, departure, arrival, seatType, tickets, holdId);
+        return release(trainId, serviceDate, departure, arrival, seatType, tickets, holdId);
     }
 
     /**
@@ -131,12 +168,25 @@ public class RedisSeatBitmapService {
      * @param tickets 待释放座位
      */
     public void releaseHeld(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
+        releaseHeld(trainId, null, departure, arrival, tickets);
+    }
+
+    /**
+     * 释放指定始发日期下本次购票已持有的全部 Redis 临时座位。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @param tickets 待释放座位
+     */
+    public void releaseHeld(String trainId, Date serviceDate, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
         if (CollUtil.isEmpty(tickets)) {
             return;
         }
         tickets.stream()
                 .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType))
-                .forEach((seatType, eachSeatTypeTickets) -> releaseByHoldId(trainId, departure, arrival, seatType, eachSeatTypeTickets));
+                .forEach((seatType, eachSeatTypeTickets) -> releaseByHoldId(trainId, serviceDate, departure, arrival, seatType, eachSeatTypeTickets));
     }
 
     /**
@@ -151,6 +201,22 @@ public class RedisSeatBitmapService {
      */
     public RedisSeatBitmapReleaseResult releaseByReservationId(String trainId, String departure, String arrival,
                                                                 List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {
+        return releaseByReservationId(trainId, null, departure, arrival, tickets, reservationId);
+    }
+
+    /**
+     * 仅当 owner 与 reservationId 一致时，释放指定始发日期下的 Redis 座位位图。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @param tickets 预订关系持有的座位
+     * @param reservationId 预期 Redis owner
+     * @return 释放结果
+     */
+    public RedisSeatBitmapReleaseResult releaseByReservationId(String trainId, Date serviceDate, String departure, String arrival,
+                                                                List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {
         if (CollUtil.isEmpty(tickets)) {
             return RedisSeatBitmapReleaseResult.RELEASED;
         }
@@ -162,12 +228,15 @@ public class RedisSeatBitmapService {
                 .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType))
                 .entrySet()
                 .stream()
-                .map(each -> release(trainId, departure, arrival, each.getKey(), each.getValue(), reservationId))
+                .map(each -> release(trainId, serviceDate, departure, arrival, each.getKey(), each.getValue(), reservationId))
                 .anyMatch(each -> each == RedisSeatBitmapReleaseResult.OWNER_CHANGED);
         return ownerChanged ? RedisSeatBitmapReleaseResult.OWNER_CHANGED : RedisSeatBitmapReleaseResult.RELEASED;
     }
 
-    private boolean executeHold(String trainId, String departure, String arrival, Integer seatType,
+    /**
+     * 执行 Lua 原子校验与占位，键空间由始发日期隔离。
+     */
+    private boolean executeHold(String trainId, Date serviceDate, String departure, String arrival, Integer seatType,
                                 List<TrainPurchaseTicketRespDTO> tickets, String holdId) {
         DefaultRedisScript<Long> script = Singleton.get(LUA_SEAT_BITMAP_HOLD_PATH, () -> {
             DefaultRedisScript<Long> redisScript = new DefaultRedisScript<>();
@@ -176,7 +245,7 @@ public class RedisSeatBitmapService {
             return redisScript;
         });
         Assert.notNull(script);
-        List<String> keys = buildKeys(trainId, departure, arrival, seatType, tickets);
+        List<String> keys = buildKeys(trainId, serviceDate, departure, arrival, seatType, tickets);
         String seatBits = buildSeatBits(seatType, tickets);
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
         Long result = stringRedisTemplate.execute(script, keys, holdId, seatBits);
@@ -194,7 +263,10 @@ public class RedisSeatBitmapService {
      * @param reservationId 预期 Redis owner
      * @return 释放结果
      */
-    private RedisSeatBitmapReleaseResult release(String trainId, String departure, String arrival, Integer seatType,
+    /**
+     * 执行 owner 校验后的 Lua 释放，防止重复消息释放新请求持有的座位。
+     */
+    private RedisSeatBitmapReleaseResult release(String trainId, Date serviceDate, String departure, String arrival, Integer seatType,
                                                  List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {
         if (CollUtil.isEmpty(tickets)) {
             return RedisSeatBitmapReleaseResult.RELEASED;
@@ -212,7 +284,7 @@ public class RedisSeatBitmapService {
             StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
             boolean ownerChanged = false;
             for (List<TrainPurchaseTicketRespDTO> eachCarriageTickets : carriageTickets.values()) {
-                List<String> keys = buildKeys(trainId, departure, arrival, seatType, eachCarriageTickets);
+                List<String> keys = buildKeys(trainId, serviceDate, departure, arrival, seatType, eachCarriageTickets);
                 String seatBits = buildSeatBits(seatType, eachCarriageTickets);
                 Long result = stringRedisTemplate.execute(script, keys, reservationId, seatBits);
                 if (result == null || result < 0) {
@@ -228,15 +300,24 @@ public class RedisSeatBitmapService {
         }
     }
 
-    private List<String> buildKeys(String trainId, String departure, String arrival, Integer seatType,
+    /**
+     * 构造同一始发日期、同一车厢的 bitmap 和 owner 键，保证 Lua 脚本仅操作该运行库存。
+     */
+    private List<String> buildKeys(String trainId, Date serviceDate, String departure, String arrival, Integer seatType,
                                    List<TrainPurchaseTicketRespDTO> tickets) {
         String carriageNumber = tickets.get(0).getCarriageNumber();
         List<Integer> segmentIndexes = buildSegmentIndexes(trainId, departure, arrival);
         List<String> bitmapKeys = new ArrayList<>(segmentIndexes.size());
         List<String> ownerKeys = new ArrayList<>(segmentIndexes.size());
         segmentIndexes.forEach(segmentIndex -> {
-            bitmapKeys.add(String.format(TRAIN_CARRIAGE_SEGMENT_SEAT_BITMAP, trainId, seatType, carriageNumber, segmentIndex));
-            ownerKeys.add(String.format(TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER, trainId, seatType, carriageNumber, segmentIndex));
+            if (serviceDate == null) {
+                bitmapKeys.add(String.format(TRAIN_CARRIAGE_SEGMENT_SEAT_BITMAP, trainId, seatType, carriageNumber, segmentIndex));
+                ownerKeys.add(String.format(TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER, trainId, seatType, carriageNumber, segmentIndex));
+            } else {
+                String serviceDateKey = ServiceDateKeyUtil.format(serviceDate);
+                bitmapKeys.add(String.format(TRAIN_CARRIAGE_SEGMENT_SEAT_BITMAP_BY_SERVICE_DATE, trainId, serviceDateKey, seatType, carriageNumber, segmentIndex));
+                ownerKeys.add(String.format(TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER_BY_SERVICE_DATE, trainId, serviceDateKey, seatType, carriageNumber, segmentIndex));
+            }
         });
         bitmapKeys.addAll(ownerKeys);
         return bitmapKeys;

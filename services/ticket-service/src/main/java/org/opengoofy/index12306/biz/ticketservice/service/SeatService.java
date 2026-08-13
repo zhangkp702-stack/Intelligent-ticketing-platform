@@ -23,6 +23,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilit
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -34,22 +35,23 @@ public interface SeatService extends IService<SeatDO> {
     /**
      * 获取列车车厢中可用的座位集合
      */
-    List<String> listAvailableSeat(String trainId, String carriageNumber, Integer seatType, String departure, String arrival);
+    List<String> listAvailableSeat(String trainId, Date serviceDate, String carriageNumber, Integer seatType, String departure, String arrival);
 
     /**
      * 获取列车车厢余票集合
      */
-    List<Integer> listSeatRemainingTicket(String trainId, String departure, String arrival, List<String> trainCarriageList);
+    List<Integer> listSeatRemainingTicket(String trainId, Date serviceDate, String departure, String arrival, List<String> trainCarriageList);
 
     /**
      * 查询列车有余票的车厢号集合
      */
-    List<String> listUsableCarriageNumber(String trainId, Integer carriageType, String departure, String arrival);
+    List<String> listUsableCarriageNumber(String trainId, Date serviceDate, Integer carriageType, String departure, String arrival);
 
     /**
      * 车厢维度余票粗筛候选列表
      */
     List<CarriageAvailabilityDTO> listCandidateCarriages(String trainId,
+                                                         Date serviceDate,
                                                          Integer seatType,
                                                          String departure,
                                                          String arrival,
@@ -59,6 +61,7 @@ public interface SeatService extends IService<SeatDO> {
      * 调整车厢维度余票摘要缓存
      */
     void adjustCarriageRemainingSummary(String trainId,
+                                        Date serviceDate,
                                         String departure,
                                         String arrival,
                                         Integer seatType,
@@ -68,20 +71,20 @@ public interface SeatService extends IService<SeatDO> {
     /**
      * 获取列车 startStation 到 endStation 区间可用座位数量
      */
-    List<SeatTypeCountDTO> listSeatTypeCount(Long trainId, String startStation, String endStation, List<Integer> seatTypes);
+    List<SeatTypeCountDTO> listSeatTypeCount(Long trainId, Date serviceDate, String startStation, String endStation, List<Integer> seatTypes);
 
     /**
      * 原子锁定选中的座位（数据库位图 CAS）
      */
-    boolean tryLockSeat(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketRespList);
+    boolean tryLockSeat(String trainId, Date serviceDate, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketRespList);
 
     /**
      * 保留兼容：锁定选中座位
      */
-    void lockSeat(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketRespList);
+    void lockSeat(String trainId, Date serviceDate, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketRespList);
 
     /**
      * 解锁选中座位（幂等）
      */
-    void unlock(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults);
+    void unlock(String trainId, Date serviceDate, String departure, String arrival, List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults);
 }

@@ -29,6 +29,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.cache.toolkit.CacheUtil;
 import org.redisson.api.RLock;
@@ -40,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Date;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -63,9 +65,19 @@ public class SeatMarginCacheLoader {
     private final RedissonClient redissonClient;
     private final TrainStationService trainStationService;
 
-    public Map<String, String> load(String trainId, String seatType, String departure, String arrival) {
+    /**
+     * 加载指定始发日期下各区间的余票摘要，静态座位布局不参与运行库存键。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param seatType 座位类型
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @return 请求区间的余票摘要
+     */
+    public Map<String, String> load(String trainId, Date serviceDate, String seatType, String departure, String arrival) {
         Map<String, Map<String, String>> trainStationRemainingTicketMaps = new LinkedHashMap<>();
-        String keySuffix = CacheUtil.buildKey(trainId, departure, arrival);
+        String keySuffix = ServiceDateKeyUtil.buildKey(trainId, serviceDate, departure, arrival);
         RLock lock = redissonClient.getLock(String.format(LOCK_SAFE_LOAD_SEAT_MARGIN_GET, keySuffix));
         lock.lock();
         try {
@@ -83,10 +95,12 @@ public class SeatMarginCacheLoader {
                 List<Integer> allSeatTypes = VehicleTypeEnum.findSeatTypesByCode(trainDO.getTrainType());
                 if (CollUtil.isNotEmpty(routeDTOList)) {
                     for (RouteDTO route : routeDTOList) {
-                        List<SeatTypeCountDTO> countDTOS = seatService.listSeatTypeCount(Long.parseLong(trainId), route.getStartStation(), route.getEndStation(), allSeatTypes);
+                        List<SeatTypeCountDTO> countDTOS = seatService.listSeatTypeCount(Long.parseLong(trainId), serviceDate,
+                                route.getStartStation(), route.getEndStation(), allSeatTypes);
                         Map<String, String> routeCountMap = allSeatTypes.stream().collect(Collectors.toMap(String::valueOf, each -> "0", (left, right) -> left, LinkedHashMap::new));
                         countDTOS.forEach(each -> routeCountMap.put(String.valueOf(each.getSeatType()), String.valueOf(each.getSeatCount())));
-                        String actualKeySuffix = CacheUtil.buildKey(trainId, route.getStartStation(), route.getEndStation());
+                        String actualKeySuffix = ServiceDateKeyUtil.buildKey(trainId, serviceDate,
+                                route.getStartStation(), route.getEndStation());
                         trainStationRemainingTicketMaps.put(TRAIN_STATION_REMAINING_TICKET + actualKeySuffix, routeCountMap);
                     }
                 } else {

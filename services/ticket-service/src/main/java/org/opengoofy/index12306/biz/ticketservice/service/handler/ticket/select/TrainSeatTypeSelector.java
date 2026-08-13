@@ -42,6 +42,7 @@ import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.Tra
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchaseMetrics;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.StationSegmentBitmapUtil;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.RemoteException;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
@@ -183,7 +184,8 @@ public final class TrainSeatTypeSelector {
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
         List<RouteDTO> routeDTOList = trainStationService.listTakeoutTrainStationRoute(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
         routeDTOList.forEach(each -> {
-            String keySuffix = StrUtil.join("_", requestParam.getTrainId(), each.getStartStation(), each.getEndStation());
+            String keySuffix = StrUtil.join("_", requestParam.getTrainId(), ServiceDateKeyUtil.format(requestParam.getServiceDate()),
+                    each.getStartStation(), each.getEndStation());
             stringRedisTemplate.opsForHash().increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), -count);
         });
     }
@@ -206,6 +208,7 @@ public final class TrainSeatTypeSelector {
         String strategyKey = VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
         List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
                 requestParam.getTrainId(),
+                requestParam.getServiceDate(),
                 seatType,
                 requestParam.getDeparture(),
                 requestParam.getArrival(),
@@ -248,6 +251,7 @@ public final class TrainSeatTypeSelector {
                     // Redis Lua 负责原子检查和临时占位，冲突时返回空以便在当前请求内更换候选座位。
                     holdId = redisSeatBitmapService.tryHold(
                             requestParam.getTrainId(),
+                            requestParam.getServiceDate(),
                             requestParam.getDeparture(),
                             requestParam.getArrival(),
                             seatType,
@@ -271,7 +275,8 @@ public final class TrainSeatTypeSelector {
                 boolean databaseLocked;
                 try {
                     // Redis 临时占位后仍由数据库条件锁定作为最终正确性确认。
-                    databaseLocked = seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats);
+                    databaseLocked = seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getServiceDate(),
+                            requestParam.getDeparture(), requestParam.getArrival(), selectedSeats);
                     ticketPurchaseMetrics.recordStage(databaseConfirmTimer, "database_confirm", databaseLocked ? "success" : "conflict");
                 } catch (Throwable ex) {
                     // 数据库执行异常需要释放当前 Redis 临时占位，再交由外层回退或失败处理。
@@ -283,6 +288,7 @@ public final class TrainSeatTypeSelector {
                     decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
                     seatService.adjustCarriageRemainingSummary(
                             requestParam.getTrainId(),
+                            requestParam.getServiceDate(),
                             requestParam.getDeparture(),
                             requestParam.getArrival(),
                             seatType,
@@ -293,6 +299,7 @@ public final class TrainSeatTypeSelector {
                 }
                 redisSeatBitmapService.releaseByHoldId(
                         requestParam.getTrainId(),
+                        requestParam.getServiceDate(),
                         requestParam.getDeparture(),
                         requestParam.getArrival(),
                         seatType,
@@ -323,6 +330,7 @@ public final class TrainSeatTypeSelector {
         // 01车厢 剩余6张
         List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
                 requestParam.getTrainId(),
+                requestParam.getServiceDate(),
                 seatType,
                 requestParam.getDeparture(),
                 requestParam.getArrival(),
@@ -340,7 +348,8 @@ public final class TrainSeatTypeSelector {
             // 取出当前车厢号
             String carriageNumber = eachCarriage.getCarriageNumber();
             // 尝试获取“车厢 + 区间段”锁集合
-            List<RLock> segmentLocks = tryAcquireCarriageSegmentLocks(requestParam.getTrainId(), seatType, carriageNumber, segmentIndexes);
+            List<RLock> segmentLocks = tryAcquireCarriageSegmentLocks(requestParam.getTrainId(), requestParam.getServiceDate(),
+                    seatType, carriageNumber, segmentIndexes);
             // 拿不到锁就换车厢重试
             if (CollUtil.isEmpty(segmentLocks)) {
                 carriageAttempt++;
@@ -366,12 +375,14 @@ public final class TrainSeatTypeSelector {
                     if (CollUtil.isEmpty(selectedSeats)) {
                         break;
                     }
-                    if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
+                    if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getServiceDate(),
+                            requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
                         // 这里使用canal加binlog日志跟新
                         decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
                         // 再扣减当前车厢的摘要余票
                         seatService.adjustCarriageRemainingSummary(
                                 requestParam.getTrainId(),
+                                requestParam.getServiceDate(),
                                 requestParam.getDeparture(),
                                 requestParam.getArrival(),
                                 seatType,
@@ -395,12 +406,17 @@ public final class TrainSeatTypeSelector {
     }
 
     // 尝试获取“车厢 + 区间段”锁集合
-    private List<RLock> tryAcquireCarriageSegmentLocks(String trainId, Integer seatType, String carriageNumber, List<Integer> segmentIndexes) {
+    /**
+     * 获取指定始发日期、车厢和区间段的资源锁，防止不同开行日无意义地互相阻塞。
+     */
+    private List<RLock> tryAcquireCarriageSegmentLocks(String trainId, java.util.Date serviceDate, Integer seatType,
+                                                        String carriageNumber, List<Integer> segmentIndexes) {
         List<RLock> locks = new ArrayList<>(segmentIndexes.size());
         for (Integer segmentIndex : segmentIndexes.stream().distinct().sorted().toList()) {
             String lockKey = environment.resolvePlaceholders(String.format(
                     RedisKeyConstant.LOCK_PURCHASE_TICKETS_RESOURCE_SEGMENT,
                     trainId,
+                    ServiceDateKeyUtil.format(serviceDate),
                     seatType,
                     carriageNumber,
                     segmentIndex
@@ -454,7 +470,8 @@ public final class TrainSeatTypeSelector {
                 .map(PurchaseTicketPassengerDetailDTO::getPassengerId)
                 .sorted()
                 .collect(Collectors.joining(","));
-        return (requestParam.getTrainId() + "|" + requestParam.getDeparture() + "|" + requestParam.getArrival()
+        return (requestParam.getTrainId() + "|" + ServiceDateKeyUtil.format(requestParam.getServiceDate()) + "|"
+                + requestParam.getDeparture() + "|" + requestParam.getArrival()
                 + "|" + seatType + "|" + UserContext.getUserId() + "|" + passengerKey).hashCode() & 0x7fffffffL;
     }
 
@@ -466,7 +483,8 @@ public final class TrainSeatTypeSelector {
     private Integer allocateSeatScanOffset(PurchaseTicketReqDTO requestParam, Integer seatType, String carriageNumber,
                                            int passengerCount, long scanSeed, int carriageAttempt, int retry) {
         String cursorKey = TRAIN_CARRIAGE_SEAT_ALLOCATION_CURSOR
-                + StrUtil.join("_", requestParam.getTrainId(), seatType, carriageNumber, requestParam.getDeparture(), requestParam.getArrival());
+                + StrUtil.join("_", requestParam.getTrainId(), ServiceDateKeyUtil.format(requestParam.getServiceDate()),
+                seatType, carriageNumber, requestParam.getDeparture(), requestParam.getArrival());
         long step = Math.max(1, passengerCount) * 7L + retry * 13L + 1L;
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
         Long cursor = stringRedisTemplate.opsForValue().increment(cursorKey, step);
