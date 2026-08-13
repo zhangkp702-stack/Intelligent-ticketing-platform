@@ -35,6 +35,7 @@ public class TicketPurchaseMetrics {
     private static final String STAGE_DURATION_METRIC = "index12306.ticket.purchase.stage.duration";
     private static final String OUTCOME_METRIC = "index12306.ticket.purchase.outcome";
     private static final String FAILURE_METRIC = "index12306.ticket.purchase.failure";
+    private static final String SELECTION_STRATEGY_METRIC = "index12306.ticket.purchase.selection.strategy";
 
     private final MeterRegistry meterRegistry;
 
@@ -89,6 +90,20 @@ public class TicketPurchaseMetrics {
         Counter.builder(FAILURE_METRIC)
                 .description("Ticket purchase failures")
                 .tags("stage", stage, "reason", reason)
+                .register(meterRegistry)
+                .increment();
+    }
+
+    /**
+     * 记录本次请求最终使用的座位分配通道。
+     *
+     * @param strategy 固定的座位分配策略名称
+     */
+    public void recordSelectionStrategy(String strategy) {
+        // 策略标签只允许 optimistic 或 single_channel，便于压测时比较切换效果。
+        Counter.builder(SELECTION_STRATEGY_METRIC)
+                .description("Ticket seat selection strategy")
+                .tag("strategy", strategy)
                 .register(meterRegistry)
                 .increment();
     }

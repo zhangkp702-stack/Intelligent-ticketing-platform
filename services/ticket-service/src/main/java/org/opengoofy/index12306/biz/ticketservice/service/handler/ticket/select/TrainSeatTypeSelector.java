@@ -99,6 +99,7 @@ public final class TrainSeatTypeSelector {
     private final ConfigurableEnvironment environment;
     private final RedisSeatBitmapService redisSeatBitmapService;
     private final TicketPurchaseMetrics ticketPurchaseMetrics;
+    private final SeatSelectionStrategySelector seatSelectionStrategySelector;
 
     @Value("${ticket.availability.cache-update.type:}")
     private String ticketAvailabilityCacheUpdateType;
@@ -148,7 +149,7 @@ public final class TrainSeatTypeSelector {
     }
 
     /**
-     * 优先通过 Redis 位图选择座位，Redis 不可用时回退到数据库座位锁。
+     * 根据余票和冲突状态选择乐观 Redis 通道或车厢区间锁单通道。
      *
      * @param trainType 列车类型
      * @param seatType 座位类型
@@ -160,17 +161,37 @@ public final class TrainSeatTypeSelector {
     private List<TrainPurchaseTicketRespDTO> distributeSeats(Integer trainType, Integer seatType, PurchaseTicketReqDTO requestParam,
                                                              List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails,
                                                              String reservationId) {
+        // 策略选择只读取候选车厢摘要，不提前占用或修改座位库存。
+        List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
+                requestParam.getTrainId(), requestParam.getServiceDate(), seatType,
+                requestParam.getDeparture(), requestParam.getArrival(), passengerSeatDetails.size());
+        if (CollUtil.isEmpty(candidateCarriages)) {
+            throw new ServiceException("站点余票不足或座位资源冲突，请稍后重试");
+        }
+        if (seatSelectionStrategySelector.shouldUseSingleChannel(requestParam, seatType, candidateCarriages)) {
+            // 低余票或冲突热点时直接串行化候选车厢，减少乐观占位失败后的重复扫描。
+            ticketPurchaseMetrics.recordSelectionStrategy("single_channel");
+            return distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails, candidateCarriages);
+        }
         if (Boolean.TRUE.equals(redisSeatBitmapEnabled)) {
             try {
-                return distributeSeatsByRedisBitmap(trainType, seatType, requestParam, passengerSeatDetails, reservationId);
+                // 高余票常态路径保留 Redis 原子临时占位，优先获得并发吞吐。
+                ticketPurchaseMetrics.recordSelectionStrategy("optimistic");
+                return distributeSeatsByRedisBitmap(trainType, seatType, requestParam, passengerSeatDetails,
+                        reservationId, candidateCarriages);
             } catch (ServiceException ex) {
+                // 仅记录座位冲突，不能把无票或参数异常误判为热点竞争。
+                seatSelectionStrategySelector.recordOptimisticSelectionResult(requestParam, seatType,
+                        StrUtil.contains(ex.getMessage(), "座位资源冲突"));
                 throw ex;
             } catch (Throwable ex) {
                 log.warn("Redis bitmap seat selection unavailable, fallback to DB bitmap. trainId={}, seatType={}",
                         requestParam.getTrainId(), seatType, ex);
             }
         }
-        return distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails);
+        // Redis 基础设施不可用时沿用数据库区间锁回退，不把基础设施故障计为座位竞争。
+        ticketPurchaseMetrics.recordSelectionStrategy("single_channel");
+        return distributeSeatsByResourceLocks(trainType, seatType, requestParam, passengerSeatDetails, candidateCarriages);
     }
 
     private String buildCarriageSeatKey(TrainPurchaseTicketRespDTO ticket) {
@@ -198,25 +219,16 @@ public final class TrainSeatTypeSelector {
      * @param requestParam 购票请求
      * @param passengerSeatDetails 当前座位类型的乘客
      * @param reservationId 当前购票的座位占用标识
+     * @param candidateCarriages 已按余票摘要排序的候选车厢
      * @return 已锁定座位
      */
     private List<TrainPurchaseTicketRespDTO> distributeSeatsByRedisBitmap(Integer trainType,
                                                                           Integer seatType,
                                                                           PurchaseTicketReqDTO requestParam,
                                                                           List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails,
-                                                                          String reservationId) {
+                                                                          String reservationId,
+                                                                          List<CarriageAvailabilityDTO> candidateCarriages) {
         String strategyKey = VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
-        List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
-                requestParam.getTrainId(),
-                requestParam.getServiceDate(),
-                seatType,
-                requestParam.getDeparture(),
-                requestParam.getArrival(),
-                passengerSeatDetails.size()
-        );
-        if (CollUtil.isEmpty(candidateCarriages)) {
-            throw new ServiceException("站点余票不足或座位资源冲突，请稍后重试");
-        }
         long scanSeed = buildSeatScanSeed(requestParam, seatType, passengerSeatDetails);
         int carriageAttempt = 0;
         for (CarriageAvailabilityDTO eachCarriage : candidateCarriages) {
@@ -285,6 +297,8 @@ public final class TrainSeatTypeSelector {
                     throw ex;
                 }
                 if (databaseLocked) {
+                    // Redis 临时占位和数据库确认都成功后，才将本次乐观选座视为有效样本。
+                    seatSelectionStrategySelector.recordOptimisticSelectionResult(requestParam, seatType, false);
                     decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
                     seatService.adjustCarriageRemainingSummary(
                             requestParam.getTrainId(),
@@ -316,29 +330,26 @@ public final class TrainSeatTypeSelector {
         throw new ServiceException("座位资源冲突，请稍后重试");
     }
 
+    /**
+     * 在候选车厢上按区间锁顺序确认座位，用于低余票或热点冲突场景。
+     *
+     * @param trainType 列车类型
+     * @param seatType 座位类型
+     * @param requestParam 购票请求
+     * @param passengerSeatDetails 当前座位类型的乘客
+     * @param candidateCarriages 已按余票摘要排序的候选车厢
+     * @return 已锁定座位
+     */
     private List<TrainPurchaseTicketRespDTO> distributeSeatsByResourceLocks(Integer trainType,
                                                                             Integer seatType,
                                                                             PurchaseTicketReqDTO requestParam,
-                                                                            List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails) {
+                                                                            List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails,
+                                                                            List<CarriageAvailabilityDTO> candidateCarriages) {
         String strategyKey =
                 VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
         // 获取区间路段索引列表    b-d会返回 1，2，3
         List<Integer> segmentIndexes = buildSegmentIndexes(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
-        // 查询当前列车在当前区间下还有哪些车厢值得优先尝试，以及每个车厢当前摘要上还剩多少可用票
-        // 03车厢 剩余10张
-        // 05车厢 剩余8张
-        // 01车厢 剩余6张
-        List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
-                requestParam.getTrainId(),
-                requestParam.getServiceDate(),
-                seatType,
-                requestParam.getDeparture(),
-                requestParam.getArrival(),
-                passengerSeatDetails.size()
-        );
-        if (CollUtil.isEmpty(candidateCarriages)) {
-            throw new ServiceException("站点余票不足或座位资源冲突，请稍后重试");
-        }
+        // 候选车厢已在策略选择前加载，本路径只按车厢区间锁顺序确认座位。
         // 生成一个座位扫描种子，用于在每个车厢内随机扫描座位，避免冲突和死锁
         long scanSeed = buildSeatScanSeed(requestParam, seatType, passengerSeatDetails);
         // 初始化车厢尝试次数
