@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 验证座位策略选择器的低余票和高冲突降级规则。
+ * 验证座位策略选择器以 Redis 临时占位冲突率为主、余票为兜底的降级规则。
  */
 class SeatSelectionStrategySelectorTests {
 
@@ -45,7 +45,7 @@ class SeatSelectionStrategySelectorTests {
     }
 
     /**
-     * 高余票初始走乐观通道，达到足量高冲突样本后才降级为单通道。
+     * 高余票初始走乐观通道，Redis 实际占位冲突率超过百分之七十后才降级为单通道。
      */
     @Test
     void usesSingleChannelWhenOptimisticConflictRateIsHigh() {
@@ -55,11 +55,29 @@ class SeatSelectionStrategySelectorTests {
 
         assertFalse(selector.shouldUseSingleChannel(request, 1, highStock));
         for (int index = 0; index < 20; index++) {
-            // 模拟连续的 Redis 乐观占位资源冲突。
-            selector.recordOptimisticSelectionResult(request, 1, true);
+            // 模拟二十次 Lua 临时占位，其中十五次发生资源冲突，冲突率为百分之七十五。
+            selector.recordOptimisticSelectionResult(request, 1, index < 15);
         }
 
         assertTrue(selector.shouldUseSingleChannel(request, 1, highStock));
+    }
+
+    /**
+     * 冲突率刚好等于阈值时应继续走乐观通道，避免把“超过百分之七十”误实现为“大于等于”。
+     */
+    @Test
+    void keepsOptimisticChannelWhenConflictRateEqualsThreshold() {
+        SeatSelectionStrategySelector selector = new SeatSelectionStrategySelector();
+        PurchaseTicketReqDTO request = request();
+        request.setTrainId("1002");
+        List<CarriageAvailabilityDTO> highStock = List.of(new CarriageAvailabilityDTO("01", 100));
+
+        // 模拟二十次 Lua 临时占位，其中十四次冲突，冲突率刚好为百分之七十。
+        for (int index = 0; index < 20; index++) {
+            selector.recordOptimisticSelectionResult(request, 1, index < 14);
+        }
+
+        assertFalse(selector.shouldUseSingleChannel(request, 1, highStock));
     }
 
     /**

@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.LongAdder;
 /**
  * 根据余票规模和近期乐观占位冲突率选择座位分配通道。
  *
- * <p>高余票时采用 Redis 临时占位获得较高并发；余票较低或近期冲突率很高时，改用车厢区间锁单通道，
+ * <p>近期 Redis 临时占位冲突率超过阈值时，优先改用车厢区间锁单通道；余票较低只作为样本不足时的安全兜底，
  * 以减少多个请求重复扫描相同候选座位造成的无效回滚。</p>
  */
 @Component
@@ -51,8 +51,8 @@ public class SeatSelectionStrategySelector {
     @Value("${ticket.seat.selection.conflict-window-min-attempts:20}")
     private int conflictWindowMinAttempts = 20;
 
-    @Value("${ticket.seat.selection.conflict-rate-threshold:0.80}")
-    private double conflictRateThreshold = 0.80D;
+    @Value("${ticket.seat.selection.conflict-rate-threshold:0.70}")
+    private double conflictRateThreshold = 0.70D;
 
     /**
      * 判断本次选座是否应跳过乐观 Redis 占位，直接进入区间锁单通道。
@@ -65,23 +65,23 @@ public class SeatSelectionStrategySelector {
     public boolean shouldUseSingleChannel(PurchaseTicketReqDTO requestParam,
                                           Integer seatType,
                                           List<CarriageAvailabilityDTO> candidateCarriages) {
-        // 汇总候选车厢的剩余量；该摘要只是路由依据，最终正确性仍由库存位图 CAS 保证。
-        int availableSeats = candidateCarriages.stream().mapToInt(CarriageAvailabilityDTO::getSeatCount).sum();
-        if (availableSeats <= lowStockThreshold) {
+        // 先按同运行库存的 Redis 实际占位冲突率路由；该指标是本策略的主判断条件。
+        ConflictWindow conflictWindow = conflictWindowCache.getIfPresent(buildConflictWindowKey(requestParam, seatType));
+        if (conflictWindow != null && conflictWindow.shouldUseSingleChannel(
+                conflictWindowMinAttempts, conflictRateThreshold)) {
             return true;
         }
-        // 同一开行日、区间和座位类型独立统计，避免一趟车的热点影响其它运行库存。
-        ConflictWindow conflictWindow = conflictWindowCache.getIfPresent(buildConflictWindowKey(requestParam, seatType));
-        return conflictWindow != null && conflictWindow.shouldUseSingleChannel(
-                conflictWindowMinAttempts, conflictRateThreshold);
+        // 样本不足或冲突率未达到阈值时，才以车厢余票总量作为安全兜底。
+        int availableSeats = candidateCarriages.stream().mapToInt(CarriageAvailabilityDTO::getSeatCount).sum();
+        return availableSeats <= lowStockThreshold;
     }
 
     /**
-     * 记录一次 Redis 乐观占位的最终结果，为后续请求的策略切换提供低成本窗口指标。
+     * 记录一次 Redis Lua 临时占位的直接结果，为后续请求的策略切换提供低成本窗口指标。
      *
      * @param requestParam 已校验的购票请求
      * @param seatType 当前座位类型
-     * @param conflict 是否因座位竞争而未能完成 Redis 通道选座
+     * @param conflict Redis Lua 是否因座位已被其它请求占用而返回冲突
      */
     public void recordOptimisticSelectionResult(PurchaseTicketReqDTO requestParam, Integer seatType, boolean conflict) {
         // 使用固定时间窗口防止一次短暂波动永久将该区间固定在单通道模式。
@@ -128,7 +128,7 @@ public class SeatSelectionStrategySelector {
          * 根据当前窗口尝试次数和冲突率决定是否降级。
          *
          * @param minimumAttempts 生效前的最少尝试次数
-         * @param minimumConflictRate 触发单通道的最小冲突率
+         * @param minimumConflictRate 触发单通道的冲突率阈值
          * @return 是否应切换为单通道
          */
         private boolean shouldUseSingleChannel(int minimumAttempts, double minimumConflictRate) {
@@ -137,7 +137,8 @@ public class SeatSelectionStrategySelector {
             if (attemptCount < minimumAttempts) {
                 return false;
             }
-            return (double) conflicts.sum() / attemptCount >= minimumConflictRate;
+            // 只有冲突率严格超过阈值才降级，百分之七十本身仍保留乐观通道吞吐。
+            return (double) conflicts.sum() / attemptCount > minimumConflictRate;
         }
     }
 }

@@ -180,9 +180,7 @@ public final class TrainSeatTypeSelector {
                 return distributeSeatsByRedisBitmap(trainType, seatType, requestParam, passengerSeatDetails,
                         reservationId, candidateCarriages);
             } catch (ServiceException ex) {
-                // 仅记录座位冲突，不能把无票或参数异常误判为热点竞争。
-                seatSelectionStrategySelector.recordOptimisticSelectionResult(requestParam, seatType,
-                        StrUtil.contains(ex.getMessage(), "座位资源冲突"));
+                // Redis Lua 的每次直接结果已在选座循环内记录，不能用最终业务异常重复计数。
                 throw ex;
             } catch (Throwable ex) {
                 log.warn("Redis bitmap seat selection unavailable, fallback to DB bitmap. trainId={}, seatType={}",
@@ -271,6 +269,8 @@ public final class TrainSeatTypeSelector {
                             reservationId
                     );
                     ticketPurchaseMetrics.recordStage(redisHoldTimer, "redis_hold", StrUtil.isBlank(holdId) ? "conflict" : "success");
+                    // 策略统计只以 Lua 临时占位结果为样本，不混入后续数据库确认或订单落库失败。
+                    seatSelectionStrategySelector.recordOptimisticSelectionResult(requestParam, seatType, StrUtil.isBlank(holdId));
                 } catch (Throwable ex) {
                     // Redis 不可用时保留既有回退逻辑，同时记录基础设施失败。
                     ticketPurchaseMetrics.recordStage(redisHoldTimer, "redis_hold", "failed");
@@ -297,8 +297,6 @@ public final class TrainSeatTypeSelector {
                     throw ex;
                 }
                 if (databaseLocked) {
-                    // Redis 临时占位和数据库确认都成功后，才将本次乐观选座视为有效样本。
-                    seatSelectionStrategySelector.recordOptimisticSelectionResult(requestParam, seatType, false);
                     decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
                     seatService.adjustCarriageRemainingSummary(
                             requestParam.getTrainId(),
