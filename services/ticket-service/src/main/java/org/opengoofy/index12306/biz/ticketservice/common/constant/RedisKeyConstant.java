@@ -141,6 +141,16 @@ public final class RedisKeyConstant {
     public static final String TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER_BY_SERVICE_DATE = "index12306-ticket-service:seat_owner:{%s:%s:%d:%s}:%d";
 
     /**
+     * 座位策略百毫秒统计桶，同一库存维度的全部窗口桶共享一个 Hash Tag。
+     */
+    public static final String SEAT_SELECTION_STRATEGY_BUCKET = "index12306-ticket-service:seat_strategy:bucket:{%s}:%s:%d";
+
+    /**
+     * 座位策略统计桶中的 reservation 近似去重集合。
+     */
+    public static final String SEAT_SELECTION_STRATEGY_RESERVATIONS = "index12306-ticket-service:seat_strategy:reservations:{%s}:%s:%d";
+
+    /**
      * 获取全部地点集合 Key
      */
     public static final String QUERY_ALL_REGION_LIST = "index12306-ticket-service:query_all_region_list";
