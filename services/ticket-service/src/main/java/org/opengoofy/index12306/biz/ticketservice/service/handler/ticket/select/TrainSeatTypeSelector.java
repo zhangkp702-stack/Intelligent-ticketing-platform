@@ -23,6 +23,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import io.micrometer.core.instrument.Timer;
 import org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum;
@@ -39,6 +40,7 @@ import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.SelectSeatDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
+import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchaseMetrics;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.StationSegmentBitmapUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.RemoteException;
@@ -95,6 +97,7 @@ public final class TrainSeatTypeSelector {
     private final RedissonClient redissonClient;
     private final ConfigurableEnvironment environment;
     private final RedisSeatBitmapService redisSeatBitmapService;
+    private final TicketPurchaseMetrics ticketPurchaseMetrics;
 
     @Value("${ticket.availability.cache-update.type:}")
     private String ticketAvailabilityCacheUpdateType;
@@ -239,19 +242,44 @@ public final class TrainSeatTypeSelector {
                 if (CollUtil.isEmpty(selectedSeats)) {
                     break;
                 }
-                String holdId = redisSeatBitmapService.tryHold(
-                        requestParam.getTrainId(),
-                        requestParam.getDeparture(),
-                        requestParam.getArrival(),
-                        seatType,
-                        selectedSeats,
-                        reservationId
-                );
+                Timer.Sample redisHoldTimer = ticketPurchaseMetrics.startStageTimer();
+                String holdId;
+                try {
+                    // Redis Lua 负责原子检查和临时占位，冲突时返回空以便在当前请求内更换候选座位。
+                    holdId = redisSeatBitmapService.tryHold(
+                            requestParam.getTrainId(),
+                            requestParam.getDeparture(),
+                            requestParam.getArrival(),
+                            seatType,
+                            selectedSeats,
+                            reservationId
+                    );
+                    ticketPurchaseMetrics.recordStage(redisHoldTimer, "redis_hold", StrUtil.isBlank(holdId) ? "conflict" : "success");
+                } catch (Throwable ex) {
+                    // Redis 不可用时保留既有回退逻辑，同时记录基础设施失败。
+                    ticketPurchaseMetrics.recordStage(redisHoldTimer, "redis_hold", "failed");
+                    ticketPurchaseMetrics.recordFailure("redis_hold", "redis_error");
+                    throw ex;
+                }
                 if (StrUtil.isBlank(holdId)) {
+                    // 竞争冲突不等同于系统故障，单独统计以驱动后续策略选择器阈值。
+                    ticketPurchaseMetrics.recordFailure("redis_hold", "seat_conflict");
                     selectedSeats.stream().map(this::buildCarriageSeatKey).forEach(excludedSeatKeys::add);
                     continue;
                 }
-                if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
+                Timer.Sample databaseConfirmTimer = ticketPurchaseMetrics.startStageTimer();
+                boolean databaseLocked;
+                try {
+                    // Redis 临时占位后仍由数据库条件锁定作为最终正确性确认。
+                    databaseLocked = seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival(), selectedSeats);
+                    ticketPurchaseMetrics.recordStage(databaseConfirmTimer, "database_confirm", databaseLocked ? "success" : "conflict");
+                } catch (Throwable ex) {
+                    // 数据库执行异常需要释放当前 Redis 临时占位，再交由外层回退或失败处理。
+                    ticketPurchaseMetrics.recordStage(databaseConfirmTimer, "database_confirm", "failed");
+                    ticketPurchaseMetrics.recordFailure("database_confirm", "database_error");
+                    throw ex;
+                }
+                if (databaseLocked) {
                     decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
                     seatService.adjustCarriageRemainingSummary(
                             requestParam.getTrainId(),
