@@ -32,6 +32,7 @@ import java.util.List;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.SEAT_SELECTION_STRATEGY_BUCKET;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.SEAT_SELECTION_STRATEGY_RESERVATIONS;
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.SEAT_SELECTION_STRATEGY_STATE;
 import static org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.select.SeatSelectionWindow.BUCKET_MILLIS;
 import static org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.select.SeatSelectionWindow.STATISTICS_TTL_MILLIS;
 
@@ -44,6 +45,8 @@ public class SeatSelectionStrategyRedisStore {
 
     private static final String LUA_RECORD_PATH = "lua/seat_strategy_record.lua";
     private static final String LUA_SNAPSHOT_PATH = "lua/seat_strategy_snapshot.lua";
+    private static final String LUA_STATE_TRANSITION_PATH = "lua/seat_strategy_state_transition.lua";
+    private static final long STATE_TTL_MILLIS = 60_000L;
 
     private final DistributedCache distributedCache;
 
@@ -102,6 +105,49 @@ public class SeatSelectionStrategyRedisStore {
     }
 
     /**
+     * 根据共享统计原子评估并迁移一个库存维度的选座状态。
+     *
+     * @param strategyKey 座位策略库存维度
+     * @param normalStatistics 常态乐观占位快速窗口统计
+     * @param probeStatistics 探测乐观占位窗口统计
+     * @param availableSeats 当前候选车厢可售座位数
+     * @param config 状态机的阈值与时间边界
+     * @param nowMillis 当前时间戳
+     * @return Lua 原子迁移后的共享状态快照
+     */
+    public SeatSelectionStrategyState transition(String strategyKey,
+                                                 SeatConflictStatistics normalStatistics,
+                                                 SeatConflictStatistics probeStatistics,
+                                                 int availableSeats,
+                                                 SeatSelectionStrategyStateConfig config,
+                                                 long nowMillis) {
+        // 单个 Hash 状态保存全部字段，Lua 在同一 Redis slot 中读取统计输入并提交完整的新状态。
+        List<?> result = redisTemplate().execute(script(LUA_STATE_TRANSITION_PATH, List.class), List.of(buildStateKey(strategyKey)),
+                String.valueOf(nowMillis),
+                String.valueOf(config.evaluationIntervalMillis()),
+                String.valueOf(config.minimumAttempts()),
+                String.valueOf(config.conflictRateThresholdBps()),
+                String.valueOf(config.recoveryConflictRateThresholdBps()),
+                String.valueOf(config.lowStockThreshold()),
+                String.valueOf(config.singleMinimumResidenceMillis()),
+                String.valueOf(config.probePercentage()),
+                String.valueOf(config.healthyPeriodsRequired()),
+                String.valueOf(normalStatistics.attempts()),
+                String.valueOf(normalStatistics.conflicts()),
+                String.valueOf(probeStatistics.attempts()),
+                String.valueOf(probeStatistics.conflicts()),
+                String.valueOf(availableSeats),
+                String.valueOf(STATE_TTL_MILLIS));
+        if (result == null || result.size() < 7) {
+            throw new IllegalStateException("Redis 座位策略状态迁移失败");
+        }
+        // Redis 客户端的 Lua 返回类型可能是 Long 或 String，统一转为领域状态避免调用方感知序列化差异。
+        return new SeatSelectionStrategyState(SeatSelectionStrategyMode.valueOf(String.valueOf(result.get(0))),
+                number(result.get(1)), number(result.get(2)), number(result.get(3)), (int) number(result.get(4)),
+                (int) number(result.get(5)), String.valueOf(result.get(6)));
+    }
+
+    /**
      * 获取项目统一的字符串 Redis 客户端。
      *
      * @return 字符串 Redis 客户端
@@ -155,6 +201,17 @@ public class SeatSelectionStrategyRedisStore {
     private String buildReservationKey(String strategyKey, SeatSelectionSampleType sampleType, long bucketId) {
         // HyperLogLog 仅用于控制单个请求对策略的影响，不参与库存正确性判断。
         return String.format(SEAT_SELECTION_STRATEGY_RESERVATIONS, strategyKey, sampleType.value(), bucketId);
+    }
+
+    /**
+     * 构造一个库存维度唯一的策略状态键。
+     *
+     * @param strategyKey 座位策略库存维度
+     * @return 使用 Redis Cluster Hash Tag 的状态键
+     */
+    private String buildStateKey(String strategyKey) {
+        // 状态、统计桶和 reservation HLL 使用相同 Hash Tag，便于后续扩展为单脚本联合读取。
+        return String.format(SEAT_SELECTION_STRATEGY_STATE, strategyKey);
     }
 
     /**

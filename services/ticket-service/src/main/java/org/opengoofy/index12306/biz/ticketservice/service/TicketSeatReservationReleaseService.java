@@ -46,6 +46,10 @@ public class TicketSeatReservationReleaseService {
     private static final int STEP_PENDING = 0;
     private static final int STEP_DONE = 1;
     private static final int STEP_OWNER_CHANGED = 2;
+    private static final int RESERVATION_PREPARED = 0;
+    private static final int RESERVATION_BOUND = 1;
+    private static final int RESERVATION_RELEASING = 2;
+    private static final int RESERVATION_RELEASED = 3;
 
     private final TicketSeatReservationMapper ticketSeatReservationMapper;
     private final SeatService seatService;
@@ -57,10 +61,13 @@ public class TicketSeatReservationReleaseService {
     private String ticketAvailabilityCacheUpdateType;
 
     /**
-     * 创建订单成功后保存该订单对全部座位的唯一占用关系。
+     * 在调用订单服务前保存座位占用快照和稳定订单命令。
      *
-     * @param orderSn 订单号
      * @param reservationId 服务端生成的座位占用标识
+     * @param actionId 订单创建动作标识
+     * @param commandId 订单创建稳定命令标识
+     * @param userId 发起购票的用户标识
+     * @param username 发起购票的用户名
      * @param trainId 列车标识
      * @param departure 出发站
      * @param arrival 到达站
@@ -68,13 +75,18 @@ public class TicketSeatReservationReleaseService {
      * @param serviceDate 列车始发日期
      * @param tickets 已锁定的座位明细
      */
-    public void createReservation(String orderSn, String reservationId, Long trainId, String departure,
-                                  String arrival, java.util.Date ridingDate, java.util.Date serviceDate,
-                                  List<TrainPurchaseTicketRespDTO> tickets) {
-        // 订单返回成功后，把 Redis owner 与数据库座位锁的共同归属持久化，供关闭任务恢复。
+    public void prepareReservation(String reservationId, String actionId, String commandId,
+                                   String userId, String username, Long trainId, String departure,
+                                   String arrival, java.util.Date ridingDate, java.util.Date serviceDate,
+                                   List<TrainPurchaseTicketRespDTO> tickets) {
+        // PREPARED 记录与数据库锁座、车票写入同事务提交，使远程调用前已经具备恢复依据。
         TicketSeatReservationDO reservation = TicketSeatReservationDO.builder()
                 .reservationId(reservationId)
-                .orderSn(orderSn)
+                .actionId(actionId)
+                .commandId(commandId)
+                .userId(userId)
+                .username(username)
+                .reservationStatus(RESERVATION_PREPARED)
                 .trainId(trainId)
                 .ridingDate(ridingDate)
                 .serviceDate(serviceDate)
@@ -86,8 +98,64 @@ public class TicketSeatReservationReleaseService {
                 .tokenRollbackStatus(STEP_PENDING)
                 .build();
         if (ticketSeatReservationMapper.insert(reservation) != 1) {
-            throw new ServiceException("创建订单座位占用记录失败");
+            throw new ServiceException("创建待绑定订单座位占用记录失败");
         }
+    }
+
+    /**
+     * 将订单服务返回的订单号幂等绑定到 PREPARED reservation。
+     *
+     * @param reservationId 座位占用标识
+     * @param orderSn 订单服务返回的订单号
+     */
+    public void bindOrder(String reservationId, String orderSn) {
+        if (reservationId == null || reservationId.isBlank() || orderSn == null || orderSn.isBlank()) {
+            throw new ServiceException("绑定订单的 reservationId 和 orderSn 不能为空");
+        }
+        Boolean bound = transactionTemplate.execute(status -> {
+            // 行锁串行化正常返回、超时对账和重复回调，避免同一 reservation 绑定不同订单。
+            TicketSeatReservationDO reservation = ticketSeatReservationMapper
+                    .selectByReservationIdForUpdate(reservationId);
+            if (reservation == null) {
+                throw new ServiceException("待绑定订单座位占用记录不存在");
+            }
+            if (reservation.getReservationStatus() == RESERVATION_BOUND) {
+                if (!orderSn.equals(reservation.getOrderSn())) {
+                    throw new ServiceException("座位占用记录已绑定其他订单");
+                }
+                return true;
+            }
+            if (reservation.getReservationStatus() != RESERVATION_PREPARED) {
+                throw new ServiceException("座位占用记录状态不允许绑定订单");
+            }
+            // 订单号与生命周期状态在同一事务内写入，关闭回滚只能看到完整绑定关系。
+            reservation.setOrderSn(orderSn);
+            reservation.setReservationStatus(RESERVATION_BOUND);
+            if (ticketSeatReservationMapper.updateById(reservation) != 1) {
+                throw new ServiceException("绑定订单座位占用记录失败");
+            }
+            return true;
+        });
+        if (!Boolean.TRUE.equals(bound)) {
+            throw new ServiceException("执行订单座位占用绑定事务失败");
+        }
+    }
+
+    /**
+     * 释放已由订单服务明确判定失败的 PREPARED reservation。
+     *
+     * @param reservationId 待释放的座位占用标识
+     */
+    public void releasePreparedReservation(String reservationId) {
+        // 先在数据库行锁内领取释放权，避免订单绑定与失败释放同时修改同一 reservation。
+        TicketSeatReservationDO reservation = claimPreparedRelease(reservationId);
+        if (reservation == null) {
+            return;
+        }
+        // 复用既有三步释放逻辑，所有 Redis 操作继续通过 reservationId owner 保证幂等。
+        releaseReservation(reservation);
+        // 只有三个资源步骤都推进完成后才标记终态；中途失败保留 RELEASING 供下一轮恢复重试。
+        markPreparedReleased(reservationId);
     }
 
     /**
@@ -103,6 +171,85 @@ public class TicketSeatReservationReleaseService {
         }
         // 多乘客订单的每条 reservation 独立推进，任一失败交给可靠命令整体重试。
         reservations.forEach(this::releaseReservation);
+    }
+
+    /**
+     * 将 PREPARED reservation 原子迁移为 RELEASING，禁止后续订单绑定覆盖释放裁决。
+     *
+     * @param reservationId 座位占用标识
+     * @return 需要继续推进释放时返回刚领取的 reservation，已完成释放时返回 null
+     */
+    private TicketSeatReservationDO claimPreparedRelease(String reservationId) {
+        return transactionTemplate.execute(status -> {
+            // 使用 FOR UPDATE 把远程成功补绑与失败释放串行化，二者只能有一个先完成状态迁移。
+            TicketSeatReservationDO reservation = ticketSeatReservationMapper.selectByReservationIdForUpdate(reservationId);
+            if (reservation == null) {
+                throw new ServiceException("待释放订单座位占用记录不存在");
+            }
+            if (reservation.getReservationStatus() == RESERVATION_RELEASED) {
+                return null;
+            }
+            if (reservation.getReservationStatus() == RESERVATION_BOUND) {
+                throw new ServiceException("已绑定订单的座位占用记录不能按失败释放");
+            }
+            if (reservation.getReservationStatus() != RESERVATION_PREPARED
+                    && reservation.getReservationStatus() != RESERVATION_RELEASING) {
+                throw new ServiceException("座位占用记录状态不允许失败释放");
+            }
+            if (reservation.getReservationStatus() == RESERVATION_PREPARED) {
+                // 提前写入 RELEASING，使订单服务迟到成功时不能再绑定并释放同一库存。
+                reservation.setReservationStatus(RESERVATION_RELEASING);
+                if (ticketSeatReservationMapper.updateById(reservation) != 1) {
+                    throw new ServiceException("领取失败释放座位占用记录失败");
+                }
+            }
+            return reservation;
+        });
+    }
+
+    /**
+     * 在三类资源步骤完成后将失败 reservation 标记为 RELEASED。
+     *
+     * @param reservationId 座位占用标识
+     */
+    private void markPreparedReleased(String reservationId) {
+        Boolean released = transactionTemplate.execute(status -> {
+            // 再次锁定读取各步骤最新状态，避免依据释放前的旧快照提前结束恢复。
+            TicketSeatReservationDO reservation = ticketSeatReservationMapper.selectByReservationIdForUpdate(reservationId);
+            if (reservation == null) {
+                throw new ServiceException("待释放订单座位占用记录不存在");
+            }
+            if (reservation.getReservationStatus() == RESERVATION_RELEASED) {
+                return true;
+            }
+            if (reservation.getReservationStatus() != RESERVATION_RELEASING) {
+                throw new ServiceException("座位占用记录状态不允许结束失败释放");
+            }
+            if (!isReleaseStepCompleted(reservation.getDbSeatReleaseStatus())
+                    || !isReleaseStepCompleted(reservation.getRedisBitmapReleaseStatus())
+                    || !isReleaseStepCompleted(reservation.getTokenRollbackStatus())) {
+                return false;
+            }
+            // 仅当数据库、位图和令牌均完成后进入 RELEASED，扫描器才会停止重试。
+            reservation.setReservationStatus(RESERVATION_RELEASED);
+            if (ticketSeatReservationMapper.updateById(reservation) != 1) {
+                throw new ServiceException("标记失败释放座位占用记录失败");
+            }
+            return true;
+        });
+        if (!Boolean.TRUE.equals(released)) {
+            throw new ServiceException("失败座位占用记录仍有资源步骤未完成");
+        }
+    }
+
+    /**
+     * 判断单个资源释放步骤是否已完成，Redis owner 已变更同样代表不能再操作新 owner。
+     *
+     * @param stepStatus 当前步骤状态
+     * @return 已完成或 owner 已变更时返回 true
+     */
+    private boolean isReleaseStepCompleted(Integer stepStatus) {
+        return stepStatus != null && (stepStatus == STEP_DONE || stepStatus == STEP_OWNER_CHANGED);
     }
 
     /**

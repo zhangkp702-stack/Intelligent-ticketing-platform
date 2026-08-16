@@ -102,7 +102,7 @@ import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import io.micrometer.core.instrument.Timer;
 
@@ -123,6 +123,7 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.Index12306Constant.ADVANCE_TICKET_DAY;
@@ -170,6 +171,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     private final RedisSeatBitmapService redisSeatBitmapService;
     private final TicketPurchaseMetrics ticketPurchaseMetrics;
     private final TrainServiceDateResolver trainServiceDateResolver;
+    private final TransactionTemplate ticketTransactionTemplate;
     private TicketService ticketService;
 
     @Value("${framework.cache.redis.prefix:}")
@@ -412,15 +414,29 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         String failedStage = "request_validation";
         String purchaseResult = "failed";
         try {
-            log.info("ticket_purchase_start trainId={}, boardingDate={}, departure={}, arrival={}, passengerCount={}, operationId={}",
+            log.debug("ticket_purchase_start trainId={}, boardingDate={}, departure={}, arrival={}, passengerCount={}, operationId={}",
                     requestParam == null ? null : requestParam.getTrainId(), requestParam == null ? null : requestParam.getDepartureDate(),
                     requestParam == null ? null : requestParam.getDeparture(), requestParam == null ? null : requestParam.getArrival(),
                     requestParam == null ? 0 : CollUtil.size(requestParam.getPassengers()), requestParam == null ? null : requestParam.getOperationId());
             Timer.Sample validationTimer = ticketPurchaseMetrics.startStageTimer();
             // 在扣减令牌前确认乘车日期存在，避免无效请求占用库存令牌。
-            validatePurchaseDate(requestParam);
+            Timer.Sample purchaseDateTimer = ticketPurchaseMetrics.startStageTimer();
+            try {
+                validatePurchaseDate(requestParam);
+                ticketPurchaseMetrics.recordStage(purchaseDateTimer, "purchase_date_validate", "success");
+            } catch (Throwable ex) {
+                ticketPurchaseMetrics.recordStage(purchaseDateTimer, "purchase_date_validate", "failed");
+                throw ex;
+            }
             // 始发日期必须在责任链、令牌桶和选座之前统一计算，禁止以用户上车日期直接作为库存维度。
-            initializePurchaseServiceDate(requestParam);
+            Timer.Sample serviceDateTimer = ticketPurchaseMetrics.startStageTimer();
+            try {
+                initializePurchaseServiceDate(requestParam);
+                ticketPurchaseMetrics.recordStage(serviceDateTimer, "service_date_resolve", "success");
+            } catch (Throwable ex) {
+                ticketPurchaseMetrics.recordStage(serviceDateTimer, "service_date_resolve", "failed");
+                throw ex;
+            }
             // 责任链模式，验证参数、站点及乘客是否允许购买当前车次。
             purchaseTicketAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_PURCHASE_TICKET_FILTER.name(), requestParam);
             ticketPurchaseMetrics.recordStage(validationTimer, "request_validation", "success");
@@ -456,7 +472,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             TicketPurchaseRespDTO response = ticketService.executePurchaseTickets(requestParam);
             ticketPurchaseMetrics.recordOutcome("success");
             purchaseResult = "success";
-            log.info("ticket_purchase_success trainId={}, boardingDate={}, departure={}, arrival={}, orderSn={}",
+            log.debug("ticket_purchase_success trainId={}, boardingDate={}, departure={}, arrival={}, orderSn={}",
                     requestParam.getTrainId(), requestParam.getDepartureDate(), requestParam.getDeparture(), requestParam.getArrival(),
                     response.getOrderSn());
             return response;
@@ -485,7 +501,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
      * @return 新建订单及车票明细
      */
     @Override
-    @Transactional(rollbackFor = Throwable.class)
     public TicketPurchaseRespDTO executePurchaseTickets(PurchaseTicketReqDTO requestParam) {
         List<TicketOrderDetailRespDTO> ticketOrderDetailResults = new ArrayList<>();
         // 获取车次信息
@@ -502,46 +517,29 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         // 用户上车日期可能晚于列车始发日期，必须先按基础时刻表换算出运行库存所属的始发日期。
         Date serviceDate = requestParam.getServiceDate();
         if (serviceDate == null) {
-            // 事务入口兼容内部调用，仍以基础时刻表重新计算并覆盖运行库存日期。
-            serviceDate = trainServiceDateResolver.resolve(trainDO, requestParam.getDepartureDate(), requestParam.getDeparture());
+            // 事务入口兼容内部调用，但日期换算只读取启动阶段预计算的本地偏移。
+            serviceDate = trainServiceDateResolver.resolve(trainDO.getId(), requestParam.getDepartureDate(), requestParam.getDeparture());
             requestParam.setServiceDate(serviceDate);
         }
-        Timer.Sample seatSelectionTimer = ticketPurchaseMetrics.startStageTimer();
+        Date localPreparationServiceDate = serviceDate;
+        // 普通购票也使用服务端动作标识，保证订单创建结果可以通过稳定命令查询。
+        String actionId = resolvePurchaseActionId(requestParam.getOperationId(), reservationId);
+        String orderCreateCommandId = downstreamCommand(actionId, "create-order");
+        AtomicReference<List<TrainPurchaseTicketRespDTO>> heldTickets = new AtomicReference<>();
         List<TrainPurchaseTicketRespDTO> trainPurchaseTicketResults;
         try {
-            // 根据列车类型以及本次购票请求选择并锁定座位，内部包含 Redis 临时占位和数据库确认。
-            trainPurchaseTicketResults = trainSeatTypeSelector.select(trainDO.getTrainType(), requestParam, reservationId);
-            ticketPurchaseMetrics.recordStage(seatSelectionTimer, "seat_selection", "success");
-            log.info("ticket_seat_selected reservationId={}, trainId={}, boardingDate={}, serviceDate={}, departure={}, arrival={}, seatCount={}",
-                    reservationId, requestParam.getTrainId(), requestParam.getDepartureDate(), serviceDate, requestParam.getDeparture(),
-                    requestParam.getArrival(), trainPurchaseTicketResults.size());
+            // 本地事务先提交数据库锁座、车票和 PREPARED 记录，远程调用不再占用数据库事务。
+            trainPurchaseTicketResults = ticketTransactionTemplate.execute(status -> preparePurchaseLocally(
+                    requestParam, trainDO, localPreparationServiceDate, reservationId,
+                    actionId, orderCreateCommandId, heldTickets));
+            if (CollUtil.isEmpty(trainPurchaseTicketResults)) {
+                throw new ServiceException("本地购票准备结果为空");
+            }
         } catch (Throwable ex) {
-            // 选座失败单独计数，便于区分无票与后续订单服务异常。
-            ticketPurchaseMetrics.recordStage(seatSelectionTimer, "seat_selection", "failed");
-            ticketPurchaseMetrics.recordFailure("seat_selection", "seat_conflict");
-            throw ex;
-        }
-        // 把座位信息转换成数据库需要的数据格式,准备落库
-        List<TicketDO> ticketDOList = trainPurchaseTicketResults.stream()
-                .map(each -> TicketDO.builder()
-                        .username(UserContext.getUsername())
-                        .trainId(Long.parseLong(requestParam.getTrainId()))
-                        .carriageNumber(each.getCarriageNumber())
-                        .seatNumber(each.getSeatNumber())
-                        .passengerId(each.getPassengerId())
-                        // 支付状态为未支付
-                        .ticketStatus(TicketStatusEnum.UNPAID.getCode())
-                        .build())
-                .toList();
-        Timer.Sample ticketPersistTimer = ticketPurchaseMetrics.startStageTimer();
-        try {
-            // 将已确认的座位写入车票表，失败时释放 Redis 临时占位。
-            saveBatch(ticketDOList);
-            ticketPurchaseMetrics.recordStage(ticketPersistTimer, "ticket_persist", "success");
-        } catch (Throwable ex) {
-            ticketPurchaseMetrics.recordStage(ticketPersistTimer, "ticket_persist", "failed");
-            ticketPurchaseMetrics.recordFailure("ticket_persist", "database_error");
-            releaseRedisSeatHoldAfterFailure(requestParam, trainPurchaseTicketResults, "ticket_persist");
+            // 本地事务失败后数据库变更已回滚，只需按本次 owner 释放已经取得的 Redis 临时占位。
+            if (CollUtil.isNotEmpty(heldTickets.get())) {
+                releaseRedisSeatHoldAfterFailure(requestParam, heldTickets.get(), "local_prepare");
+            }
             throw ex;
         }
         Result<String> ticketOrderResult;
@@ -583,8 +581,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             TrainStationRelationDO trainStationRelationDO = trainStationRelationMapper.selectOne(queryWrapper);
             // 组装整个订单请求参数
             TicketOrderCreateRemoteReqDTO orderCreateRemoteReqDTO = TicketOrderCreateRemoteReqDTO.builder()
-                    .actionId(requestParam.getOperationId())
-                    .commandId(downstreamCommand(requestParam.getOperationId(), "create-order"))
+                    .actionId(actionId)
+                    .commandId(orderCreateCommandId)
                     .departure(requestParam.getDeparture())
                     .arrival(requestParam.getArrival())
                     .orderTime(new Date())
@@ -609,24 +607,22 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         } catch (Throwable ex) {
             ticketPurchaseMetrics.recordStage(orderCreateTimer, "order_create", "failed");
             ticketPurchaseMetrics.recordFailure("order_create", "remote_error");
-            releaseRedisSeatHoldAfterFailure(requestParam, trainPurchaseTicketResults, "order_create");
+            // 网络异常无法证明订单未创建，保留 PREPARED 和库存等待稳定命令权威对账。
             log.error("远程调用订单服务创建错误，请求参数：{}", JSON.toJSONString(requestParam), ex);
             throw ex;
         }
-        Timer.Sample reservationPersistTimer = ticketPurchaseMetrics.startStageTimer();
+        Timer.Sample reservationBindTimer = ticketPurchaseMetrics.startStageTimer();
         try {
-            // 订单创建成功后持久化座位与 reservationId 的归属，关闭任务只能释放这条记录声明的座位。
-            ticketSeatReservationReleaseService.createReservation(ticketOrderResult.getData(), reservationId,
-                    Long.parseLong(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival(),
-                    requestParam.getDepartureDate(), serviceDate, trainPurchaseTicketResults);
-            ticketPurchaseMetrics.recordStage(reservationPersistTimer, "reservation_persist", "success");
-            log.info("ticket_reservation_persisted reservationId={}, orderSn={}, trainId={}, serviceDate={}",
+            // 远程成功后只绑定订单号，PREPARED 快照已在调用订单服务之前独立提交。
+            ticketSeatReservationReleaseService.bindOrder(reservationId, ticketOrderResult.getData());
+            ticketPurchaseMetrics.recordStage(reservationBindTimer, "reservation_bind", "success");
+            log.debug("ticket_reservation_bound reservationId={}, orderSn={}, trainId={}, serviceDate={}",
                     reservationId, ticketOrderResult.getData(), requestParam.getTrainId(), serviceDate);
         } catch (Throwable ex) {
-            // 订单已创建但预订关系失败需要告警，由后续可靠恢复阶段处理，不直接释放已创建订单的座位。
-            ticketPurchaseMetrics.recordStage(reservationPersistTimer, "reservation_persist", "failed");
-            ticketPurchaseMetrics.recordFailure("reservation_persist", "database_error");
-            log.error("ticket_reservation_persist_failed reservationId={}, orderSn={}, trainId={}",
+            // 订单已创建但绑定失败时保留 PREPARED，下一阶段按 commandId 查询订单后幂等补绑。
+            ticketPurchaseMetrics.recordStage(reservationBindTimer, "reservation_bind", "failed");
+            ticketPurchaseMetrics.recordFailure("reservation_bind", "database_error");
+            log.error("ticket_reservation_bind_failed reservationId={}, orderSn={}, trainId={}",
                     reservationId, ticketOrderResult.getData(), requestParam.getTrainId(), ex);
             throw ex;
         }
@@ -634,7 +630,80 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     }
 
     /**
-     * 在车票或订单创建失败后释放当前请求的 Redis 临时占座，并记录补偿阶段耗时和失败。
+     * 在单个本地事务中完成数据库锁座、车票写入和 PREPARED reservation 持久化。
+     *
+     * @param requestParam 已通过校验的购票请求
+     * @param trainDO 当前车次
+     * @param serviceDate 列车始发日期
+     * @param reservationId 本次座位占用标识
+     * @param actionId 订单创建动作标识
+     * @param commandId 订单创建稳定命令标识
+     * @param heldTickets 向事务外传递已经取得的 Redis owner，供回滚后精确补偿
+     * @return 已锁定并补齐乘客与价格信息的座位明细
+     */
+    private List<TrainPurchaseTicketRespDTO> preparePurchaseLocally(
+            PurchaseTicketReqDTO requestParam, TrainDO trainDO, Date serviceDate, String reservationId,
+            String actionId, String commandId,
+            AtomicReference<List<TrainPurchaseTicketRespDTO>> heldTickets) {
+        Timer.Sample seatSelectionTimer = ticketPurchaseMetrics.startStageTimer();
+        List<TrainPurchaseTicketRespDTO> selectedTickets;
+        try {
+            // 选座器先写 Redis owner，再由数据库条件更新确认座位，本方法所在事务负责最终提交数据库状态。
+            selectedTickets = trainSeatTypeSelector.select(trainDO.getTrainType(), requestParam, reservationId);
+            heldTickets.set(selectedTickets);
+            ticketPurchaseMetrics.recordStage(seatSelectionTimer, "seat_selection", "success");
+            log.debug("ticket_seat_selected reservationId={}, trainId={}, boardingDate={}, serviceDate={}, departure={}, arrival={}, seatCount={}",
+                    reservationId, requestParam.getTrainId(), requestParam.getDepartureDate(), serviceDate,
+                    requestParam.getDeparture(), requestParam.getArrival(), selectedTickets.size());
+        } catch (Throwable ex) {
+            // 选座器会回收尚未交给主流程的 Redis owner，这里只记录选座失败维度。
+            ticketPurchaseMetrics.recordStage(seatSelectionTimer, "seat_selection", "failed");
+            ticketPurchaseMetrics.recordFailure("seat_selection", "seat_conflict");
+            throw ex;
+        }
+
+        // 将已确认座位转换为本地未支付车票，与数据库锁座结果一起提交。
+        List<TicketDO> ticketDOList = selectedTickets.stream()
+                .map(each -> TicketDO.builder()
+                        .username(UserContext.getUsername())
+                        .trainId(Long.parseLong(requestParam.getTrainId()))
+                        .carriageNumber(each.getCarriageNumber())
+                        .seatNumber(each.getSeatNumber())
+                        .passengerId(each.getPassengerId())
+                        .ticketStatus(TicketStatusEnum.UNPAID.getCode())
+                        .build())
+                .toList();
+        Timer.Sample ticketPersistTimer = ticketPurchaseMetrics.startStageTimer();
+        try {
+            // 车票与锁座处在当前本地事务中，任一步失败都由事务整体回滚。
+            saveBatch(ticketDOList);
+            ticketPurchaseMetrics.recordStage(ticketPersistTimer, "ticket_persist", "success");
+        } catch (Throwable ex) {
+            ticketPurchaseMetrics.recordStage(ticketPersistTimer, "ticket_persist", "failed");
+            ticketPurchaseMetrics.recordFailure("ticket_persist", "database_error");
+            throw ex;
+        }
+
+        Timer.Sample reservationPrepareTimer = ticketPurchaseMetrics.startStageTimer();
+        try {
+            // 远程调用前保存命令和座位快照，进程中断后仍能判断应绑定订单还是释放资源。
+            ticketSeatReservationReleaseService.prepareReservation(
+                    reservationId, actionId, commandId, UserContext.getUserId(), UserContext.getUsername(),
+                    Long.parseLong(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival(),
+                    requestParam.getDepartureDate(), serviceDate, selectedTickets);
+            ticketPurchaseMetrics.recordStage(reservationPrepareTimer, "reservation_prepare", "success");
+            log.debug("ticket_reservation_prepared reservationId={}, commandId={}, trainId={}, serviceDate={}",
+                    reservationId, commandId, requestParam.getTrainId(), serviceDate);
+        } catch (Throwable ex) {
+            ticketPurchaseMetrics.recordStage(reservationPrepareTimer, "reservation_prepare", "failed");
+            ticketPurchaseMetrics.recordFailure("reservation_prepare", "database_error");
+            throw ex;
+        }
+        return selectedTickets;
+    }
+
+    /**
+     * 在本地购票准备失败后释放当前请求的 Redis 临时占座，并记录补偿阶段耗时和失败。
      *
      * @param requestParam 当前购票请求
      * @param tickets 当前请求已经持有的座位
@@ -680,15 +749,9 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
      * @param requestParam 已完成基础日期校验的购票请求
      */
     private void initializePurchaseServiceDate(PurchaseTicketReqDTO requestParam) {
-        // 读取基础车次而非订单日期，避免夜间列车的中途上车日期错误地参与库存分片。
-        TrainDO trainDO = distributedCache.safeGet(
-                TRAIN_INFO + requestParam.getTrainId(),
-                TrainDO.class,
-                () -> trainMapper.selectById(requestParam.getTrainId()),
-                ADVANCE_TICKET_DAY,
-                TimeUnit.DAYS);
+        // 启动阶段已预计算车次与上车站偏移，热路径不再访问 Redis、数据库或分布式锁。
         requestParam.setServiceDate(trainServiceDateResolver.resolve(
-                trainDO, requestParam.getDepartureDate(), requestParam.getDeparture()));
+                Long.valueOf(requestParam.getTrainId()), requestParam.getDepartureDate(), requestParam.getDeparture()));
     }
 
     @Override
@@ -802,6 +865,21 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         response.setStatus(payResult.getStatus());
         response.setTradeNo(payResult.getTradeNo());
         return response;
+    }
+
+    /**
+     * 解析购票订单动作标识，普通请求缺少 operationId 时使用当前 reservation 生成唯一值。
+     *
+     * @param operationId 调用方可选操作标识
+     * @param reservationId 服务端座位占用标识
+     * @return 可用于订单幂等创建和权威查询的动作标识
+     */
+    private String resolvePurchaseActionId(String operationId, String reservationId) {
+        if (StrUtil.isNotBlank(operationId)) {
+            return operationId.trim();
+        }
+        // 普通请求的动作标识只在服务端生成，客户端重试不会伪造或覆盖当前 reservation 的命令。
+        return "purchase-" + reservationId;
     }
 
     /**
@@ -1002,14 +1080,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
      * 根据用户乘车站和日期计算列车实际运行库存所属的始发日期。
      */
     private Date resolveServiceDate(String trainId, Date ridingDate, String departure) {
-        // 车次基础时刻表作为唯一换算依据，确保查询、令牌和锁座共享同一日期语义。
-        TrainDO trainDO = distributedCache.safeGet(
-                TRAIN_INFO + trainId,
-                TrainDO.class,
-                () -> trainMapper.selectById(trainId),
-                ADVANCE_TICKET_DAY,
-                TimeUnit.DAYS);
-        return trainServiceDateResolver.resolve(trainDO, ridingDate, departure);
+        // 查询链路与购票链路共用启动阶段生成的不可变偏移表，保证库存日期语义一致。
+        return trainServiceDateResolver.resolve(Long.valueOf(trainId), ridingDate, departure);
     }
 
     private List<String> buildArrivalStationList(List<TicketListDTO> seatResults) {

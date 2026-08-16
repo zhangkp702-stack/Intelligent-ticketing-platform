@@ -28,6 +28,7 @@ import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableC
 import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
 import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandService;
 import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -50,6 +51,9 @@ public class OrderCloseRollbackService {
 
     private final TicketSeatReservationReleaseService ticketSeatReservationReleaseService;
     private final ReliableCommandService reliableCommandService;
+
+    @Value("${index12306.ticket.order-close-rollback.recovery-max-attempts:5}")
+    private int recoveryMaxAttempts;
 
     /**
      * 认领指定订单的一次关闭回滚；重复的 Canal 事件或同步取消请求不会再次修改余票。
@@ -96,7 +100,7 @@ public class OrderCloseRollbackService {
     }
 
     /**
-     * 领取一条未知结果记录并安全重放；每个 reservation 分别记录座位、Redis 和令牌桶进度。
+     * 领取一条未知结果记录并安全重放；达到最大对账次数后转人工处理并保留失败证据。
      *
      * @param candidate 待恢复的关闭回滚记录
      */
@@ -112,11 +116,19 @@ public class OrderCloseRollbackService {
             reliableCommandService.reconcileSucceeded(record, Boolean.TRUE.toString(),
                     record.businessReference(), "ROLLBACK_RETRIED");
         } catch (RuntimeException exception) {
-            // 恢复失败不推断业务事实，继续保留 UNKNOWN 等待下一轮受控重试。
-            reliableCommandService.finishReconciliation(record, ReliableCommandStatus.UNKNOWN,
-                    "ROLLBACK_RETRY_ERROR", safeFailureMessage(exception),
-                    "ROLLBACK_RETRY_ERROR", Instant.now().plusSeconds(30));
-            log.warn("订单关闭回滚恢复失败，orderSn={}", record.businessReference(), exception);
+            // 不根据异常推断释放结果；达到上限前保持 UNKNOWN，超过上限交给人工核对 reservation 分步骤状态。
+            boolean exhausted = record.reconcileAttemptCount() >= Math.max(1, recoveryMaxAttempts);
+            ReliableCommandStatus targetStatus = exhausted
+                    ? ReliableCommandStatus.MANUAL_REVIEW
+                    : ReliableCommandStatus.UNKNOWN;
+            reliableCommandService.finishReconciliation(record, targetStatus,
+                    exhausted ? "ROLLBACK_RETRY_EXHAUSTED" : "ROLLBACK_RETRY_ERROR", safeFailureMessage(exception),
+                    "ROLLBACK_RETRY_ERROR", exhausted ? null : Instant.now().plusSeconds(30));
+            if (exhausted) {
+                log.error("订单关闭回滚转人工处理，orderSn={}", record.businessReference(), exception);
+            } else {
+                log.warn("订单关闭回滚恢复失败，orderSn={}", record.businessReference(), exception);
+            }
         }
     }
 

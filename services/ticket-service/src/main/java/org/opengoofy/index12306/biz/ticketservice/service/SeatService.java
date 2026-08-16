@@ -33,6 +33,14 @@ import java.util.List;
 public interface SeatService extends IService<SeatDO> {
 
     /**
+     * 校验指定车次和始发日期的运行库存已经由发布或预热流程完整生成。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 始发日期；为空时沿用旧库存兼容路径
+     */
+    void validateServiceDateInventoryReady(String trainId, Date serviceDate);
+
+    /**
      * 获取列车车厢中可用的座位集合
      */
     List<String> listAvailableSeat(String trainId, Date serviceDate, String carriageNumber, Integer seatType, String departure, String arrival);

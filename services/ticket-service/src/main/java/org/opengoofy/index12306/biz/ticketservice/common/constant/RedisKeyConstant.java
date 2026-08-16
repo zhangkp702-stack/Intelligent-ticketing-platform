@@ -151,6 +151,11 @@ public final class RedisKeyConstant {
     public static final String SEAT_SELECTION_STRATEGY_RESERVATIONS = "index12306-ticket-service:seat_strategy:reservations:{%s}:%s:%d";
 
     /**
+     * 座位策略共享状态机，同一库存维度的状态与统计桶使用相同 Hash Tag。
+     */
+    public static final String SEAT_SELECTION_STRATEGY_STATE = "index12306-ticket-service:seat_strategy:state:{%s}";
+
+    /**
      * 获取全部地点集合 Key
      */
     public static final String QUERY_ALL_REGION_LIST = "index12306-ticket-service:query_all_region_list";

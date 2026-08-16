@@ -25,13 +25,22 @@ import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableC
 import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandRecord;
 import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandService;
 import org.opengoofy.index12306.framework.starter.reliablecommand.core.ReliableCommandStatus;
+import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
 /**
@@ -77,6 +86,26 @@ class OrderCloseRollbackServiceTests {
     }
 
     /**
+     * 关闭回滚多次恢复失败后必须停止自动重试，并把可靠命令转为人工处理状态。
+     */
+    @Test
+    void marksRollbackForManualReviewWhenReconciliationAttemptsAreExhausted() {
+        TicketSeatReservationReleaseService reservationReleaseService = mock(TicketSeatReservationReleaseService.class);
+        ReliableCommandService reliableCommandService = mock(ReliableCommandService.class);
+        ReliableCommandRecord record = record(ReliableCommandStatus.UNKNOWN, true, 1);
+        when(reliableCommandService.findDueReconciliations(anyString(), anyInt())).thenReturn(List.of(record));
+        when(reliableCommandService.claimReconciliation(eq(record.key()), any())).thenReturn(Optional.of(record));
+        doThrow(new ServiceException("redis unavailable")).when(reservationReleaseService).releaseOrder("order-1");
+        OrderCloseRollbackService service = new OrderCloseRollbackService(reservationReleaseService, reliableCommandService);
+        ReflectionTestUtils.setField(service, "recoveryMaxAttempts", 1);
+
+        service.recoverDueRollbacks();
+
+        verify(reliableCommandService).finishReconciliation(eq(record), eq(ReliableCommandStatus.MANUAL_REVIEW),
+                eq("ROLLBACK_RETRY_EXHAUSTED"), anyString(), eq("ROLLBACK_RETRY_ERROR"), isNull());
+    }
+
+    /**
      * 构造带或不带有效租约的可靠命令记录。
      *
      * @param status 当前持久化状态
@@ -84,6 +113,18 @@ class OrderCloseRollbackServiceTests {
      * @return 测试使用的可靠命令记录
      */
     private ReliableCommandRecord record(ReliableCommandStatus status, boolean leased) {
+        return record(status, leased, 0);
+    }
+
+    /**
+     * 构造指定对账次数的可靠命令记录，用于验证自动重试与人工处理边界。
+     *
+     * @param status 当前可靠命令状态
+     * @param leased 是否包含当前执行租约
+     * @param reconcileAttemptCount 已执行的对账次数
+     * @return 测试用可靠命令记录
+     */
+    private ReliableCommandRecord record(ReliableCommandStatus status, boolean leased, int reconcileAttemptCount) {
         Instant now = Instant.EPOCH;
         ReliableCommandLease lease = leased
                 ? new ReliableCommandLease("worker-1", now.plusSeconds(120), 1L)
@@ -94,6 +135,6 @@ class OrderCloseRollbackServiceTests {
                 "ticket-order-close", "order-1", "ticket-close-v1", status,
                 null, null, null, "order-1", lease == null ? null : lease.owner(),
                 lease == null ? null : lease.until(), lease == null ? 1L : lease.fencingToken(),
-                now, 1, now, 0, now, now);
+                now, 1, now, reconcileAttemptCount, now, now);
     }
 }

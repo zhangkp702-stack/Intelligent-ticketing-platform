@@ -84,7 +84,12 @@ CREATE TABLE `t_ticket_seat_reservation`
 (
     `id`                          bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',
     `reservation_id`              varchar(64)  NOT NULL COMMENT '不可复用的座位占用标识',
-    `order_sn`                    varchar(128) NOT NULL COMMENT '订单号',
+    `action_id`                   varchar(128) DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`                  varchar(160) DEFAULT NULL COMMENT '订单创建稳定命令标识',
+    `user_id`                     varchar(64)  DEFAULT NULL COMMENT '发起购票的用户标识',
+    `username`                    varchar(256) DEFAULT NULL COMMENT '发起购票的用户名',
+    `order_sn`                    varchar(128) DEFAULT NULL COMMENT '订单号，待绑定阶段为空',
+    `reservation_status`          tinyint(1)   NOT NULL DEFAULT 1 COMMENT '生命周期：0待绑定订单 1已绑定订单 2正在失败释放 3已失败释放',
     `train_id`                    bigint(20)   NOT NULL COMMENT '列车ID',
     `riding_date`                 date         DEFAULT NULL COMMENT '乘车日期',
     `service_date`                date         DEFAULT NULL COMMENT '列车始发日期',
@@ -99,8 +104,10 @@ CREATE TABLE `t_ticket_seat_reservation`
     `del_flag`                    tinyint(1)   DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_reservation_id` (`reservation_id`),
+    UNIQUE KEY `uk_command_id` (`command_id`),
     KEY `idx_order_sn` (`order_sn`),
-    KEY `idx_train_service_date` (`train_id`, `service_date`)
+    KEY `idx_train_service_date` (`train_id`, `service_date`),
+    KEY `idx_reservation_release_recovery` (`reservation_status`, `update_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单座位占用及释放状态表';
 
 CREATE TABLE `t_business_operation`

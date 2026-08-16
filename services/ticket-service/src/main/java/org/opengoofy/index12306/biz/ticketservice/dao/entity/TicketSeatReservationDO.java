@@ -44,8 +44,23 @@ public class TicketSeatReservationDO extends BaseDO {
     /** 不可复用的座位占用标识，同时作为 Redis 位图 owner。 */
     private String reservationId;
 
-    /** 订单号。 */
+    /** 订单创建动作标识，普通购票也由票务服务生成。 */
+    private String actionId;
+
+    /** 订单创建稳定命令标识，用于远程结果未知时对账。 */
+    private String commandId;
+
+    /** 发起购票的用户标识，用于恢复任务按原用户查询订单命令。 */
+    private String userId;
+
+    /** 发起购票的用户名，用于恢复任务恢复下游调用上下文。 */
+    private String username;
+
+    /** 订单号；PREPARED 阶段尚未绑定订单时为空。 */
     private String orderSn;
+
+    /** reservation 生命周期：0 待绑定订单，1 已绑定订单，2 正在失败释放，3 已失败释放。 */
+    private Integer reservationStatus;
 
     /** 列车标识。 */
     private Long trainId;

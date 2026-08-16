@@ -38,6 +38,7 @@ import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.Tra
 import org.opengoofy.index12306.biz.ticketservice.toolkit.StationSegmentBitmapUtil;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
+import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -71,16 +72,41 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
     private final Cache<String, ReentrantLock> localSeatLockMap = Caffeine.newBuilder()
             .expireAfterWrite(1, TimeUnit.DAYS)
             .build();
-    private final Cache<String, Boolean> initializedServiceDateInventory = Caffeine.newBuilder()
-            .expireAfterWrite(10, TimeUnit.MINUTES)
+    private final Cache<String, Boolean> readyServiceDateInventory = Caffeine.newBuilder()
+            .maximumSize(10_000)
+            .expireAfterWrite(1, TimeUnit.DAYS)
             .build();
+
+    /**
+     * 校验日期运行库存已经完整生成，购票请求只读就绪状态而不再同步复制全部座位。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 始发日期；为空时沿用旧库存兼容路径
+     */
+    @Override
+    public void validateServiceDateInventoryReady(String trainId, Date serviceDate) {
+        if (serviceDate == null) {
+            return;
+        }
+        String inventoryKey = trainId + ':' + ServiceDateKeyUtil.format(serviceDate);
+        if (readyServiceDateInventory.getIfPresent(inventoryKey) != null) {
+            return;
+        }
+        // 缓存未命中时只执行完整性查询；生成工作必须由车次发布或压测预热流程提前完成。
+        boolean inventoryReady = trainSeatOccupancyMapper.isServiceDateInventoryReady(Long.parseLong(trainId), serviceDate);
+        if (!inventoryReady) {
+            throw new ServiceException("当前车次日期库存未就绪，请先执行库存预生成");
+        }
+        // 仅缓存成功状态，预热尚未完成的请求可在数据补齐后立即重新校验。
+        readyServiceDateInventory.put(inventoryKey, Boolean.TRUE);
+    }
 
     @Override
     public List<String> listAvailableSeat(String trainId, Date serviceDate, String carriageNumber, Integer seatType, String departure, String arrival) {
         // 获取当前列车的位图
         long requestMask = buildRequestMask(trainId, departure, arrival);
         // 去数据库中找所有和当前指令与运算之后位0的座位
-        ensureServiceDateInventory(trainId, serviceDate);
+        validateServiceDateInventoryReady(trainId, serviceDate);
         List<SeatDO> availableSeats = serviceDate == null
                 ? seatMapper.listAvailableSeatByCarriage(Long.parseLong(trainId), carriageNumber, seatType, requestMask, 1000)
                 : trainSeatOccupancyMapper.listAvailableSeatByCarriage(Long.parseLong(trainId), serviceDate, carriageNumber, seatType, requestMask, 1000);
@@ -90,7 +116,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
     @Override
     public List<Integer> listSeatRemainingTicket(String trainId, Date serviceDate, String departure, String arrival, List<String> trainCarriageList) {
         long requestMask = buildRequestMask(trainId, departure, arrival);
-        ensureServiceDateInventory(trainId, serviceDate);
+        validateServiceDateInventoryReady(trainId, serviceDate);
         if (serviceDate == null) {
             return seatMapper.listSeatRemainingTicket(Long.parseLong(trainId), requestMask, trainCarriageList);
         }
@@ -100,7 +126,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
     @Override
     public List<String> listUsableCarriageNumber(String trainId, Date serviceDate, Integer carriageType, String departure, String arrival) {
         long requestMask = buildRequestMask(trainId, departure, arrival);
-        ensureServiceDateInventory(trainId, serviceDate);
+        validateServiceDateInventoryReady(trainId, serviceDate);
         if (serviceDate == null) {
             return seatMapper.listUsableCarriageNumber(Long.parseLong(trainId), carriageType, requestMask);
         }
@@ -114,7 +140,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
         // 列车站台区间的位图
         long requestMask = buildRequestMask(trainId, departure, arrival);
         // 生成redis的key后缀
-        ensureServiceDateInventory(trainId, serviceDate);
+        validateServiceDateInventoryReady(trainId, serviceDate);
         String keySuffix = buildKeySuffix(trainId, serviceDate, departure, arrival, seatType);
         // 生成汇总订单的key
         String summaryKey = TRAIN_STATION_CARRIAGE_REMAINING_TICKET + keySuffix;
@@ -189,7 +215,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
     @Override
     public List<SeatTypeCountDTO> listSeatTypeCount(Long trainId, Date serviceDate, String startStation, String endStation, List<Integer> seatTypes) {
         long requestMask = buildRequestMask(String.valueOf(trainId), startStation, endStation);
-        ensureServiceDateInventory(String.valueOf(trainId), serviceDate);
+        validateServiceDateInventoryReady(String.valueOf(trainId), serviceDate);
         return serviceDate == null
                 ? seatMapper.listSeatTypeCount(trainId, requestMask, seatTypes)
                 : trainSeatOccupancyMapper.listSeatTypeCount(trainId, serviceDate, requestMask, seatTypes);
@@ -200,7 +226,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
         long requestMask = buildRequestMask(trainId, departure, arrival);
         List<Long> lockedSeatIds = new ArrayList<>();
         Long trainIdLong = Long.parseLong(trainId);
-        ensureServiceDateInventory(trainId, serviceDate);
+        validateServiceDateInventoryReady(trainId, serviceDate);
         List<TrainPurchaseTicketRespDTO> sortedTickets = tickets.stream()
                 .sorted(Comparator.comparing(each -> buildSeatLockKey(trainId, serviceDate, departure, arrival, each)))
                 .toList();
@@ -298,20 +324,6 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
      */
     private String buildKeySuffix(String trainId, Date serviceDate, String departure, String arrival, Integer seatType) {
         return String.join("_", trainId, ServiceDateKeyUtil.format(serviceDate), departure, arrival, String.valueOf(seatType));
-    }
-
-    /**
-     * 初始化某个始发日期的运行库存，重复初始化不会覆盖已有占用状态。
-     */
-    private void ensureServiceDateInventory(String trainId, Date serviceDate) {
-        if (serviceDate == null) {
-            return;
-        }
-        String inventoryKey = trainId + ':' + ServiceDateKeyUtil.format(serviceDate);
-        if (initializedServiceDateInventory.getIfPresent(inventoryKey) == null) {
-            trainSeatOccupancyMapper.initializeServiceDateInventory(Long.parseLong(trainId), serviceDate);
-            initializedServiceDateInventory.put(inventoryKey, Boolean.TRUE);
-        }
     }
 
     /**

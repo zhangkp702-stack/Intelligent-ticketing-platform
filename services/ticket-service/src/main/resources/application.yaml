@@ -65,8 +65,6 @@ mybatis-plus:
       logic-delete-field: delFlag
       logic-delete-value: 1
       logic-not-delete-value: 0
-  configuration:
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
   mapper-locations: classpath:mapper/*.xml
 
 framework:
@@ -99,6 +97,11 @@ index12306:
       reconcile-max-attempts: 5
       reconcile-retry-delay-millis: 30000
       reconcile-lease-millis: 120000
+    reservation-recovery:
+      interval-millis: 5000
+      timeout-millis: 60000
+      batch-size: 100
+      backlog-refresh-interval-millis: 15000
   ratelimiter:
     # 是否信任 X-Forwarded-For，仅当前面有可信反向代理会清洗重写该头时才能开启，否则可被伪造绕过限流
     trust-forwarded-header: false

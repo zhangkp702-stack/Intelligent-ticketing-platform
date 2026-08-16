@@ -20,8 +20,10 @@ package org.opengoofy.index12306.biz.ticketservice.service.monitor;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * 记录购票链路的低基数指标，帮助定位请求在令牌、选座、落库或订单创建阶段的耗时和失败。
@@ -29,15 +31,56 @@ import org.springframework.stereotype.Component;
  * <p>指标标签只允许使用固定阶段和固定结果，订单号、reservationId、车次、站点及日期通过日志关联，避免监控系统产生高基数时序。</p>
  */
 @Component
-@RequiredArgsConstructor
 public class TicketPurchaseMetrics {
 
     private static final String STAGE_DURATION_METRIC = "index12306.ticket.purchase.stage.duration";
     private static final String OUTCOME_METRIC = "index12306.ticket.purchase.outcome";
     private static final String FAILURE_METRIC = "index12306.ticket.purchase.failure";
     private static final String SELECTION_STRATEGY_METRIC = "index12306.ticket.purchase.selection.strategy";
+    private static final String TOTAL_STAGE = "purchase_total";
+    private static final String[][] PRE_REGISTERED_STAGE_RESULTS = {
+            {"request_validation", "success"},
+            {"purchase_date_validate", "success"}, {"purchase_date_validate", "failed"},
+            {"service_date_resolve", "success"}, {"service_date_resolve", "failed"},
+            {"param_not_null", "success"}, {"param_not_null", "failed"},
+            {"train_verify", "success"}, {"train_verify", "failed"},
+            {"station_verify", "success"}, {"station_verify", "failed"},
+            {"stock_verify", "success"}, {"stock_verify", "failed"},
+            {"repeat_verify", "success"}, {"repeat_verify", "failed"},
+            {"inventory_token", "success"}, {"inventory_token", "rejected"},
+            {"inventory_ready", "success"}, {"inventory_ready", "failed"},
+            {"candidate_carriage", "success"}, {"candidate_carriage", "failed"},
+            {"strategy_decide", "success"}, {"strategy_decide", "failed"},
+            {"seat_allocate", "success"}, {"seat_allocate", "failed"},
+            {"passenger_remote", "success"}, {"passenger_remote", "failed"},
+            {"price_query", "success"}, {"price_query", "failed"},
+            {"seat_selection", "success"}, {"seat_selection", "failed"},
+            {"redis_hold", "success"}, {"redis_hold", "conflict"}, {"redis_hold", "failed"},
+            {"database_confirm", "success"}, {"database_confirm", "conflict"}, {"database_confirm", "failed"},
+            {"ticket_persist", "success"}, {"ticket_persist", "failed"},
+            {"reservation_prepare", "success"}, {"reservation_prepare", "failed"},
+            {"order_create", "success"}, {"order_create", "failed"},
+            {"reservation_bind", "success"}, {"reservation_bind", "failed"},
+            {"redis_compensation", "success"}, {"redis_compensation", "failed"},
+            {TOTAL_STAGE, "success"}, {TOTAL_STAGE, "no_ticket"}, {TOTAL_STAGE, "failed"}
+    };
 
     private final MeterRegistry meterRegistry;
+    private final ConcurrentMap<StageKey, Timer> stageTimers = new ConcurrentHashMap<>();
+
+    /**
+     * 创建购票指标组件，并在业务流量到达前注册所有固定阶段计时器。
+     *
+     * @param meterRegistry 应用指标注册表
+     */
+    public TicketPurchaseMetrics(MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
+        // 固定标签组合在 Bean 初始化阶段完成注册，首个购票请求不再承担直方图和 Meter 创建成本。
+        for (String[] stageResult : PRE_REGISTERED_STAGE_RESULTS) {
+            StageKey stageKey = new StageKey(stageResult[0], stageResult[1]);
+            stageTimers.put(stageKey, registerStageTimer(stageKey));
+        }
+    }
 
     /**
      * 创建一个用于统计当前购票阶段耗时的计时样本。
@@ -57,12 +100,27 @@ public class TicketPurchaseMetrics {
      * @param result 固定的阶段执行结果
      */
     public void recordStage(Timer.Sample sample, String stage, String result) {
-        // 仅将固定枚举值作为标签，避免压测账号或订单标识污染 Prometheus 时序。
-        sample.stop(Timer.builder(STAGE_DURATION_METRIC)
+        // 调用方只传固定阶段和结果；预注册集合之外的异常组合仍只创建一次并被缓存复用。
+        StageKey stageKey = new StageKey(stage, result);
+        Timer stageTimer = stageTimers.computeIfAbsent(stageKey, this::registerStageTimer);
+        sample.stop(stageTimer);
+    }
+
+    /**
+     * 注册固定标签的阶段计时器，仅购票总耗时维护百分位直方图。
+     *
+     * @param stageKey 阶段和结果组成的低基数键
+     * @return 已注册并可复用的阶段计时器
+     */
+    private Timer registerStageTimer(StageKey stageKey) {
+        // 子阶段只累计次数和总耗时，避免每个细分阶段维护直方图放大高并发指标开销。
+        Timer.Builder timerBuilder = Timer.builder(STAGE_DURATION_METRIC)
                 .description("Ticket purchase stage duration")
-                .tags("stage", stage, "result", result)
-                .publishPercentileHistogram()
-                .register(meterRegistry));
+                .tags("stage", stageKey.stage(), "result", stageKey.result());
+        if (TOTAL_STAGE.equals(stageKey.stage())) {
+            timerBuilder.publishPercentileHistogram();
+        }
+        return timerBuilder.register(meterRegistry);
     }
 
     /**
@@ -106,5 +164,14 @@ public class TicketPurchaseMetrics {
                 .tag("strategy", strategy)
                 .register(meterRegistry)
                 .increment();
+    }
+
+    /**
+     * 阶段名称和结果均由服务端固定代码提供，禁止放入车次、订单号或用户标识。
+     *
+     * @param stage 固定阶段名称
+     * @param result 固定执行结果
+     */
+    private record StageKey(String stage, String result) {
     }
 }

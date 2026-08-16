@@ -33,13 +33,13 @@ import java.util.List;
 public interface TrainSeatOccupancyMapper extends BaseMapper<TrainSeatOccupancyDO> {
 
     /**
-     * 按静态座位布局创建指定始发日期的运行库存行，重复执行不会覆盖已占用状态。
+     * 校验指定始发日期的运行库存是否完整覆盖当前静态座位布局。
      *
      * @param trainId 列车标识
      * @param serviceDate 始发日期
-     * @return 本次新增的库存行数
+     * @return 静态座位存在且每个座位都有对应运行库存时返回 true
      */
-    int initializeServiceDateInventory(@Param("trainId") Long trainId, @Param("serviceDate") Date serviceDate);
+    boolean isServiceDateInventoryReady(@Param("trainId") Long trainId, @Param("serviceDate") Date serviceDate);
 
     /**
      * 查询指定车厢可用于当前区间的座位布局。
