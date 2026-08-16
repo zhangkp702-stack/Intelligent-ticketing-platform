@@ -79,7 +79,7 @@ public interface OrderService {
      * 查询当前用户稳定订单命令的权威结果。
      *
      * @param commandId 订单创建命令标识
-     * @return 不存在或已成功的命令状态
+     * @return 不存在、处理中、已成功或已失败的命令状态
      */
     OrderCommandStatusRespDTO queryCommandStatus(String commandId);
 

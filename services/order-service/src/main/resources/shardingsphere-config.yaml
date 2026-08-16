@@ -26,6 +26,16 @@ rules:
           complex:
             shardingColumns: user_id,order_sn
             shardingAlgorithmName: order_table_complex_mod
+      t_order_command:
+        actualDataNodes: ds_${0..1}.t_order_command_${0..31}
+        databaseStrategy:
+          complex:
+            shardingColumns: user_id,command_id
+            shardingAlgorithmName: order_database_complex_mod
+        tableStrategy:
+          complex:
+            shardingColumns: user_id,command_id
+            shardingAlgorithmName: order_table_complex_mod
       t_order_item:
         actualDataNodes: ds_${0..1}.t_order_item_${0..31}
         databaseStrategy:
@@ -101,4 +111,4 @@ rules:
         props:
           aes-key-value: d6oadClrrb9A3GWo
 props:
-  sql-show: true
+  sql-show: false

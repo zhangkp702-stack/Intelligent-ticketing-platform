@@ -24,16 +24,18 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.rocketmq.client.producer.SendResult;
-import org.apache.rocketmq.client.producer.SendStatus;
+import org.opengoofy.index12306.biz.orderservice.common.enums.DelayCloseMessageStatusEnum;
 import org.opengoofy.index12306.biz.orderservice.common.enums.OrderCanalErrorCodeEnum;
 import org.opengoofy.index12306.biz.orderservice.common.enums.OrderItemStatusEnum;
 import org.opengoofy.index12306.biz.orderservice.common.enums.OrderStatusEnum;
+import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderCommandDO;
 import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderDO;
 import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderItemDO;
 import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderItemPassengerDO;
+import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderCommandMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderItemMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderMapper;
 import org.opengoofy.index12306.biz.orderservice.dto.domain.OrderStatusReversalDTO;
@@ -47,12 +49,12 @@ import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespD
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
-import org.opengoofy.index12306.biz.orderservice.mq.event.DelayCloseOrderEvent;
 import org.opengoofy.index12306.biz.orderservice.mq.event.PayResultCallbackOrderEvent;
-import org.opengoofy.index12306.biz.orderservice.mq.produce.DelayCloseOrderSendProduce;
 import org.opengoofy.index12306.biz.orderservice.service.OrderItemService;
+import org.opengoofy.index12306.biz.orderservice.service.OrderDelayCloseMessageDispatchService;
 import org.opengoofy.index12306.biz.orderservice.service.OrderPassengerRelationService;
 import org.opengoofy.index12306.biz.orderservice.service.OrderService;
+import org.opengoofy.index12306.biz.orderservice.service.monitor.OrderCreateMetrics;
 import org.opengoofy.index12306.biz.orderservice.service.orderid.OrderIdGeneratorManager;
 import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
@@ -63,14 +65,19 @@ import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -86,10 +93,17 @@ import java.time.ZoneId;
 public class OrderServiceImpl implements OrderService {
 
     private final OrderMapper orderMapper;
+    private final OrderCommandMapper orderCommandMapper;
     private final OrderItemMapper orderItemMapper;
     private final OrderItemService orderItemService;
     private final OrderPassengerRelationService orderPassengerRelationService;
-    private final DelayCloseOrderSendProduce delayCloseOrderSendProduce;
+    private final OrderDelayCloseMessageDispatchService orderDelayCloseMessageDispatchService;
+    private final OrderCreateMetrics orderCreateMetrics;
+    private final PlatformTransactionManager transactionManager;
+
+    private static final String ORDER_COMMAND_PROCESSING = "PROCESSING";
+    private static final String ORDER_COMMAND_SUCCEEDED = "SUCCEEDED";
+    private static final String ORDER_COMMAND_FAILED = "FAILED";
 
     /**
      * 根据订单号查询内部订单详情，不执行终端用户归属校验。
@@ -206,100 +220,208 @@ public class OrderServiceImpl implements OrderService {
         });
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    /**
+     * 以顺序短事务创建订单，避免命令登记事务与订单事务同时占用两个数据库连接。
+     *
+     * @param requestParam 订单、乘车人和可选稳定命令参数
+     * @return 新创建或幂等复用的订单号
+     */
     @Override
     public String createTicketOrder(TicketOrderCreateReqDTO requestParam) {
+        Timer.Sample totalTimer = orderCreateMetrics.startStageTimer();
+        String result = "failed";
+        try {
+            // 对外接口只包裹总耗时，具体阶段由内部创建流程分别记录。
+            String orderSn = doCreateTicketOrder(requestParam);
+            result = "success";
+            return orderSn;
+        } finally {
+            // 异常路径也必须停止样本，确保失败请求不会从耗时指标中消失。
+            orderCreateMetrics.recordStage(totalTimer, "order_create_total", result);
+        }
+    }
+
+    /**
+     * 以顺序短事务执行命令登记、订单落库和提交后消息入队。
+     *
+     * @param requestParam 订单、乘车人和可选稳定命令参数
+     * @return 新创建或幂等复用的订单号
+     */
+    private String doCreateTicketOrder(TicketOrderCreateReqDTO requestParam) {
         String commandId = normalizeCreateCommand(requestParam);
         String requestFingerprint = commandId == null ? null : createRequestFingerprint(requestParam);
+        String userId = String.valueOf(requestParam.getUserId());
+        OrderCommandDO command = null;
         if (commandId != null) {
+            // 先独立提交 PROCESSING，远程调用方超时后才能区分未知、成功和明确失败。
+            Timer.Sample commandPrepareTimer = orderCreateMetrics.startStageTimer();
+            try {
+                command = prepareOrderCommand(commandId, requestParam.getActionId(), userId, requestFingerprint);
+                orderCreateMetrics.recordStage(commandPrepareTimer, "command_prepare", "success");
+            } catch (RuntimeException ex) {
+                orderCreateMetrics.recordStage(commandPrepareTimer, "command_prepare", "failed");
+                throw ex;
+            }
+            if (ORDER_COMMAND_SUCCEEDED.equals(command.getStatus())) {
+                // 成功命令若仍处于待发送状态，异步投递器会通过数据库认领保证只有一个实例发送。
+                enqueueDelayCloseMessage(userId, commandId, command.getOrderSn());
+                return command.getOrderSn();
+            }
+        }
+        String createdOrderSn;
+        Timer.Sample orderTransactionTimer = orderCreateMetrics.startStageTimer();
+        try {
+            // 命令登记已经提交后再开启订单事务，当前线程任一时刻最多占用一个数据库连接。
+            createdOrderSn = executeInNewTransaction(() -> {
             // 网络重试优先读取同一用户分片内的原订单，避免再次生成订单号和子订单。
-            OrderDO existing = findByCommandId(commandId, String.valueOf(requestParam.getUserId()));
-            if (existing != null) {
-                return resolveExistingCreateCommand(requestParam, requestFingerprint, existing);
-            }
-        }
-        // 通过基因法将用户 ID 融入到订单号
-        String orderSn = OrderIdGeneratorManager.generateId(requestParam.getUserId());
-        // 创建汇总订单，存储整个账单的公共情况
-        OrderDO orderDO = OrderDO.builder()
-                .actionId(requestParam.getActionId())
-                .commandId(commandId)
-                .requestFingerprint(requestFingerprint)
-                .orderSn(orderSn)
-                .orderTime(requestParam.getOrderTime())
-                .departure(requestParam.getDeparture())
-                .departureTime(requestParam.getDepartureTime())
-                .ridingDate(requestParam.getRidingDate())
-                .arrivalTime(requestParam.getArrivalTime())
-                .trainNumber(requestParam.getTrainNumber())
-                .arrival(requestParam.getArrival())
-                .trainId(requestParam.getTrainId())
-                .source(requestParam.getSource())
-                .status(OrderStatusEnum.PENDING_PAYMENT.getStatus())
-                .username(requestParam.getUsername())
-                .userId(String.valueOf(requestParam.getUserId()))
-                .build();
-        try {
-            // 每个订单分片上的命令唯一约束是并发创建的最终防线。
-            orderMapper.insert(orderDO);
-        } catch (DuplicateKeyException exception) {
-            OrderDO existing = findByCommandId(commandId, String.valueOf(requestParam.getUserId()));
+            OrderDO existing = commandId == null ? null : findByCommandId(commandId, userId);
+            boolean reusedExistingOrder = existing != null;
             if (existing == null) {
-                throw exception;
+                // 通过基因法将用户 ID 融入到订单号。
+                String orderSn = OrderIdGeneratorManager.generateId(requestParam.getUserId());
+                // 创建汇总订单，存储整个账单的公共情况。
+                OrderDO orderDO = OrderDO.builder()
+                        .actionId(requestParam.getActionId())
+                        .commandId(commandId)
+                        .requestFingerprint(requestFingerprint)
+                        .orderSn(orderSn)
+                        .orderTime(requestParam.getOrderTime())
+                        .departure(requestParam.getDeparture())
+                        .departureTime(requestParam.getDepartureTime())
+                        .ridingDate(requestParam.getRidingDate())
+                        .arrivalTime(requestParam.getArrivalTime())
+                        .trainNumber(requestParam.getTrainNumber())
+                        .arrival(requestParam.getArrival())
+                        .trainId(requestParam.getTrainId())
+                        .source(requestParam.getSource())
+                        .status(OrderStatusEnum.PENDING_PAYMENT.getStatus())
+                        .username(requestParam.getUsername())
+                        .userId(userId)
+                        .build();
+                Timer.Sample orderInsertTimer = orderCreateMetrics.startStageTimer();
+                try {
+                    // 每个订单分片上的命令唯一约束是并发创建的最终防线。
+                    orderMapper.insert(orderDO);
+                    orderCreateMetrics.recordStage(orderInsertTimer, "order_insert", "success");
+                } catch (DuplicateKeyException exception) {
+                    orderCreateMetrics.recordStage(orderInsertTimer, "order_insert", "duplicate");
+                    existing = findByCommandId(commandId, userId);
+                    if (existing == null) {
+                        throw exception;
+                    }
+                    reusedExistingOrder = true;
+                } catch (RuntimeException exception) {
+                    orderCreateMetrics.recordStage(orderInsertTimer, "order_insert", "failed");
+                    throw exception;
+                }
+                if (existing == null) {
+                    // 订单主记录已写入当前事务，继续写入乘车人和延迟关闭事件。
+                    existing = orderDO;
+                }
             }
-            return resolveExistingCreateCommand(requestParam, requestFingerprint, existing);
-        }
-        List<TicketOrderItemCreateReqDTO> ticketOrderItems = requestParam.getTicketOrderItems();
-        List<OrderItemDO> orderItemDOList = new ArrayList<>();
-        List<OrderItemPassengerDO> orderPassengerRelationDOList = new ArrayList<>();
-        ticketOrderItems.forEach(each -> {
-            OrderItemDO orderItemDO = OrderItemDO.builder()
-                    .trainId(requestParam.getTrainId())
-                    .seatNumber(each.getSeatNumber())
-                    .carriageNumber(each.getCarriageNumber())
-                    .realName(each.getRealName())
-                    .orderSn(orderSn)
-                    .phone(each.getPhone())
-                    .seatType(each.getSeatType())
-                    .username(requestParam.getUsername()).amount(each.getAmount()).carriageNumber(each.getCarriageNumber())
-                    .idCard(each.getIdCard())
-                    .ticketType(each.getTicketType())
-                    .idType(each.getIdType())
-                    .userId(String.valueOf(requestParam.getUserId()))
-                    .status(0)
-                    .build();
-            orderItemDOList.add(orderItemDO);
-            OrderItemPassengerDO orderPassengerRelationDO = OrderItemPassengerDO.builder()
-                    .idType(each.getIdType())
-                    .idCard(each.getIdCard())
-                    .orderSn(orderSn)
-                    .build();
-            orderPassengerRelationDOList.add(orderPassengerRelationDO);
-        });
-        orderItemService.saveBatch(orderItemDOList);
-        orderPassengerRelationService.saveBatch(orderPassengerRelationDOList);
-        try {
-            // 发送 RocketMQ 延时消息，指定时间后取消订单
-            DelayCloseOrderEvent delayCloseOrderEvent = DelayCloseOrderEvent.builder()
-                    .orderSn(orderSn)
-                    .build();
-            // 创建订单并支付后延时关闭订单消息怎么办？详情查看：https://nageoffer.com/12306/question
-            SendResult sendResult = delayCloseOrderSendProduce.sendMessage(delayCloseOrderEvent);
-            if (!Objects.equals(sendResult.getSendStatus(), SendStatus.SEND_OK)) {
-                throw new ServiceException("投递延迟关闭订单消息队列失败");
+            if (reusedExistingOrder) {
+                // 重复命令只有在订单字段完全匹配时才能复用原订单号。
+                String existingOrderSn = resolveExistingCreateCommand(requestParam, requestFingerprint, existing);
+                completeOrderCommand(commandId, userId, existingOrderSn);
+                return existingOrderSn;
             }
-        } catch (Throwable ex) {
-            log.error("延迟关闭订单消息队列发送错误，请求参数：{}", JSON.toJSONString(requestParam), ex);
+            String orderSn = existing.getOrderSn();
+            List<TicketOrderItemCreateReqDTO> ticketOrderItems = requestParam.getTicketOrderItems();
+            List<OrderItemDO> orderItemDOList = new ArrayList<>();
+            List<OrderItemPassengerDO> orderPassengerRelationDOList = new ArrayList<>();
+            ticketOrderItems.forEach(each -> {
+                OrderItemDO orderItemDO = OrderItemDO.builder()
+                        .trainId(requestParam.getTrainId())
+                        .seatNumber(each.getSeatNumber())
+                        .carriageNumber(each.getCarriageNumber())
+                        .realName(each.getRealName())
+                        .orderSn(orderSn)
+                        .phone(each.getPhone())
+                        .seatType(each.getSeatType())
+                        .username(requestParam.getUsername()).amount(each.getAmount()).carriageNumber(each.getCarriageNumber())
+                        .idCard(each.getIdCard())
+                        .ticketType(each.getTicketType())
+                        .idType(each.getIdType())
+                        .userId(userId)
+                        .status(0)
+                        .build();
+                orderItemDOList.add(orderItemDO);
+                OrderItemPassengerDO orderPassengerRelationDO = OrderItemPassengerDO.builder()
+                        .idType(each.getIdType())
+                        .idCard(each.getIdCard())
+                        .orderSn(orderSn)
+                        .build();
+                orderPassengerRelationDOList.add(orderPassengerRelationDO);
+            });
+            Timer.Sample orderItemPersistTimer = orderCreateMetrics.startStageTimer();
+            try {
+                // 订单明细和乘车人关系共享当前订单事务，统一记录批量持久化耗时。
+                orderItemService.saveBatch(orderItemDOList);
+                orderPassengerRelationService.saveBatch(orderPassengerRelationDOList);
+                orderCreateMetrics.recordStage(orderItemPersistTimer, "order_item_persist", "success");
+            } catch (RuntimeException ex) {
+                orderCreateMetrics.recordStage(orderItemPersistTimer, "order_item_persist", "failed");
+                throw ex;
+            }
+            // 命令成功状态同时充当延迟关单 Outbox，提交后由后台投递器发送 RocketMQ。
+            completeOrderCommand(commandId, userId, orderSn);
+            return orderSn;
+            });
+            orderCreateMetrics.recordStage(orderTransactionTimer, "order_transaction", "success");
+        } catch (RuntimeException ex) {
+            orderCreateMetrics.recordStage(orderTransactionTimer, "order_transaction", "failed");
+            // 失败终态单独提交，供 ticket-service 对 PREPARED 座位安全释放。
+            markOrderCommandFailed(commandId, userId, ex);
             throw ex;
         }
-        return orderSn;
+        // 订单和 Outbox 已经提交，当前调用只入有界线程池，不等待 RocketMQ 网络确认。
+        enqueueDelayCloseMessage(userId, commandId, createdOrderSn);
+        return createdOrderSn;
+    }
+
+    /**
+     * 记录延迟关单消息进入后台投递器的调用耗时，不等待 RocketMQ 网络发送完成。
+     *
+     * @param userId 订单用户标识
+     * @param commandId 稳定创建命令标识
+     * @param orderSn 已提交订单号
+     */
+    private void enqueueDelayCloseMessage(String userId, String commandId, String orderSn) {
+        Timer.Sample enqueueTimer = orderCreateMetrics.startStageTimer();
+        try {
+            // 这里只提交内存任务，后台发送结果由 Outbox 状态和恢复扫描保证。
+            orderDelayCloseMessageDispatchService.dispatchAsync(userId, commandId, orderSn);
+            orderCreateMetrics.recordStage(enqueueTimer, "delay_close_enqueue", "success");
+        } catch (RuntimeException ex) {
+            orderCreateMetrics.recordStage(enqueueTimer, "delay_close_enqueue", "failed");
+            throw ex;
+        }
+    }
+
+    /**
+     * 在当前订单事务中写入命令成功状态和延迟关单 Outbox 状态。
+     *
+     * @param commandId 稳定创建命令标识
+     * @param userId 订单用户标识
+     * @param orderSn 已创建或幂等复用的订单号
+     */
+    private void completeOrderCommand(String commandId, String userId, String orderSn) {
+        Timer.Sample commandCompleteTimer = orderCreateMetrics.startStageTimer();
+        try {
+            // 成功命令与订单处于同一用户分片，更新随当前订单事务一起提交。
+            markOrderCommandSucceeded(commandId, userId, orderSn);
+            orderCreateMetrics.recordStage(commandCompleteTimer, "command_complete", "success");
+        } catch (RuntimeException ex) {
+            orderCreateMetrics.recordStage(commandCompleteTimer, "command_complete", "failed");
+            throw ex;
+        }
     }
 
     /**
      * 查询当前用户订单创建命令的权威状态。
      *
      * @param commandId 稳定命令标识
-     * @return 未找到或已成功创建的安全结果
+     * @return 未找到、处理中、已成功或已失败的安全结果
      */
     @Override
     public OrderCommandStatusRespDTO queryCommandStatus(String commandId) {
@@ -309,35 +431,186 @@ public class OrderServiceImpl implements OrderService {
         String normalized = commandId.trim();
         String userId = UserContext.getUserId();
         OrderDO order = findByCommandId(normalized, userId);
-        if (order == null) {
+        if (order != null) {
+            if (!Objects.equals(order.getUserId(), userId)) {
+                throw new ClientException("订单命令不存在或无权访问");
+            }
+            // 已落库订单永远优先于命令表，覆盖订单提交成功但命令成功标记尚未写入的短暂窗口。
+            return OrderCommandStatusRespDTO.builder()
+                    .commandId(order.getCommandId())
+                    .actionId(order.getActionId())
+                    .status(ORDER_COMMAND_SUCCEEDED)
+                    .orderSn(order.getOrderSn())
+                    .build();
+        }
+        OrderCommandDO command = findOrderCommand(normalized, userId);
+        if (command == null) {
             return OrderCommandStatusRespDTO.builder()
                     .commandId(normalized)
                     .status("NOT_FOUND")
                     .build();
         }
-        if (!Objects.equals(order.getUserId(), userId)) {
+        if (!Objects.equals(command.getUserId(), userId)) {
             throw new ClientException("订单命令不存在或无权访问");
         }
         // 查询始终带用户分片键，其他用户即使猜中 commandId 也无法读取订单号。
         return OrderCommandStatusRespDTO.builder()
-                .commandId(order.getCommandId())
-                .actionId(order.getActionId())
-                .status("SUCCEEDED")
-                .orderSn(order.getOrderSn())
+                .commandId(command.getCommandId())
+                .actionId(command.getActionId())
+                .status(command.getStatus())
+                .orderSn(command.getOrderSn())
                 .build();
     }
 
     /**
-     * 校验并规范化 Agent 订单创建命令。
+     * 在订单主事务外登记稳定命令，确保远程超时后仍保留处理中的事实。
+     *
+     * @param commandId 稳定订单创建命令标识
+     * @param actionId 订单创建动作标识
+     * @param userId 订单所属用户标识
+     * @param requestFingerprint 不可变请求参数摘要
+     * @return 新建的处理中命令或既有成功命令
+     */
+    private OrderCommandDO prepareOrderCommand(String commandId, String actionId, String userId,
+                                               String requestFingerprint) {
+        try {
+            return executeInNewTransaction(() -> {
+                // 命令记录与订单使用同一 userId 分片键，避免跨分片查询产生广播路由。
+                OrderCommandDO existing = findOrderCommand(commandId, userId);
+                if (existing != null) {
+                    return resolveExistingOrderCommand(existing, actionId, requestFingerprint);
+                }
+                OrderCommandDO command = OrderCommandDO.builder()
+                        .commandId(commandId)
+                        .actionId(actionId)
+                        .userId(userId)
+                        .requestFingerprint(requestFingerprint)
+                        .status(ORDER_COMMAND_PROCESSING)
+                        .build();
+                if (orderCommandMapper.insert(command) != 1) {
+                    throw new ServiceException("创建订单命令记录失败");
+                }
+                return command;
+            });
+        } catch (DuplicateKeyException exception) {
+            // 并发请求可能同时经过空查询，唯一键冲突后读取已提交命令即可完成幂等裁决。
+            OrderCommandDO existing = executeInNewTransaction(() -> findOrderCommand(commandId, userId));
+            if (existing == null) {
+                throw exception;
+            }
+            return resolveExistingOrderCommand(existing, actionId, requestFingerprint);
+        }
+    }
+
+    /**
+     * 校验重复稳定命令，并仅返回已经成功的原订单结果。
+     *
+     * @param existing 已持久化的命令记录
+     * @param actionId 当前订单创建动作标识
+     * @param requestFingerprint 当前不可变请求参数摘要
+     * @return 可安全复用的成功命令记录
+     */
+    private OrderCommandDO resolveExistingOrderCommand(OrderCommandDO existing, String actionId,
+                                                       String requestFingerprint) {
+        if (!Objects.equals(existing.getActionId(), actionId)
+                || !Objects.equals(existing.getRequestFingerprint(), requestFingerprint)) {
+            throw new ServiceException("订单命令标识与原请求不一致");
+        }
+        if (ORDER_COMMAND_SUCCEEDED.equals(existing.getStatus()) && existing.getOrderSn() != null) {
+            return existing;
+        }
+        if (ORDER_COMMAND_FAILED.equals(existing.getStatus())) {
+            throw new ServiceException("订单命令已失败，不能重复创建");
+        }
+        // 处理中命令不能被第二个请求重放，避免原请求尚未结束时产生两个订单。
+        throw new ServiceException("订单命令正在处理中");
+    }
+
+    /**
+     * 在订单主事务中把稳定命令推进为成功，确保命令成功时订单必然一并提交。
+     *
+     * @param commandId 稳定订单创建命令标识
+     * @param userId 订单所属用户标识
+     * @param orderSn 已创建订单号
+     */
+    private void markOrderCommandSucceeded(String commandId, String userId, String orderSn) {
+        if (commandId == null) {
+            return;
+        }
+        // 只允许 PROCESSING 向成功迁移，失败或其他状态不能被后续请求覆盖。
+        int updated = orderCommandMapper.update(
+                OrderCommandDO.builder()
+                        .status(ORDER_COMMAND_SUCCEEDED)
+                        .orderSn(orderSn)
+                        .delayCloseStatus(DelayCloseMessageStatusEnum.PENDING.getStatus())
+                        .delayCloseRetryCount(0)
+                        .delayCloseNextRetryTime(new Date())
+                        .delayCloseFailureReason(null)
+                        .build(),
+                Wrappers.lambdaUpdate(OrderCommandDO.class)
+                        .eq(OrderCommandDO::getUserId, userId)
+                        .eq(OrderCommandDO::getCommandId, commandId)
+                        .eq(OrderCommandDO::getStatus, ORDER_COMMAND_PROCESSING));
+        if (updated != 1) {
+            throw new ServiceException("更新订单命令成功状态失败");
+        }
+    }
+
+    /**
+     * 在订单主事务回滚后独立保存失败终态，供上游安全释放 PREPARED 座位。
+     *
+     * @param commandId 稳定订单创建命令标识
+     * @param userId 订单所属用户标识
+     * @param exception 当前失败异常
+     */
+    private void markOrderCommandFailed(String commandId, String userId, RuntimeException exception) {
+        if (commandId == null) {
+            return;
+        }
+        executeInNewTransaction(() -> {
+            // 只将当前执行中的命令置失败，已成功命令不能因迟到异常被反向覆盖。
+            orderCommandMapper.update(
+                    OrderCommandDO.builder()
+                            .status(ORDER_COMMAND_FAILED)
+                            .failureReason(exception.getClass().getSimpleName())
+                            .build(),
+                    Wrappers.lambdaUpdate(OrderCommandDO.class)
+                            .eq(OrderCommandDO::getUserId, userId)
+                            .eq(OrderCommandDO::getCommandId, commandId)
+                            .eq(OrderCommandDO::getStatus, ORDER_COMMAND_PROCESSING));
+            return null;
+        });
+    }
+
+    /**
+     * 使用独立事务执行一个数据库阶段，各阶段顺序提交且不会同时占用两个连接。
+     *
+     * @param callback 需要独立提交的数据库操作
+     * @return 回调返回值
+     */
+    private <T> T executeInNewTransaction(java.util.function.Supplier<T> callback) {
+        TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        // 调用方完成当前阶段后立即提交，再开始下一阶段，避免连接池在嵌套事务中耗尽。
+        return transactionTemplate.execute(status -> callback.get());
+    }
+
+    /**
+     * 校验并规范化订单创建命令，缺失时为直接调用方生成服务端命令。
      *
      * @param requestParam 订单创建参数
-     * @return 普通请求返回 null，Agent 请求返回规范化命令标识
+     * @return 规范化或服务端生成的命令标识
      */
     private String normalizeCreateCommand(TicketOrderCreateReqDTO requestParam) {
         boolean hasAction = requestParam.getActionId() != null && !requestParam.getActionId().isBlank();
         boolean hasCommand = requestParam.getCommandId() != null && !requestParam.getCommandId().isBlank();
         if (!hasAction && !hasCommand) {
-            return null;
+            // 普通 Ticket 调用会提供稳定命令；兼容直接调用时生成一次性命令以确保 Outbox 不缺失。
+            String actionId = "order-" + UUID.randomUUID();
+            String commandId = actionId + ":create-order";
+            requestParam.setActionId(actionId);
+            requestParam.setCommandId(commandId);
+            return commandId;
         }
         if (!hasAction || !hasCommand) {
             throw new ServiceException("订单 actionId 和 commandId 必须同时提供");
@@ -363,6 +636,19 @@ public class OrderServiceImpl implements OrderService {
         return orderMapper.selectOne(Wrappers.lambdaQuery(OrderDO.class)
                 .eq(OrderDO::getUserId, userId)
                 .eq(OrderDO::getCommandId, commandId));
+    }
+
+    /**
+     * 按用户分片键和稳定命令读取命令记录。
+     *
+     * @param commandId 稳定订单创建命令标识
+     * @param userId 订单所属用户标识
+     * @return 命令记录，不存在时返回 null
+     */
+    private OrderCommandDO findOrderCommand(String commandId, String userId) {
+        return orderCommandMapper.selectOne(Wrappers.lambdaQuery(OrderCommandDO.class)
+                .eq(OrderCommandDO::getUserId, userId)
+                .eq(OrderCommandDO::getCommandId, commandId));
     }
 
     /**
