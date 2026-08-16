@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="12306 随机区间购票压测">
+      <stringProp name="TestPlan.comments">默认使用 loadtest0001 到 loadtest5000。每个线程登录并查询乘车人后，从 19 个车次的全部合法站点区间中随机选择日期、车次和区间，席别按照每车商务座 10、一等座 220、二等座 540 的容量比例随机分配；请求不指定具体车厢和座位，由购票服务完成选座。通过同步集合点后同时发起一次购票请求，压测过程不调用车票查询接口，也不发送取消订单请求。</stringProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="用户定义的变量">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="base_host" elementType="Argument">
+            <stringProp name="Argument.name">base_host</stringProp>
+            <stringProp name="Argument.value">${__P(base_host,192.168.126.100)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="base_port" elementType="Argument">
+            <stringProp name="Argument.name">base_port</stringProp>
+            <stringProp name="Argument.value">${__P(base_port,9000)}</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="loadtest_password" elementType="Argument">
+            <stringProp name="Argument.name">loadtest_password</stringProp>
+            <stringProp name="Argument.value">LoadTest@123456</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+        </collectionProp>
+      </elementProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+    </TestPlan>
+    <hashTree>
+      <ConfigTestElement guiclass="HttpDefaultsGui" testclass="ConfigTestElement" testname="HTTP 请求默认值">
+        <stringProp name="HTTPSampler.domain">${base_host}</stringProp>
+        <stringProp name="HTTPSampler.port">${base_port}</stringProp>
+        <stringProp name="HTTPSampler.protocol">http</stringProp>
+        <stringProp name="HTTPSampler.contentEncoding">UTF-8</stringProp>
+        <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+          <collectionProp name="Arguments.arguments"/>
+        </elementProp>
+        <stringProp name="HTTPSampler.implementation"></stringProp>
+      </ConfigTestElement>
+      <hashTree/>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="5000 个真实用户随机日期、车次和区间购票" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">${__P(users,5000)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(ramp_up_seconds,5)}</stringProp>
+        <stringProp name="ThreadGroup.duration">${__P(duration_seconds,120)}</stringProp>
+        <longProp name="ThreadGroup.delay">0</longProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">stopthread</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="循环控制器">
+          <stringProp name="LoopController.loops">1</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <OnceOnlyController guiclass="OnceOnlyControllerGui" testclass="OnceOnlyController" testname="每个用户只初始化一次身份" enabled="true"/>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="登录并获取 JWT" enabled="true">
+            <stringProp name="HTTPSampler.path">/api/user-service/v1/login</stringProp>
+            <stringProp name="HTTPSampler.method">POST</stringProp>
+            <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments">
+                <elementProp name="" elementType="HTTPArgument">
+                  <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                  <stringProp name="Argument.value">{&quot;usernameOrMailOrPhone&quot;:&quot;${username}&quot;,&quot;password&quot;:&quot;${loadtest_password}&quot;}</stringProp>
+                  <stringProp name="Argument.metadata">=</stringProp>
+                </elementProp>
+              </collectionProp>
+            </elementProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="生成当前线程测试账号" enabled="true">
+              <stringProp name="script">def index = ctx.getThreadNum() + 1; vars.put(&apos;username&apos;, String.format(&apos;loadtest%04d&apos;, index));</stringProp>
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="cacheKey">false</stringProp>
+            </JSR223PreProcessor>
+            <hashTree/>
+            <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言登录成功" enabled="true">
+              <stringProp name="JSON_PATH">$.code</stringProp>
+              <stringProp name="EXPECTED_VALUE">^0$</stringProp>
+              <boolProp name="JSONVALIDATE">true</boolProp>
+              <boolProp name="JSONVALIDATION">true</boolProp>
+              <boolProp name="EXPECT_NULL">false</boolProp>
+              <boolProp name="INVERT">false</boolProp>
+              <boolProp name="ISREGEX">true</boolProp>
+            </JSONPathAssertion>
+            <hashTree/>
+            <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言登录返回令牌" enabled="true">
+              <stringProp name="JSON_PATH">$.data.accessToken</stringProp>
+              <stringProp name="EXPECTED_VALUE">.+</stringProp>
+              <boolProp name="JSONVALIDATE">true</boolProp>
+              <boolProp name="JSONVALIDATION">true</boolProp>
+              <boolProp name="EXPECT_NULL">false</boolProp>
+              <boolProp name="INVERT">false</boolProp>
+              <boolProp name="ISREGEX">true</boolProp>
+            </JSONPathAssertion>
+            <hashTree/>
+            <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="提取 JWT" enabled="true">
+              <stringProp name="JSONPostProcessor.referenceNames">accessToken</stringProp>
+              <stringProp name="JSONPostProcessor.jsonPathExprs">$.data.accessToken</stringProp>
+              <stringProp name="JSONPostProcessor.match_numbers">1</stringProp>
+              <stringProp name="JSONPostProcessor.defaultValues">NOT_FOUND</stringProp>
+            </JSONPostProcessor>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="仅隐藏成功登录结果" enabled="true">
+              <stringProp name="script">def body = new groovy.json.JsonSlurper().parseText(prev.getResponseDataAsString())
+if (body.code?.toString() == &apos;0&apos; &amp;&amp; body.data?.accessToken &amp;&amp; !props.get(&apos;record_setup_samples&apos;, &apos;false&apos;).toBoolean()) {
+    prev.setIgnore()
+}</stringProp>
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="cacheKey">true</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="登录请求头" enabled="true">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Content-Type</stringProp>
+                  <stringProp name="Header.value">application/json</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+          </hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="查询当前用户乘车人" enabled="true">
+            <stringProp name="HTTPSampler.path">/api/user-service/passenger/query</stringProp>
+            <stringProp name="HTTPSampler.method">GET</stringProp>
+            <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+              <collectionProp name="Arguments.arguments"/>
+            </elementProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="乘车人请求头" enabled="true">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Authorization</stringProp>
+                  <stringProp name="Header.value">${accessToken}</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+            <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言乘车人查询成功" enabled="true">
+              <stringProp name="JSON_PATH">$.code</stringProp>
+              <stringProp name="EXPECTED_VALUE">^0$</stringProp>
+              <boolProp name="JSONVALIDATE">true</boolProp>
+              <boolProp name="JSONVALIDATION">true</boolProp>
+              <boolProp name="EXPECT_NULL">false</boolProp>
+              <boolProp name="INVERT">false</boolProp>
+              <boolProp name="ISREGEX">true</boolProp>
+            </JSONPathAssertion>
+            <hashTree/>
+            <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言返回乘车人" enabled="true">
+              <stringProp name="JSON_PATH">$.data[0].id</stringProp>
+              <stringProp name="EXPECTED_VALUE">.+</stringProp>
+              <boolProp name="JSONVALIDATE">true</boolProp>
+              <boolProp name="JSONVALIDATION">true</boolProp>
+              <boolProp name="EXPECT_NULL">false</boolProp>
+              <boolProp name="INVERT">false</boolProp>
+              <boolProp name="ISREGEX">true</boolProp>
+            </JSONPathAssertion>
+            <hashTree/>
+            <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="提取首个乘车人" enabled="true">
+              <stringProp name="JSONPostProcessor.referenceNames">passengerId</stringProp>
+              <stringProp name="JSONPostProcessor.jsonPathExprs">$.data[0].id</stringProp>
+              <stringProp name="JSONPostProcessor.match_numbers">1</stringProp>
+              <stringProp name="JSONPostProcessor.defaultValues">NOT_FOUND</stringProp>
+            </JSONPostProcessor>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="仅隐藏成功乘车人查询结果" enabled="true">
+              <stringProp name="script">def body = new groovy.json.JsonSlurper().parseText(prev.getResponseDataAsString())
+if (body.code?.toString() == &apos;0&apos; &amp;&amp; body.data instanceof Collection &amp;&amp; !body.data.isEmpty() &amp;&amp; body.data[0]?.id &amp;&amp; !props.get(&apos;record_setup_samples&apos;, &apos;false&apos;).toBoolean()) {
+    prev.setIgnore()
+}</stringProp>
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="cacheKey">true</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+          </hashTree>
+        </hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="购票" enabled="true">
+          <stringProp name="HTTPSampler.path">/api/ticket-service/ticket/purchase/v2</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">{&quot;trainId&quot;:&quot;${trainId}&quot;,&quot;departureDate&quot;:&quot;${departureDate}&quot;,&quot;departure&quot;:&quot;${departure}&quot;,&quot;arrival&quot;:&quot;${arrival}&quot;,&quot;passengers&quot;:[{&quot;passengerId&quot;:&quot;${passengerId}&quot;,&quot;seatType&quot;:${seatType}}],&quot;chooseSeats&quot;:[]}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="随机选择日期和完整合法区间并按容量分配席别" enabled="true">
+            <stringProp name="script">def routes = [
+    [&apos;1001&apos;, [&apos;北京南&apos;, &apos;济南西&apos;, &apos;南京南&apos;, &apos;上海虹桥&apos;]],
+    [&apos;1002&apos;, [&apos;北京南&apos;, &apos;济南西&apos;, &apos;南京南&apos;, &apos;上海虹桥&apos;]],
+    [&apos;1003&apos;, [&apos;北京南&apos;, &apos;济南西&apos;, &apos;南京南&apos;, &apos;上海虹桥&apos;]],
+    [&apos;1004&apos;, [&apos;上海虹桥&apos;, &apos;南京南&apos;, &apos;济南西&apos;, &apos;北京南&apos;]],
+    [&apos;1005&apos;, [&apos;上海虹桥&apos;, &apos;南京南&apos;, &apos;济南西&apos;, &apos;北京南&apos;]],
+    [&apos;1006&apos;, [&apos;上海虹桥&apos;, &apos;嘉兴南&apos;, &apos;杭州东&apos;]],
+    [&apos;1007&apos;, [&apos;上海虹桥&apos;, &apos;嘉兴南&apos;, &apos;杭州东&apos;]],
+    [&apos;1008&apos;, [&apos;上海虹桥&apos;, &apos;嘉兴南&apos;, &apos;杭州东&apos;]],
+    [&apos;1009&apos;, [&apos;杭州东&apos;, &apos;嘉兴南&apos;, &apos;上海虹桥&apos;]],
+    [&apos;1010&apos;, [&apos;杭州东&apos;, &apos;嘉兴南&apos;, &apos;上海虹桥&apos;]],
+    [&apos;1011&apos;, [&apos;北京西&apos;, &apos;郑州东&apos;, &apos;武汉&apos;, &apos;长沙南&apos;, &apos;广州南&apos;]],
+    [&apos;1012&apos;, [&apos;北京西&apos;, &apos;郑州东&apos;, &apos;武汉&apos;, &apos;长沙南&apos;, &apos;广州南&apos;]],
+    [&apos;1013&apos;, [&apos;广州南&apos;, &apos;长沙南&apos;, &apos;武汉&apos;, &apos;郑州东&apos;, &apos;北京西&apos;]],
+    [&apos;1014&apos;, [&apos;北京西&apos;, &apos;郑州东&apos;, &apos;西安北&apos;, &apos;成都东&apos;]],
+    [&apos;1015&apos;, [&apos;北京西&apos;, &apos;郑州东&apos;, &apos;西安北&apos;, &apos;成都东&apos;]],
+    [&apos;1016&apos;, [&apos;成都东&apos;, &apos;西安北&apos;, &apos;郑州东&apos;, &apos;北京西&apos;]],
+    [&apos;1017&apos;, [&apos;广州南&apos;, &apos;虎门&apos;, &apos;深圳北&apos;]],
+    [&apos;1018&apos;, [&apos;广州南&apos;, &apos;虎门&apos;, &apos;深圳北&apos;]],
+    [&apos;1019&apos;, [&apos;广州南&apos;, &apos;虎门&apos;, &apos;深圳北&apos;]]
+]
+def candidates = []
+routes.each { route -&gt;
+    def trainId = route[0]
+    def stations = route[1]
+    for (int departureIndex = 0; departureIndex &lt; stations.size() - 1; departureIndex++) {
+        for (int arrivalIndex = departureIndex + 1; arrivalIndex &lt; stations.size(); arrivalIndex++) {
+            candidates.add([trainId, stations[departureIndex], stations[arrivalIndex]])
+        }
+    }
+}
+def random = java.util.concurrent.ThreadLocalRandom.current()
+def target = candidates[random.nextInt(candidates.size())]
+def seatCapacityIndex = random.nextInt(770)
+def seatType = seatCapacityIndex &lt; 10 ? &apos;0&apos; : (seatCapacityIndex &lt; 230 ? &apos;1&apos; : &apos;2&apos;)
+def minDays = Math.max(0, Integer.parseInt(props.get(&apos;departure_offset_min_days&apos;, &apos;1&apos;)))
+def maxDays = Math.max(minDays, Integer.parseInt(props.get(&apos;departure_offset_max_days&apos;, &apos;14&apos;)))
+vars.put(&apos;trainId&apos;, target[0])
+vars.put(&apos;departure&apos;, target[1])
+vars.put(&apos;arrival&apos;, target[2])
+vars.put(&apos;seatType&apos;, seatType)
+vars.put(&apos;departureDate&apos;, java.time.LocalDate.now().plusDays(random.nextInt(minDays, maxDays + 1)).toString())</stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="cacheKey">true</stringProp>
+          </JSR223PreProcessor>
+          <hashTree/>
+          <SyncTimer guiclass="TestBeanGUI" testclass="SyncTimer" testname="等待全部用户登录后同时购票" enabled="true">
+            <intProp name="groupSize">0</intProp>
+            <longProp name="timeoutInMs">30000</longProp>
+          </SyncTimer>
+          <hashTree/>
+          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="购票请求头" enabled="true">
+            <collectionProp name="HeaderManager.headers">
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Content-Type</stringProp>
+                <stringProp name="Header.value">application/json</stringProp>
+              </elementProp>
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Authorization</stringProp>
+                <stringProp name="Header.value">${accessToken}</stringProp>
+              </elementProp>
+            </collectionProp>
+          </HeaderManager>
+          <hashTree/>
+          <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言购票业务成功" enabled="true">
+            <stringProp name="JSON_PATH">$.code</stringProp>
+            <stringProp name="EXPECTED_VALUE">^0$</stringProp>
+            <boolProp name="JSONVALIDATE">true</boolProp>
+            <boolProp name="JSONVALIDATION">true</boolProp>
+            <boolProp name="EXPECT_NULL">false</boolProp>
+            <boolProp name="INVERT">false</boolProp>
+            <boolProp name="ISREGEX">true</boolProp>
+          </JSONPathAssertion>
+          <hashTree/>
+          <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言购票成功标志" enabled="true">
+            <stringProp name="JSON_PATH">$.success</stringProp>
+            <stringProp name="EXPECTED_VALUE">^true$</stringProp>
+            <boolProp name="JSONVALIDATE">true</boolProp>
+            <boolProp name="JSONVALIDATION">true</boolProp>
+            <boolProp name="EXPECT_NULL">false</boolProp>
+            <boolProp name="INVERT">false</boolProp>
+            <boolProp name="ISREGEX">true</boolProp>
+          </JSONPathAssertion>
+          <hashTree/>
+          <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言返回非空订单号" enabled="true">
+            <stringProp name="JSON_PATH">$.data.orderSn</stringProp>
+            <stringProp name="EXPECTED_VALUE">.+</stringProp>
+            <boolProp name="JSONVALIDATE">true</boolProp>
+            <boolProp name="JSONVALIDATION">true</boolProp>
+            <boolProp name="EXPECT_NULL">false</boolProp>
+            <boolProp name="INVERT">false</boolProp>
+            <boolProp name="ISREGEX">true</boolProp>
+          </JSONPathAssertion>
+          <hashTree/>
+        </hashTree>
+        <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree（仅调试使用）" enabled="false">
+          <boolProp name="ResultCollector.error_logging">false</boolProp>
+          <objProp>
+            <name>saveConfig</name>
+            <value class="SampleSaveConfiguration">
+              <time>true</time>
+              <latency>true</latency>
+              <timestamp>true</timestamp>
+              <success>true</success>
+              <label>true</label>
+              <code>true</code>
+              <message>true</message>
+              <threadName>true</threadName>
+              <dataType>true</dataType>
+              <encoding>false</encoding>
+              <assertions>true</assertions>
+              <subresults>true</subresults>
+              <responseData>false</responseData>
+              <samplerData>false</samplerData>
+              <xml>false</xml>
+              <fieldNames>true</fieldNames>
+              <responseHeaders>false</responseHeaders>
+              <requestHeaders>false</requestHeaders>
+              <responseDataOnError>false</responseDataOnError>
+              <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+              <assertionsResultsToSave>0</assertionsResultsToSave>
+              <bytes>true</bytes>
+              <sentBytes>true</sentBytes>
+              <url>true</url>
+              <threadCounts>true</threadCounts>
+              <idleTime>true</idleTime>
+              <connectTime>true</connectTime>
+            </value>
+          </objProp>
+          <stringProp name="filename"></stringProp>
+        </ResultCollector>
+        <hashTree/>
+        <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree" enabled="false">
+          <boolProp name="ResultCollector.error_logging">false</boolProp>
+          <objProp>
+            <name>saveConfig</name>
+            <value class="SampleSaveConfiguration">
+              <time>true</time>
+              <latency>true</latency>
+              <timestamp>true</timestamp>
+              <success>true</success>
+              <label>true</label>
+              <code>true</code>
+              <message>true</message>
+              <threadName>true</threadName>
+              <dataType>true</dataType>
+              <encoding>false</encoding>
+              <assertions>true</assertions>
+              <subresults>true</subresults>
+              <responseData>false</responseData>
+              <samplerData>false</samplerData>
+              <xml>false</xml>
+              <fieldNames>true</fieldNames>
+              <responseHeaders>false</responseHeaders>
+              <requestHeaders>false</requestHeaders>
+              <responseDataOnError>false</responseDataOnError>
+              <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+              <assertionsResultsToSave>0</assertionsResultsToSave>
+              <bytes>true</bytes>
+              <sentBytes>true</sentBytes>
+              <url>true</url>
+              <threadCounts>true</threadCounts>
+              <idleTime>true</idleTime>
+              <connectTime>true</connectTime>
+            </value>
+          </objProp>
+          <stringProp name="filename"></stringProp>
+        </ResultCollector>
+        <hashTree/>
+      </hashTree>
+      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="汇总报告" enabled="true">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

@@ -39,3 +39,7 @@ build/
 
 ### Local project documentation ###
 /docs/
+
+### Local load-test artifacts ###
+/loadtest/jmeter/results/
+/locust/load_test_users_*.sql
