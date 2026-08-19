@@ -2,7 +2,7 @@
 <jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
   <hashTree>
     <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="12306 随机区间购票压测">
-      <stringProp name="TestPlan.comments">默认使用 loadtest0001 到 loadtest5000。每个线程登录并查询乘车人后，从 19 个车次的全部合法站点区间中随机选择日期、车次和区间，席别按照每车商务座 10、一等座 220、二等座 540 的容量比例随机分配；请求不指定具体车厢和座位，由购票服务完成选座。通过同步集合点后同时发起一次购票请求，压测过程不调用车票查询接口，也不发送取消订单请求。</stringProp>
+      <stringProp name="TestPlan.comments">默认使用 loadtest0001 到 loadtest5000。每个线程登录并查询乘车人后，从 19 个车次的全部合法站点区间中随机选择日期、车次和区间，席别按照每车商务座 10、一等座 220、二等座 540 的容量比例随机分配；请求不指定具体车厢和座位，由购票服务完成选座。通过同步集合点后同时发起一次购票请求，仅统计购票接口成功受理的耗时；压测结束后需要在隔离环境中恢复测试库存。</stringProp>
       <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="用户定义的变量">
         <collectionProp name="Arguments.arguments">
           <elementProp name="base_host" elementType="Argument">
@@ -37,8 +37,8 @@
         <stringProp name="HTTPSampler.implementation"></stringProp>
       </ConfigTestElement>
       <hashTree/>
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="5000 个真实用户随机日期、车次和区间购票" enabled="true">
-        <stringProp name="ThreadGroup.num_threads">${__P(users,5000)}</stringProp>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="500 个用户登录后同步抢票" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">${__P(users,500)}</stringProp>
         <stringProp name="ThreadGroup.ramp_time">${__P(ramp_up_seconds,5)}</stringProp>
         <stringProp name="ThreadGroup.duration">${__P(duration_seconds,120)}</stringProp>
         <longProp name="ThreadGroup.delay">0</longProp>
@@ -246,9 +246,10 @@ vars.put(&apos;departureDate&apos;, java.time.LocalDate.now().plusDays(random.ne
             <stringProp name="cacheKey">true</stringProp>
           </JSR223PreProcessor>
           <hashTree/>
-          <SyncTimer guiclass="TestBeanGUI" testclass="SyncTimer" testname="等待全部用户登录后同时购票" enabled="true">
-            <intProp name="groupSize">0</intProp>
-            <longProp name="timeoutInMs">30000</longProp>
+          <SyncTimer guiclass="TestBeanGUI" testclass="org.apache.jmeter.timers.SyncTimer" testname="等待全部用户登录后同时购票" enabled="true">
+            <stringProp name="TestBean.gui">org.apache.jmeter.timers.gui.SyncTimerGui</stringProp>
+            <intProp name="SyncTimer.groupSize">0</intProp>
+            <longProp name="SyncTimer.timeoutInMs">300000</longProp>
           </SyncTimer>
           <hashTree/>
           <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="购票请求头" enabled="true">
@@ -284,8 +285,8 @@ vars.put(&apos;departureDate&apos;, java.time.LocalDate.now().plusDays(random.ne
             <boolProp name="ISREGEX">true</boolProp>
           </JSONPathAssertion>
           <hashTree/>
-          <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言返回非空订单号" enabled="true">
-            <stringProp name="JSON_PATH">$.data.orderSn</stringProp>
+          <JSONPathAssertion guiclass="JSONPathAssertionGui" testclass="JSONPathAssertion" testname="断言返回非空购票受理标识" enabled="true">
+            <stringProp name="JSON_PATH">$.data.reservationId</stringProp>
             <stringProp name="EXPECTED_VALUE">.+</stringProp>
             <boolProp name="JSONVALIDATE">true</boolProp>
             <boolProp name="JSONVALIDATION">true</boolProp>
