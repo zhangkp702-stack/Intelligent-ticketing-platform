@@ -202,7 +202,7 @@ class TicketServiceImplTests {
                 redisSeatBitmapService, purchaseMetrics, null, transactionTemplate));
         doReturn(true).when(purchaseService).saveBatch(anyList());
 
-        // 普通客户端请求不提供 operationId，但已经完成 Redis 占座并获得一个座位。
+        // 普通客户端请求不提供外部动作标识，但已经完成 Redis 占座并获得一个座位。
         Date ridingDate = new Date(1785283200000L);
         PurchaseTicketReqDTO request = new PurchaseTicketReqDTO();
         request.setTrainId("1");

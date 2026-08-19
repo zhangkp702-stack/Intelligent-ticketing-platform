@@ -159,7 +159,7 @@ public class RefundServiceImpl implements RefundService {
             refundResultCallbackOrderSendProduce.sendMessage(refundResultCallbackOrderEvent);
         }
 
-        // 返回稳定字段供票务服务和后续智能体执行状态持久化。
+        // 返回稳定字段供票务服务和后续后续处理状态持久化。
         RefundRespDTO response = new RefundRespDTO();
         response.setRequestId(requestParam.getRequestId());
         response.setOrderSn(requestParam.getOrderSn());
@@ -284,10 +284,10 @@ public class RefundServiceImpl implements RefundService {
     }
 
     /**
-     * 校验 Agent 退款命令格式并计算不可变参数指纹。
+     * 校验退款命令格式并计算不可变参数指纹。
      *
      * @param requestParam 退款请求
-     * @return 普通退款返回 null，Agent 退款返回 SHA-256 指纹
+     * @return 未携带命令时返回 null，携带命令时返回 SHA-256 指纹
      */
     private String normalizeAndFingerprintCommand(RefundReqDTO requestParam) {
         boolean hasAction = requestParam.getActionId() != null && !requestParam.getActionId().isBlank();

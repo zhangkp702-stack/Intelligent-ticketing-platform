@@ -12,7 +12,6 @@ import BuyTicket from '../views/buy-ticket'
 import TikectList from '../views/order-list'
 import PersonalTicket from '../views/personalTicket'
 import PaySuccess from '../views/pay-success'
-import TicketAgent from '../views/ticket-agent'
 import Cookies from 'js-cookie'
 const routes = [
   {
@@ -39,14 +38,6 @@ const routes = [
     component: TicketSearch,
     icon: 'icon-chaxun',
     meta: { requiresAuth: false }
-  },
-  {
-    label: '智能购票',
-    path: '/agent',
-    name: 'ticketAgent',
-    component: TicketAgent,
-    icon: 'icon-huochezhanxiao',
-    meta: { requiresAuth: true }
   },
   {
     label: '用户信息',

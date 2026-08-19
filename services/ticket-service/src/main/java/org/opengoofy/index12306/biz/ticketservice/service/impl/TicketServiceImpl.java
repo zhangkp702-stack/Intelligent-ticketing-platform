@@ -417,10 +417,10 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         String failedStage = "request_validation";
         String purchaseResult = "failed";
         try {
-            log.debug("ticket_purchase_start trainId={}, boardingDate={}, departure={}, arrival={}, passengerCount={}, operationId={}",
+            log.debug("ticket_purchase_start trainId={}, boardingDate={}, departure={}, arrival={}, passengerCount={}",
                     requestParam == null ? null : requestParam.getTrainId(), requestParam == null ? null : requestParam.getDepartureDate(),
                     requestParam == null ? null : requestParam.getDeparture(), requestParam == null ? null : requestParam.getArrival(),
-                    requestParam == null ? 0 : CollUtil.size(requestParam.getPassengers()), requestParam == null ? null : requestParam.getOperationId());
+                    requestParam == null ? 0 : CollUtil.size(requestParam.getPassengers()));
             Timer.Sample validationTimer = ticketPurchaseMetrics.startStageTimer();
             // 在扣减令牌前确认乘车日期存在，避免无效请求占用库存令牌。
             Timer.Sample purchaseDateTimer = ticketPurchaseMetrics.startStageTimer();
@@ -491,12 +491,11 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             if (!"inventory_token".equals(failedStage)) {
                 ticketPurchaseMetrics.recordOutcome("failed");
             }
-            log.warn("ticket_purchase_failed stage={}, trainId={}, boardingDate={}, departure={}, arrival={}, operationId={}",
+            log.warn("ticket_purchase_failed stage={}, trainId={}, boardingDate={}, departure={}, arrival={}",
                     failedStage, requestParam == null ? null : requestParam.getTrainId(),
                     requestParam == null ? null : requestParam.getDepartureDate(),
                     requestParam == null ? null : requestParam.getDeparture(),
-                    requestParam == null ? null : requestParam.getArrival(),
-                    requestParam == null ? null : requestParam.getOperationId(), ex);
+                    requestParam == null ? null : requestParam.getArrival(), ex);
             throw ex;
         } finally {
             // 无论购票成功、无票还是异常都记录完整入口耗时，便于比较排队和失败路径。
@@ -562,9 +561,9 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             throw new ServiceException("列车站点关系不存在");
         }
         Date localPreparationServiceDate = serviceDate;
-        // 普通购票也使用服务端动作标识，保证订单创建结果可以通过稳定命令查询。
-        String actionId = resolvePurchaseActionId(requestParam.getOperationId(), reservationId);
-        String orderCreateCommandId = downstreamCommand(actionId, "create-order");
+        // 服务端为异步建单生成稳定动作标识，客户端不再传入外部动作标识。
+        String actionId = resolvePurchaseActionId(reservationId);
+        String orderCreateCommandId = actionId + ":create-order";
         AtomicReference<List<TrainPurchaseTicketRespDTO>> heldTickets = new AtomicReference<>();
         // 先在事务外完成 Redis 乐观临时占位；低余票或基础设施回退场景仍保留原有事务内单通道选座。
         PreparedSeatSelection preparedSeatSelection = trainSeatTypeSelector.prepareOptimisticRedisSeatSelection(
@@ -886,8 +885,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         if (!Boolean.TRUE.equals(ticketOrderDetail.getCanCancel())) {
             throw new ServiceException("当前订单状态不允许取消");
         }
-        // Agent 取消请求必须把同一 actionId 派生的稳定命令传到订单服务。
-        requestParam.setCommandId(downstreamCommand(requestParam.getOperationId(), "cancel-order"));
         Result<Void> cancelOrderResult = ticketOrderRemoteService.cancelTicketOrder(requestParam);
         if (!cancelOrderResult.isSuccess()) {
             throw new ServiceException("取消订单失败");
@@ -928,11 +925,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         // 请求标识优先采用调用方提供值，缺失时按用户、订单和退票范围生成稳定标识。
         String requestId = normalizeRefundRequestId(requestParam, plan.items());
         RefundReqDTO refundReqDTO = new RefundReqDTO();
-        refundReqDTO.setActionId(requestParam.getOperationId());
-        String refundCommandId = downstreamCommand(requestParam.getOperationId(), "refund-payment");
-        refundReqDTO.setCommandId(refundCommandId);
-        // Agent 退款由下游步骤命令作为支付层幂等键，普通退款继续复用原请求标识。
-        refundReqDTO.setRequestId(refundCommandId == null ? requestId : refundCommandId);
+        // 普通退票直接把稳定退款请求标识传给支付服务。
+        refundReqDTO.setRequestId(requestId);
         refundReqDTO.setRefundTypeEnum(RefundTypeEnum.PARTIAL_REFUND.getType().equals(requestParam.getType())
                 ? RefundTypeEnum.PARTIAL_REFUND : RefundTypeEnum.FULL_REFUND);
         refundReqDTO.setRefundDetailReqDTOList(plan.items());
@@ -946,9 +940,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
 
         // 票务服务只返回退款跟踪所需字段，不暴露支付渠道内部请求。
         RefundTicketRespDTO response = new RefundTicketRespDTO();
-        // 对外仍返回 actionId；下游 commandId 只用于步骤级幂等，不泄漏为业务请求标识。
-        response.setRequestId(StrUtil.isBlank(requestParam.getOperationId())
-                ? payResult.getRequestId() : requestParam.getOperationId().trim());
+        // 对外返回支付服务确认的退款请求标识，便于用户查询退款结果。
+        response.setRequestId(payResult.getRequestId());
         response.setOrderSn(payResult.getOrderSn());
         response.setType(requestParam.getType());
         response.setRefundAmount(payResult.getRefundAmount());
@@ -958,33 +951,14 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     }
 
     /**
-     * 解析购票订单动作标识，普通请求缺少 operationId 时使用当前 reservation 生成唯一值。
+     * 根据当前座位受理标识生成异步建单动作标识。
      *
-     * @param operationId 调用方可选操作标识
      * @param reservationId 服务端座位占用标识
      * @return 可用于订单幂等创建和权威查询的动作标识
      */
-    private String resolvePurchaseActionId(String operationId, String reservationId) {
-        if (StrUtil.isNotBlank(operationId)) {
-            return operationId.trim();
-        }
-        // 普通请求的动作标识只在服务端生成，客户端重试不会伪造或覆盖当前 reservation 的命令。
+    private String resolvePurchaseActionId(String reservationId) {
+        // 动作标识只在服务端生成，客户端不能伪造或覆盖当前 reservation 的命令。
         return "purchase-" + reservationId;
-    }
-
-    /**
-     * 由服务端操作标识派生下游稳定命令标识。
-     *
-     * @param actionId Agent 真实交易意图标识
-     * @param stepName 下游业务步骤名称
-     * @return 普通请求返回 null，Agent 请求返回 actionId 加步骤名称
-     */
-    private String downstreamCommand(String actionId, String stepName) {
-        if (StrUtil.isBlank(actionId)) {
-            return null;
-        }
-        // 命令标识只由可信票务服务派生，前端不能为同一 action 切换下游命令。
-        return actionId.trim() + ":" + stepName;
     }
 
     /**

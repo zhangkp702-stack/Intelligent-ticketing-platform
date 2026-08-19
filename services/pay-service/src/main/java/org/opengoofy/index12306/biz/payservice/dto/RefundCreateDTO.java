@@ -30,7 +30,7 @@ import java.util.List;
 public class RefundCreateDTO {
 
     /**
-     * Agent 真实交易意图标识。
+     * 业务动作标识。
      */
     private String actionId;
 

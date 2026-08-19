@@ -17,7 +17,6 @@
 
 package org.opengoofy.index12306.biz.ticketservice.dto.req;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -27,18 +26,7 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class CancelTicketOrderReqDTO {
-
-    /**
-     * Agent 已确认操作标识；普通取消请求可以不传。
-     */
-    private String operationId;
-
-    /**
-     * 下游取消订单步骤的稳定命令标识；由票务服务根据操作标识生成。
-     */
-    private String commandId;
 
     /**
      * 订单号
@@ -46,24 +34,12 @@ public class CancelTicketOrderReqDTO {
     private String orderSn;
 
     /**
-     * 保留操作标识和订单号构造方式，下游命令由票务服务执行前补齐。
-     *
-     * @param operationId Agent 操作标识
-     * @param orderSn 订单号
-     */
-    public CancelTicketOrderReqDTO(String operationId, String orderSn) {
-        // API 和测试仍可按既有两参数协议创建请求。
-        this.operationId = operationId;
-        this.orderSn = orderSn;
-    }
-
-    /**
      * 保留延迟关单等既有调用方使用的订单号构造方式。
      *
      * @param orderSn 订单号
      */
     public CancelTicketOrderReqDTO(String orderSn) {
-        // 非 Agent 内部调用不生成操作标识，保持原有关闭订单语义。
+        // 延迟关单和用户取消订单均只需要订单号。
         this.orderSn = orderSn;
     }
 }

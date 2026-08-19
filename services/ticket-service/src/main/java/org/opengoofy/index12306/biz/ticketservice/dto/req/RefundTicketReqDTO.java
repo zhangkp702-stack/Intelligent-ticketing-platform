@@ -29,11 +29,6 @@ import java.util.List;
 public class RefundTicketReqDTO {
 
     /**
-     * Agent 已确认操作标识；普通退票请求可以不传。
-     */
-    private String operationId;
-
-    /**
      * 可选退款请求标识，缺失时由服务端根据用户和退票范围生成
      */
     private String requestId;

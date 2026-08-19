@@ -21,9 +21,6 @@
           <Item key="ticketSearch"
             ><RouterLink to="/ticketSearch">车票查询</RouterLink></Item
           >
-          <Item key="ticketAgent"
-            ><RouterLink to="/agent">智能购票</RouterLink></Item
-          >
         </SubMenu>
         <SubMenu key="sub2" @titleClick="titleClick">
           <template #icon>

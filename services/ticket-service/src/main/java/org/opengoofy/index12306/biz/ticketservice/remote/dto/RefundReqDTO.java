@@ -30,7 +30,7 @@ import java.util.List;
 public class RefundReqDTO {
 
     /**
-     * Agent 真实交易意图标识；普通退款请求可以不传。
+     * 业务动作标识；普通退款请求可以不传。
      */
     private String actionId;
 
