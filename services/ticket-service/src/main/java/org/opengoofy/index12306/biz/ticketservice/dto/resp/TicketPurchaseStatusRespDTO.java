@@ -22,35 +22,21 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
 /**
- * 车票购买返回参数
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
+ * 异步购票建单状态。
  */
 @Data
-@AllArgsConstructor
-@NoArgsConstructor
 @Builder
-public class TicketPurchaseRespDTO {
+@NoArgsConstructor
+@AllArgsConstructor
+public class TicketPurchaseStatusRespDTO {
 
-    /**
-     * 订单号；异步建单完成前为空。
-     */
-    private String orderSn;
-
-    /**
-     * 服务端生成的购票受理标识，用于查询异步建单结果。
-     */
+    /** 购票受理标识。 */
     private String reservationId;
 
-    /**
-     * 订单创建状态：PROCESSING、SUCCEEDED 或 FAILED。
-     */
-    private String orderCreateStatus;
+    /** 建单状态：PROCESSING、SUCCEEDED 或 FAILED。 */
+    private String status;
 
-    /**
-     * 乘车人订单详情
-     */
-    private List<TicketOrderDetailRespDTO> ticketOrderDetails;
+    /** 建单成功后的真实订单号，其他状态为空。 */
+    private String orderSn;
 }

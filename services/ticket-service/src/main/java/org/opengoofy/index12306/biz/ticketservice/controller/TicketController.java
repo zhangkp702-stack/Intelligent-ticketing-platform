@@ -28,6 +28,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.resp.OrderOperationPreview
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseStatusRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.PurchaseOperationService;
 import org.opengoofy.index12306.biz.ticketservice.service.BusinessOperationCoordinator;
@@ -82,6 +83,19 @@ public class TicketController {
     public Result<TicketPurchaseRespDTO> purchaseTicketsV2(@RequestBody PurchaseTicketReqDTO requestParam) {
         // Agent 请求先认领操作标识，普通客户端仍沿用原有 V2 购票行为。
         return Results.success(purchaseOperationService.purchaseTicketsV2(requestParam));
+    }
+
+    /**
+     * 查询当前用户的异步建单结果。
+     *
+     * @param reservationId 购票首次响应返回的受理标识
+     * @return PROCESSING、SUCCEEDED 或 FAILED，成功时同时返回订单号
+     */
+    @GetMapping("/api/ticket-service/ticket/purchase/status")
+    public Result<TicketPurchaseStatusRespDTO> queryPurchaseStatus(
+            @RequestParam(value = "reservationId") String reservationId) {
+        // 状态查询只读取当前用户的 reservation，不会触发重复购票。
+        return Results.success(ticketService.queryPurchaseStatus(reservationId));
     }
 
     /**

@@ -19,7 +19,7 @@ package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.filter
 
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
-import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseExecutionContext;
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchaseMetrics;
 import org.springframework.stereotype.Component;
 
@@ -29,20 +29,20 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @RequiredArgsConstructor
-public class TrainPurchaseTicketRepeatChainHandler implements TrainPurchaseTicketChainFilter<PurchaseTicketReqDTO> {
+public class TrainPurchaseTicketRepeatChainHandler implements TrainPurchaseTicketChainFilter {
 
     private final TicketPurchaseMetrics ticketPurchaseMetrics;
 
     /**
      * 执行重复购票过滤阶段并记录当前占位实现的耗时，为后续补充业务规则保留独立基线。
      *
-     * @param requestParam 已完成库存摘要校验的购票请求
+     * @param context 已完成库存摘要校验的购票执行上下文
      */
     @Override
-    public void handler(PurchaseTicketReqDTO requestParam) {
+    public void handler(PurchaseExecutionContext context) {
         Timer.Sample repeatTimer = ticketPurchaseMetrics.startStageTimer();
         try {
-            // TODO 重复购买验证后续实现
+            // 当前阶段只保留责任链扩展点，不执行额外的远程或数据库读取。
         } finally {
             // 当前阶段尚无失败分支，固定记录成功标签以确认责任链调度开销。
             ticketPurchaseMetrics.recordStage(repeatTimer, "repeat_verify", "success");

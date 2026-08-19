@@ -102,20 +102,18 @@ public interface TrainSeatOccupancyMapper extends BaseMapper<TrainSeatOccupancyD
                                                                   @Param("requestMask") Long requestMask);
 
     /**
-     * 在指定始发日期的运行库存中以版本号条件锁定一个座位。
+     * 在指定始发日期的运行库存中批量按区间未占用条件确认座位。
      *
      * @param trainId 列车标识
      * @param serviceDate 始发日期
-     * @param seatId 静态座位标识
-     * @param version 当前版本号
+     * @param seatIds 静态座位标识集合
      * @param requestMask 区间位图
-     * @return 受影响行数
+     * @return 成功更新的座位数量；小于输入数量时调用方必须回滚当前事务
      */
-    int tryLockSeatByBitmap(@Param("trainId") Long trainId,
-                            @Param("serviceDate") Date serviceDate,
-                            @Param("seatId") Long seatId,
-                            @Param("version") Long version,
-                            @Param("requestMask") Long requestMask);
+    int tryLockSeatsByBitmap(@Param("trainId") Long trainId,
+                             @Param("serviceDate") Date serviceDate,
+                             @Param("seatIds") List<Long> seatIds,
+                             @Param("requestMask") Long requestMask);
 
     /**
      * 在指定始发日期的运行库存中幂等释放一个座位区间。

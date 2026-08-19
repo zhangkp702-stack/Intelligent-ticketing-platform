@@ -25,8 +25,6 @@ import com.google.common.collect.Lists;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleTypeEnum;
-import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainDO;
-import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
@@ -35,7 +33,9 @@ import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRe
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseExecutionContext;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TokenResultDTO;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.StationCalculateUtil;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
 import org.opengoofy.index12306.framework.starter.bases.Singleton;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
@@ -57,11 +57,9 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.Index12306Constant.ADVANCE_TICKET_DAY;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.LOCK_TICKET_AVAILABILITY_TOKEN_BUCKET;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TICKET_AVAILABILITY_TOKEN_BUCKET;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TICKET_RESERVATION_TOKEN_ROLLBACK_MARKER;
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_INFO;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_CARRIAGE_REMAINING_TICKET;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
 
@@ -78,7 +76,6 @@ public class TicketAvailabilityTokenBucket {
     private final DistributedCache distributedCache;
     private final RedissonClient redissonClient;
     private final SeatService seatService;
-    private final TrainMapper trainMapper;
 
     // 这里使用了lua脚本，用于原子操作，确保线程安全和性能
     private static final String LUA_TICKET_AVAILABILITY_TOKEN_BUCKET_PATH = "lua/ticket_availability_token_bucket.lua";
@@ -89,20 +86,12 @@ public class TicketAvailabilityTokenBucket {
      * 如果返回 {@link Boolean#TRUE} 代表可以参与接下来的购票下单流程
      * 如果返回 {@link Boolean#FALSE} 代表当前访问出发站点和到达站点令牌已被拿完，无法参与购票下单等逻辑
      *
-     * @param requestParam 购票请求参数入参
+     * @param context 已准备车次、站点和受影响区间的购票执行上下文
      * @return 是否获取列车车票余量令牌桶中的令牌返回结果
      */
-    public TokenResultDTO takeTokenFromBucket(PurchaseTicketReqDTO requestParam) {
-        // 查询当前列车信息
-        TrainDO trainDO = distributedCache.safeGet(
-                TRAIN_INFO + requestParam.getTrainId(),
-                TrainDO.class,
-                () -> trainMapper.selectById(requestParam.getTrainId()),
-                ADVANCE_TICKET_DAY,
-                TimeUnit.DAYS);
-        // 获取到当前列车所有的可能的区间组合
-        List<RouteDTO> routeDTOList = trainStationService
-                .listTrainStationRoute(requestParam.getTrainId(), trainDO.getStartStation(), trainDO.getEndStation());
+    public TokenResultDTO takeTokenFromBucket(PurchaseExecutionContext context) {
+        // 车次和请求参数来自同一不可变上下文，热路径不再重复读取车次缓存。
+        PurchaseTicketReqDTO requestParam = context.requestParam();
         // 获取redis的stringRedisTemplate
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
         // 定义redis的令牌桶的key
@@ -121,8 +110,11 @@ public class TicketAvailabilityTokenBucket {
                 // 二次检验
                 Boolean hasKeyTwo = distributedCache.hasKey(tokenBucketHashKey);
                 if (!hasKeyTwo) {
+                    // 只有首次创建令牌桶时才计算全线路区间，已存在令牌桶的请求不承担该固定开销。
+                    List<RouteDTO> routeDTOList = StationCalculateUtil.throughStation(
+                            context.stationNames(), context.train().getStartStation(), context.train().getEndStation());
                     // 开始初始化，确定有那些座位类型
-                    List<Integer> seatTypes = VehicleTypeEnum.findSeatTypesByCode(trainDO.getTrainType());
+                    List<Integer> seatTypes = VehicleTypeEnum.findSeatTypesByCode(context.train().getTrainType());
                     Map<String, String> ticketAvailabilityTokenMap = new HashMap<>();
                     // 遍历所有的区间
                     for (RouteDTO each : routeDTOList) {
@@ -168,8 +160,7 @@ public class TicketAvailabilityTokenBucket {
                 })
                 .collect(Collectors.toCollection(JSONArray::new));
         // 获取所有会受到影响的站点区间
-        List<RouteDTO> takeoutRouteDTOList = trainStationService
-                .listTakeoutTrainStationRoute(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
+        List<RouteDTO> takeoutRouteDTOList = context.affectedRoutes();
         // 把当前请求区间作为key传递给lua
         String luaScriptKey = StrUtil.join("_", requestParam.getDeparture(), requestParam.getArrival());
         // 此处调用execute把lua脚本发送给redis执行

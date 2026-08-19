@@ -50,6 +50,18 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
     TicketSeatReservationDO selectByReservationIdForUpdate(@Param("reservationId") String reservationId);
 
     /**
+     * 按受理标识和用户归属查询座位占用记录。
+     *
+     * @param reservationId 购票受理标识
+     * @param userId 当前用户标识
+     * @return 当前用户的座位占用记录，不存在或不属于当前用户时返回空
+     */
+    @Select("SELECT * FROM t_ticket_seat_reservation WHERE reservation_id = #{reservationId} "
+            + "AND user_id = #{userId} AND del_flag = 0")
+    TicketSeatReservationDO selectByReservationIdAndUserId(@Param("reservationId") String reservationId,
+                                                            @Param("userId") String userId);
+
+    /**
      * 查询已绑定订单且释放步骤长期未完成的 reservation，供关闭事件丢失后的定时恢复使用。
      *
      * @param deadline 最后更新时间截止点
@@ -79,6 +91,24 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
             + "ORDER BY update_time ASC, id ASC LIMIT #{limit}")
     List<TicketSeatReservationDO> selectStalePreparedReservations(@Param("deadline") Date deadline,
                                                                    @Param("limit") int limit);
+
+    /**
+     * 查询仅由压测账号产生、未写入建单 Outbox 且已超时的孤儿预占记录。
+     *
+     * @param deadline 最后更新时间截止点
+     * @param limit 单次释放上限
+     * @return 可在隔离压测环境中直接回收的座位占用记录
+     */
+    @Select("SELECT r.* FROM t_ticket_seat_reservation r "
+            + "WHERE r.del_flag = 0 AND r.reservation_status = 0 "
+            + "AND r.username LIKE 'loadtest%' AND r.update_time <= #{deadline} "
+            + "AND r.db_seat_release_status = 0 AND r.redis_bitmap_release_status = 0 "
+            + "AND r.token_rollback_status = 0 "
+            + "AND NOT EXISTS (SELECT 1 FROM t_reliable_outbox_event e "
+            + "WHERE e.namespace = 'ticket-order-creation' AND e.event_id = r.reservation_id) "
+            + "ORDER BY r.update_time ASC, r.id ASC LIMIT #{limit}")
+    List<TicketSeatReservationDO> selectStaleLoadTestPreparedReservationsWithoutOutbox(
+            @Param("deadline") Date deadline, @Param("limit") int limit);
 
     /**
      * 统计已绑定订单中超过恢复宽限期且仍有资源步骤未完成的 reservation。

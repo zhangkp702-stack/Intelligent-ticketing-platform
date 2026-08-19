@@ -65,11 +65,14 @@ public interface SeatMapper extends BaseMapper<SeatDO> {
                                                                   @Param("requestMask") Long requestMask);
 
     /**
-     * 单座位原子占位
+     * 批量按区间未占用条件确认静态座位位图。
+     *
+     * @param seatIds 本批次座位主键
+     * @param requestMask 本次乘车区间位图
+     * @return 成功更新的座位数量；小于输入数量时调用方必须回滚当前事务
      */
-    int tryLockSeatByBitmap(@Param("seatId") Long seatId,
-                            @Param("version") Long version,
-                            @Param("requestMask") Long requestMask);
+    int tryLockSeatsByBitmap(@Param("seatIds") List<Long> seatIds,
+                             @Param("requestMask") Long requestMask);
 
     /**
      * 单座位原子解锁（幂等）

@@ -28,6 +28,7 @@ import org.opengoofy.index12306.biz.ticketservice.dto.resp.OrderOperationPreview
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.RefundTicketPreviewRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPageQueryRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseStatusRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PayInfoRespDTO;
 import org.springframework.web.bind.annotation.RequestBody;
 
@@ -69,6 +70,14 @@ public interface TicketService extends IService<TicketDO> {
      * @return 订单号
      */
     TicketPurchaseRespDTO executePurchaseTickets(@RequestBody PurchaseTicketReqDTO requestParam);
+
+    /**
+     * 查询当前用户已受理购票的异步建单状态。
+     *
+     * @param reservationId 购票受理标识
+     * @return 建单状态与成功后的真实订单号
+     */
+    TicketPurchaseStatusRespDTO queryPurchaseStatus(String reservationId);
 
     /**
      * 支付单详情查询

@@ -65,6 +65,9 @@ public class TicketSeatReservationRecoveryService {
     @Value("${index12306.ticket.reservation-recovery.batch-size:100}")
     private int reservationRecoveryBatchSize;
 
+    @Value("${index12306.ticket.reservation-recovery.loadtest-orphan-release.enabled:false}")
+    private boolean loadTestOrphanReleaseEnabled;
+
     /**
      * 定时扫描已绑定订单的释放缺口及 PREPARED 订单创建结果，分别推进关闭回滚和命令对账。
      */
@@ -72,7 +75,43 @@ public class TicketSeatReservationRecoveryService {
     public void recoverStaleReservations() {
         // 已绑定订单与待绑定订单使用不同的权威事实，必须分两条恢复链路处理。
         recoverStaleClosedReservations();
+        // 仅在隔离压测环境显式开启时回收没有 Outbox 的历史测试孤儿记录。
+        recoverStaleLoadTestPreparedReservationsWithoutOutbox();
         recoverStalePreparedReservations();
+    }
+
+    /**
+     * 回收压测账号遗留的、未进入建单 Outbox 的超时 PREPARED 座位。
+     *
+     * <p>该分支只处理 loadtest 前缀、三类释放步骤均未开始且缺少 Outbox 的历史测试数据；
+     * 正常用户和任何已进入可靠建单流程的记录都不会被选中。</p>
+     */
+    public void recoverStaleLoadTestPreparedReservationsWithoutOutbox() {
+        // 默认关闭，避免生产环境把未知 PREPARED 记录误判为可释放的测试数据。
+        if (!loadTestOrphanReleaseEnabled) {
+            return;
+        }
+        // 与常规恢复共用宽限期和批次上限，避免刚提交的请求被本次测试清理误处理。
+        Date deadline = new Date(System.currentTimeMillis() - Math.max(1L, reservationRecoveryTimeoutMillis));
+        int batchSize = Math.max(1, reservationRecoveryBatchSize);
+        List<TicketSeatReservationDO> reservations = ticketSeatReservationMapper
+                .selectStaleLoadTestPreparedReservationsWithoutOutbox(deadline, batchSize);
+        // 没有符合严格条件的历史测试孤儿时不触发任何座位、Redis 或令牌桶操作。
+        if (reservations == null || reservations.isEmpty()) {
+            return;
+        }
+        // 输出本批次规模，便于隔离压测环境确认清理任务已启动并持续收敛。
+        log.info("ticket_loadtest_orphan_reservation_release_started count={}", reservations.size());
+        // 复用正式失败释放器，确保数据库占座、Redis owner 位图和令牌桶按 reservationId 幂等回滚。
+        reservations.forEach(reservation -> {
+            try {
+                ticketSeatReservationReleaseService.releasePreparedReservation(reservation.getReservationId());
+            } catch (RuntimeException ex) {
+                // 单条释放异常保留 RELEASING 状态，下一轮仍会通过同一 reservationId 继续补偿。
+                log.error("ticket_loadtest_orphan_reservation_release_failed reservationId={}, username={}",
+                        reservation.getReservationId(), reservation.getUsername(), ex);
+            }
+        });
     }
 
     /**

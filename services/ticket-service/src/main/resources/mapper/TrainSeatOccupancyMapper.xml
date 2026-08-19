@@ -109,15 +109,17 @@
         having seatCount &gt; 0
     </select>
 
-    <update id="tryLockSeatByBitmap">
+    <update id="tryLockSeatsByBitmap">
         update t_train_seat_occupancy
         set occupy_bitmap = occupy_bitmap | #{requestMask},
             version = version + 1,
             update_time = now()
         where train_id = #{trainId}
           and service_date = #{serviceDate}
-          and seat_id = #{seatId}
-          and version = #{version}
+          and seat_id in
+        <foreach collection="seatIds" item="seatId" open="(" separator="," close=")">
+            #{seatId}
+        </foreach>
           and del_flag = 0
           and (occupy_bitmap &amp; #{requestMask}) = 0
     </update>

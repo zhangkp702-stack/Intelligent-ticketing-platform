@@ -54,6 +54,11 @@ public final class RedisKeyConstant {
     public static final String TRAIN_STATION_PRICE = "index12306-ticket-service:train_station_price:%s_%s_%s";
 
     /**
+     * 列车站点关系查询，Key Prefix + 列车ID_出发站_到达站
+     */
+    public static final String TRAIN_STATION_RELATION = "index12306-ticket-service:train_station_relation:%s_%s_%s";
+
+    /**
      * 地区以及车站查询，Key Prefix + ( 车站名称 or 查询方式 )
      */
     public static final String REGION_STATION = "index12306-ticket-service:region-station:";

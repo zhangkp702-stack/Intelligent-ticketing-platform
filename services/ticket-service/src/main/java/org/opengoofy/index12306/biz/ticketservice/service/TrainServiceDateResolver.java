@@ -24,7 +24,11 @@ import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainStationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationMapper;
+import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseExecutionContext;
+import org.opengoofy.index12306.biz.ticketservice.toolkit.StationCalculateUtil;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
+import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -61,6 +65,8 @@ public class TrainServiceDateResolver implements ApplicationRunner {
     private final DistributedCache distributedCache;
 
     private volatile Map<TrainDepartureKey, Integer> departureDayOffsets = Map.of();
+    private volatile Map<Long, TrainDO> trainSnapshots = Map.of();
+    private volatile Map<Long, List<String>> stationNameSnapshots = Map.of();
 
     /**
      * 在服务接收流量前预计算全部车次站点的跨天偏移，并预热共享静态缓存。
@@ -90,6 +96,7 @@ public class TrainServiceDateResolver implements ApplicationRunner {
                 .add(station));
 
         Map<TrainDepartureKey, Integer> warmedOffsets = new HashMap<>(stations.size());
+        Map<Long, List<String>> warmedStationNames = new HashMap<>(stationsByTrain.size());
         stationsByTrain.forEach((trainId, trainStations) -> {
             TrainDO train = trainById.get(trainId);
             if (train == null) {
@@ -105,6 +112,10 @@ public class TrainServiceDateResolver implements ApplicationRunner {
                     throw new IllegalStateException("同一车次站点存在冲突的跨天偏移: " + trainId + ':' + station.getDeparture());
                 }
             }
+            // 有序站名同时作为购票责任链和令牌桶的本地只读数据源，避免重复读取并解析 Redis。
+            warmedStationNames.put(trainId, trainStations.stream()
+                    .map(TrainStationDO::getDeparture)
+                    .toList());
             // 经停站列表提前写入 Redis，责任链首个请求不再通过分布式锁回源数据库。
             distributedCache.put(TRAIN_STATION_STOPOVER_DETAIL + trainId,
                     JSON.toJSONString(trainStations), ADVANCE_TICKET_DAY, TimeUnit.DAYS);
@@ -113,7 +124,10 @@ public class TrainServiceDateResolver implements ApplicationRunner {
             // 车次基础信息提前写入 Redis，车次校验和后续订单参数组装直接命中共享缓存。
             distributedCache.put(TRAIN_INFO + train.getId(), train, ADVANCE_TICKET_DAY, TimeUnit.DAYS);
         });
+        // 最后一次性发布不可变快照，避免请求线程观察到只完成一部分的预热状态。
         departureDayOffsets = Map.copyOf(warmedOffsets);
+        trainSnapshots = Map.copyOf(trainById);
+        stationNameSnapshots = Map.copyOf(warmedStationNames);
         log.info("ticket_static_data_warmup_completed trainCount={}, stationCount={}, offsetCount={}, elapsedMillis={}",
                 trains.size(), stations.size(), departureDayOffsets.size(), System.currentTimeMillis() - startMillis);
     }
@@ -138,6 +152,35 @@ public class TrainServiceDateResolver implements ApplicationRunner {
         }
         LocalDate serviceDate = toLocalDate(ridingDate).minusDays(departureDayOffset);
         return Date.from(serviceDate.atStartOfDay(CHINA_ZONE_ID).toInstant());
+    }
+
+    /**
+     * 从启动预热快照构造单次购票的不可变静态上下文。
+     *
+     * @param requestParam 已包含车次和乘车区间的购票请求
+     * @return 可在责任链、令牌桶和锁座阶段复用的静态上下文
+     */
+    public PurchaseExecutionContext preparePurchaseExecutionContext(PurchaseTicketReqDTO requestParam) {
+        // 车次标识先转换为数值，避免格式错误在后续日期换算中暴露为无语义异常。
+        Long trainId;
+        try {
+            trainId = Long.valueOf(requestParam.getTrainId());
+        } catch (RuntimeException ex) {
+            throw new ClientException("列车标识格式错误");
+        }
+        // 车次和有序站点必须来自同一轮启动快照，禁止热路径再次访问 Redis 或数据库。
+        TrainDO train = trainSnapshots.get(trainId);
+        List<String> stationNames = stationNameSnapshots.get(trainId);
+        if (train == null || stationNames == null || stationNames.isEmpty()) {
+            throw new ClientException("请检查车次是否存在");
+        }
+        // Lua 扣减所需的关联区间只计算一次，令牌桶和后续阶段共享同一结果。
+        return new PurchaseExecutionContext(
+                requestParam,
+                train,
+                stationNames,
+                StationCalculateUtil.takeoutStation(
+                        stationNames, requestParam.getDeparture(), requestParam.getArrival()));
     }
 
     /**

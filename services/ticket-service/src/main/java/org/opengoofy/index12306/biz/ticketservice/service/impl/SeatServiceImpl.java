@@ -23,12 +23,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilityDTO;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.SeatDO;
-import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainSeatOccupancyDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.SeatMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainSeatOccupancyMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatTypeCountDTO;
@@ -41,6 +38,7 @@ import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -50,7 +48,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_CARRIAGE_REMAINING_TICKET;
@@ -67,11 +64,7 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
     private final SeatMapper seatMapper;
     private final TrainSeatOccupancyMapper trainSeatOccupancyMapper;
     private final TrainStationService trainStationService;
-    private final RedissonClient redissonClient;
     private final DistributedCache distributedCache;
-    private final Cache<String, ReentrantLock> localSeatLockMap = Caffeine.newBuilder()
-            .expireAfterWrite(1, TimeUnit.DAYS)
-            .build();
     private final Cache<String, Boolean> readyServiceDateInventory = Caffeine.newBuilder()
             .maximumSize(10_000)
             .expireAfterWrite(1, TimeUnit.DAYS)
@@ -221,57 +214,67 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
                 : trainSeatOccupancyMapper.listSeatTypeCount(trainId, serviceDate, requestMask, seatTypes);
     }
 
+    /**
+     * 批量加载本次选择的静态座位，并以数据库区间位图条件更新确认座位占用。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @param tickets 已由选座策略确定的座位
+     * @return 全部座位确认成功返回 true，整批冲突或座位映射缺失返回 false
+     * @throws ServiceException 批量 CAS 仅更新部分座位时抛出，要求外层事务整体回滚
+    */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean tryLockSeat(String trainId, Date serviceDate, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
+        // 空候选不能生成 IN 条件，更不能退化为无条件扫描或更新。
+        if (tickets == null || tickets.isEmpty()) {
+            return false;
+        }
         long requestMask = buildRequestMask(trainId, departure, arrival);
-        List<Long> lockedSeatIds = new ArrayList<>();
         Long trainIdLong = Long.parseLong(trainId);
         validateServiceDateInventoryReady(trainId, serviceDate);
         List<TrainPurchaseTicketRespDTO> sortedTickets = tickets.stream()
-                .sorted(Comparator.comparing(each -> buildSeatLockKey(trainId, serviceDate, departure, arrival, each)))
+                .sorted(Comparator.comparing(each -> buildSeatIdentity(
+                        each.getCarriageNumber(), each.getSeatNumber(), each.getSeatType())))
                 .toList();
-        List<ReentrantLock> localLocks = new ArrayList<>(sortedTickets.size());
-        List<RLock> distributedLocks = new ArrayList<>(sortedTickets.size());
-        sortedTickets.forEach(each -> {
-            String seatLockKey = buildSeatLockKey(trainId, serviceDate, departure, arrival, each);
-            localLocks.add(localSeatLockMap.get(seatLockKey, key -> new ReentrantLock(true)));
-            distributedLocks.add(redissonClient.getFairLock(seatLockKey));
-        });
-        try {
-            localLocks.forEach(ReentrantLock::lock);
-            distributedLocks.forEach(RLock::lock);
-            for (TrainPurchaseTicketRespDTO ticket : sortedTickets) {
-                SeatDO seat = seatMapper.selectOne(Wrappers.lambdaQuery(SeatDO.class)
-                        .eq(SeatDO::getTrainId, trainIdLong)
-                        .eq(SeatDO::getCarriageNumber, ticket.getCarriageNumber())
-                        .eq(SeatDO::getSeatNumber, ticket.getSeatNumber())
-                        .eq(SeatDO::getSeatType, ticket.getSeatType()));
-                if (seat == null) {
-                    rollbackLockedSeats(trainIdLong, serviceDate, lockedSeatIds, requestMask);
-                    return false;
-                }
-                int updated = tryLockSeatByBitmap(trainIdLong, serviceDate, seat, requestMask);
-                if (updated <= 0) {
-                    rollbackLockedSeats(trainIdLong, serviceDate, lockedSeatIds, requestMask);
-                    return false;
-                }
-                lockedSeatIds.add(seat.getId());
+        // 一次查询取得全部静态座位主键，避免按乘客逐座位访问 t_seat。
+        List<SeatDO> selectedSeats = seatMapper.selectList(Wrappers.lambdaQuery(SeatDO.class)
+                .eq(SeatDO::getTrainId, trainIdLong)
+                .in(SeatDO::getCarriageNumber, sortedTickets.stream()
+                        .map(TrainPurchaseTicketRespDTO::getCarriageNumber).distinct().toList())
+                .in(SeatDO::getSeatNumber, sortedTickets.stream()
+                        .map(TrainPurchaseTicketRespDTO::getSeatNumber).distinct().toList())
+                .in(SeatDO::getSeatType, sortedTickets.stream()
+                        .map(TrainPurchaseTicketRespDTO::getSeatType).distinct().toList()));
+        Map<String, SeatDO> seatByIdentity = selectedSeats.stream().collect(Collectors.toMap(
+                each -> buildSeatIdentity(each.getCarriageNumber(), each.getSeatNumber(), each.getSeatType()),
+                each -> each,
+                (left, right) -> left));
+        List<Long> selectedSeatIds = new ArrayList<>(sortedTickets.size());
+        for (TrainPurchaseTicketRespDTO ticket : sortedTickets) {
+            SeatDO seat = seatByIdentity.get(buildSeatIdentity(
+                    ticket.getCarriageNumber(), ticket.getSeatNumber(), ticket.getSeatType()));
+            if (seat == null) {
+                return false;
             }
-        } finally {
-            for (int i = localLocks.size() - 1; i >= 0; i--) {
-                try {
-                    localLocks.get(i).unlock();
-                } catch (Throwable ignored) {
-                }
-            }
-            for (int i = distributedLocks.size() - 1; i >= 0; i--) {
-                try {
-                    distributedLocks.get(i).unlock();
-                } catch (Throwable ignored) {
-                }
-            }
+            // 先完成全部静态座位映射，再执行批量更新，避免输入缺失时产生部分数据库变更。
+            selectedSeatIds.add(seat.getId());
         }
-        return true;
+        if (selectedSeatIds.stream().distinct().count() != sortedTickets.size()) {
+            return false;
+        }
+        // Redis owner 已经完成跨实例排他；数据库以单条批量 CAS 作为最终一致性确认。
+        int updated = tryLockSeatsByBitmap(trainIdLong, serviceDate, selectedSeatIds, requestMask);
+        if (updated == selectedSeatIds.size()) {
+            return true;
+        }
+        if (updated == 0) {
+            return false;
+        }
+        // 部分成功不能在当前事务内继续换座，否则会携带本批次脏占位；抛错交给外层事务整体回滚。
+        throw new ServiceException("座位批量确认发生部分冲突，请稍后重试");
     }
 
     @Override
@@ -304,19 +307,16 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
     }
 
     /**
-     * 构造带始发日期的单座位锁键，避免不同开行日相互串行。
+     * 构造静态座位唯一标识，用于批量查询结果与选座结果的内存关联。
+     *
+     * @param carriageNumber 车厢编号
+     * @param seatNumber 座位编号
+     * @param seatType 席别类型
+     * @return 当前列车内稳定的座位标识
      */
-    private String buildSeatLockKey(String trainId, Date serviceDate, String departure, String arrival, TrainPurchaseTicketRespDTO ticket) {
-        return String.join(":",
-                "index12306-ticket-service",
-                "lock",
-                "seat",
-                trainId,
-                ServiceDateKeyUtil.format(serviceDate),
-                departure,
-                arrival,
-                ticket.getCarriageNumber(),
-                ticket.getSeatNumber());
+    private String buildSeatIdentity(String carriageNumber, String seatNumber, Integer seatType) {
+        // t_seat 唯一索引包含列车、车厢、座位号和席别，列车已由外层查询固定。
+        return carriageNumber + '#' + seatNumber + '#' + seatType;
     }
 
     /**
@@ -336,17 +336,20 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
     }
 
     /**
-     * 以日期运行库存的版本号确认座位，历史预订记录仍保留旧表回退路径。
+     * 以区间未占用条件批量确认座位，历史预订记录仍保留旧表回退路径。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param seatIds 静态座位标识集合
+     * @param requestMask 本次乘车区间位图
+     * @return 数据库受影响行数
      */
-    private int tryLockSeatByBitmap(Long trainId, Date serviceDate, SeatDO seat, long requestMask) {
+    private int tryLockSeatsByBitmap(Long trainId, Date serviceDate, List<Long> seatIds, long requestMask) {
         if (serviceDate == null) {
-            return seatMapper.tryLockSeatByBitmap(seat.getId(), seat.getVersion(), requestMask);
+            return seatMapper.tryLockSeatsByBitmap(seatIds, requestMask);
         }
-        TrainSeatOccupancyDO occupancy = trainSeatOccupancyMapper.selectOne(Wrappers.lambdaQuery(TrainSeatOccupancyDO.class)
-                .eq(TrainSeatOccupancyDO::getTrainId, trainId)
-                .eq(TrainSeatOccupancyDO::getServiceDate, serviceDate)
-                .eq(TrainSeatOccupancyDO::getSeatId, seat.getId()));
-        return occupancy == null ? 0 : trainSeatOccupancyMapper.tryLockSeatByBitmap(trainId, serviceDate, seat.getId(), occupancy.getVersion(), requestMask);
+        // SQL 对整批座位直接使用区间未占用条件，不需要逐座读取版本号。
+        return trainSeatOccupancyMapper.tryLockSeatsByBitmap(trainId, serviceDate, seatIds, requestMask);
     }
 
     /**
@@ -360,16 +363,4 @@ public class SeatServiceImpl extends ServiceImpl<SeatMapper, SeatDO> implements 
         trainSeatOccupancyMapper.unlockSeatByBitmap(trainId, serviceDate, seatId, requestMask);
     }
 
-    /**
-     * 回滚当前批次已经确认的座位，确保不会污染同始发日的其他请求。
-     */
-    private void rollbackLockedSeats(Long trainId, Date serviceDate, List<Long> lockedSeatIds, long requestMask) {
-        for (Long seatId : lockedSeatIds) {
-            try {
-                unlockSeatByBitmap(trainId, serviceDate, seatId, requestMask);
-            } catch (Exception ex) {
-                log.error("回滚已锁定座位失败 seatId={}", seatId, ex);
-            }
-        }
-    }
 }

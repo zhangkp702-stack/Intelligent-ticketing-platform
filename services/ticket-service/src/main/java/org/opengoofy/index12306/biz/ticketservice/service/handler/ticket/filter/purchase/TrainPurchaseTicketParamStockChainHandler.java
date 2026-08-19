@@ -22,6 +22,7 @@ import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseExecutionContext;
 import org.opengoofy.index12306.biz.ticketservice.service.cache.SeatMarginCacheLoader;
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchaseMetrics;
 import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
@@ -43,7 +44,7 @@ import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKe
  */
 @Component
 @RequiredArgsConstructor
-public class TrainPurchaseTicketParamStockChainHandler implements TrainPurchaseTicketChainFilter<PurchaseTicketReqDTO> {
+public class TrainPurchaseTicketParamStockChainHandler implements TrainPurchaseTicketChainFilter {
 
     // 座位余票缓存加载器，当缓存中没有座位余票信息时，调用该加载器用于从缓存中加载座位余票信息
     private final SeatMarginCacheLoader seatMarginCacheLoader;
@@ -53,13 +54,15 @@ public class TrainPurchaseTicketParamStockChainHandler implements TrainPurchaseT
     /**
      * 按席别校验区间余票摘要，并分别记录 Redis 命中或缓存加载所消耗的时间。
      *
-     * @param requestParam 已完成基础校验并带有始发日期的购票请求
+     * @param context 已完成静态数据准备的购票执行上下文
      */
     @Override
-    public void handler(PurchaseTicketReqDTO requestParam) {
+    public void handler(PurchaseExecutionContext context) {
         Timer.Sample stockTimer = ticketPurchaseMetrics.startStageTimer();
         String stockResult = "failed";
         try {
+            // 库存键仍由请求参数组成，车次静态数据不再在本处理器重复读取。
+            PurchaseTicketReqDTO requestParam = context.requestParam();
             // 车次站点是否还有余票。如果用户提交多个乘车人非同一座位类型，拆分验证
             // 凭借车次 ID、出发站、到达站作为缓存键，获取车次站点的余票信息
             String keySuffix = StrUtil.join("_", requestParam.getTrainId(), ServiceDateKeyUtil.format(requestParam.getServiceDate()),

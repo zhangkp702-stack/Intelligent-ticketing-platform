@@ -84,12 +84,14 @@
         having seatCount &gt; 0
     </select>
 
-    <update id="tryLockSeatByBitmap">
+    <update id="tryLockSeatsByBitmap">
         update t_seat
         set occupy_bitmap = occupy_bitmap | #{requestMask},
             version = version + 1
-        where id = #{seatId}
-          and version = #{version}
+        where id in
+        <foreach collection="seatIds" item="seatId" open="(" separator="," close=")">
+            #{seatId}
+        </foreach>
           and (occupy_bitmap &amp; #{requestMask}) = 0
     </update>
 

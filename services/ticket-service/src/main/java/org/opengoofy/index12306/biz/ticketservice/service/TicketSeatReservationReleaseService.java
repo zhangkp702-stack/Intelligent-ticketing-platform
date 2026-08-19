@@ -21,6 +21,8 @@ import com.alibaba.fastjson2.JSON;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketSeatReservationMapper;
+import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseStatusRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
@@ -28,6 +30,10 @@ import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.R
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.tokenbucket.TicketAvailabilityTokenBucket;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventDefinition;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventKey;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
+import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -43,6 +49,13 @@ import java.util.List;
 @RequiredArgsConstructor
 public class TicketSeatReservationReleaseService {
 
+    public static final String ORDER_CREATION_EVENT_NAMESPACE = "ticket-order-creation";
+    public static final String ORDER_CREATION_EVENT_TYPE = "CREATE_TICKET_ORDER";
+    public static final long ORDER_CREATION_EVENT_VERSION = 1L;
+    public static final String ORDER_CREATION_PROCESSING = "PROCESSING";
+    public static final String ORDER_CREATION_SUCCEEDED = "SUCCEEDED";
+    public static final String ORDER_CREATION_FAILED = "FAILED";
+
     private static final int STEP_PENDING = 0;
     private static final int STEP_DONE = 1;
     private static final int STEP_OWNER_CHANGED = 2;
@@ -56,6 +69,7 @@ public class TicketSeatReservationReleaseService {
     private final RedisSeatBitmapService redisSeatBitmapService;
     private final TicketAvailabilityTokenBucket ticketAvailabilityTokenBucket;
     private final TransactionTemplate transactionTemplate;
+    private final ReliableEventStore reliableEventStore;
 
     @Value("${ticket.availability.cache-update.type:}")
     private String ticketAvailabilityCacheUpdateType;
@@ -74,11 +88,13 @@ public class TicketSeatReservationReleaseService {
      * @param ridingDate 乘车日期
      * @param serviceDate 列车始发日期
      * @param tickets 已锁定的座位明细
+     * @param orderCreateRequest 可独立重放的完整建单请求
      */
     public void prepareReservation(String reservationId, String actionId, String commandId,
                                    String userId, String username, Long trainId, String departure,
                                    String arrival, java.util.Date ridingDate, java.util.Date serviceDate,
-                                   List<TrainPurchaseTicketRespDTO> tickets) {
+                                   List<TrainPurchaseTicketRespDTO> tickets,
+                                   TicketOrderCreateRemoteReqDTO orderCreateRequest) {
         // PREPARED 记录与数据库锁座、车票写入同事务提交，使远程调用前已经具备恢复依据。
         TicketSeatReservationDO reservation = TicketSeatReservationDO.builder()
                 .reservationId(reservationId)
@@ -100,6 +116,50 @@ public class TicketSeatReservationReleaseService {
         if (ticketSeatReservationMapper.insert(reservation) != 1) {
             throw new ServiceException("创建待绑定订单座位占用记录失败");
         }
+        // 在同一本地事务中写入完整建单载荷，确保座位提交后一定存在可恢复的异步任务。
+        reliableEventStore.enqueue(
+                new ReliableEventDefinition(
+                        new ReliableEventKey(ORDER_CREATION_EVENT_NAMESPACE, reservationId),
+                        commandId,
+                        ORDER_CREATION_EVENT_TYPE,
+                        reservationId,
+                        JSON.toJSONString(orderCreateRequest),
+                        ORDER_CREATION_EVENT_VERSION),
+                java.time.Instant.now());
+    }
+
+    /**
+     * 查询当前用户的异步建单状态。
+     *
+     * @param reservationId 购票受理标识
+     * @return 当前建单状态与真实订单号
+     */
+    public TicketPurchaseStatusRespDTO queryPurchaseStatus(String reservationId) {
+        if (reservationId == null || reservationId.isBlank()) {
+            throw new ServiceException("购票受理标识不能为空");
+        }
+        String userId = UserContext.getUserId();
+        if (userId == null || userId.isBlank()) {
+            throw new ServiceException("用户未登录");
+        }
+        // 查询同时校验归属用户，避免通过枚举 reservationId 读取他人订单号。
+        TicketSeatReservationDO reservation = ticketSeatReservationMapper
+                .selectByReservationIdAndUserId(reservationId, userId);
+        if (reservation == null) {
+            throw new ServiceException("购票受理记录不存在");
+        }
+        String status = switch (reservation.getReservationStatus()) {
+            case RESERVATION_BOUND -> ORDER_CREATION_SUCCEEDED;
+            case RESERVATION_RELEASING, RESERVATION_RELEASED -> ORDER_CREATION_FAILED;
+            default -> ORDER_CREATION_PROCESSING;
+        };
+        // 只有已绑定状态对外返回订单号，中间态不暴露内部失败信息。
+        return TicketPurchaseStatusRespDTO.builder()
+                .reservationId(reservationId)
+                .status(status)
+                .orderSn(RESERVATION_BOUND == reservation.getReservationStatus()
+                        ? reservation.getOrderSn() : null)
+                .build();
     }
 
     /**

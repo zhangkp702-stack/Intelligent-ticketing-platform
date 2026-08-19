@@ -23,6 +23,7 @@ import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseExecutionContext;
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchaseMetrics;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.springframework.stereotype.Component;
@@ -35,20 +36,22 @@ import java.util.Objects;
  */
 @Component
 @RequiredArgsConstructor
-public class TrainPurchaseTicketParamNotNullChainHandler implements TrainPurchaseTicketChainFilter<PurchaseTicketReqDTO> {
+public class TrainPurchaseTicketParamNotNullChainHandler implements TrainPurchaseTicketChainFilter {
 
     private final TicketPurchaseMetrics ticketPurchaseMetrics;
 
     /**
      * 校验购票请求和乘车人的必填字段，并记录纯内存参数校验耗时。
      *
-     * @param requestParam 待校验的购票请求
+     * @param context 待校验的购票执行上下文
      */
     @Override
-    public void handler(PurchaseTicketReqDTO requestParam) {
+    public void handler(PurchaseExecutionContext context) {
         Timer.Sample validationTimer = ticketPurchaseMetrics.startStageTimer();
         String validationResult = "failed";
         try {
+            // 业务字段仍从原始请求读取，静态上下文只负责复用车次和站点数据。
+            PurchaseTicketReqDTO requestParam = context.requestParam();
             // 基础字段缺失时立即拒绝，避免无效请求进入缓存和库存链路。
             if (StrUtil.isBlank(requestParam.getTrainId())) {
                 throw new ClientException("列车标识不能为空");
