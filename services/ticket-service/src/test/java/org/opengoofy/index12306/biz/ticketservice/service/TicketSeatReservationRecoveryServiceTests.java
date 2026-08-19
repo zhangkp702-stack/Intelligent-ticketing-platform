@@ -102,6 +102,30 @@ class TicketSeatReservationRecoveryServiceTests {
     }
 
     /**
+     * 显式开启测试清理时，仅将缺少 Outbox 的超时 loadtest 预占记录交给正式释放器回滚。
+     */
+    @Test
+    void releasesStaleLoadTestPreparedReservationWithoutOutboxWhenExplicitlyEnabled() {
+        TicketSeatReservationMapper reservationMapper = mock(TicketSeatReservationMapper.class);
+        TicketOrderRemoteService ticketOrderRemoteService = mock(TicketOrderRemoteService.class);
+        OrderCloseRollbackService orderCloseRollbackService = mock(OrderCloseRollbackService.class);
+        TicketSeatReservationReleaseService ticketSeatReservationReleaseService = mock(TicketSeatReservationReleaseService.class);
+        TicketSeatReservationDO reservation = preparedReservation();
+        reservation.setUsername("loadtest0001");
+        when(reservationMapper.selectStaleLoadTestPreparedReservationsWithoutOutbox(any(Date.class), eq(10)))
+                .thenReturn(List.of(reservation));
+        TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
+                orderCloseRollbackService, ticketSeatReservationReleaseService);
+        ReflectionTestUtils.setField(service, "loadTestOrphanReleaseEnabled", true);
+
+        service.recoverStaleLoadTestPreparedReservationsWithoutOutbox();
+
+        // 测试孤儿必须复用正式释放器，禁止测试代码直接修改数据库、Redis 或令牌桶状态。
+        verify(ticketSeatReservationReleaseService).releasePreparedReservation("reservation-prepared");
+        verify(ticketOrderRemoteService, never()).queryCommandStatus(any());
+    }
+
+    /**
      * 订单服务已成功但同步响应或本地绑定中断时，恢复器必须使用原用户身份幂等补绑订单号。
      */
     @Test

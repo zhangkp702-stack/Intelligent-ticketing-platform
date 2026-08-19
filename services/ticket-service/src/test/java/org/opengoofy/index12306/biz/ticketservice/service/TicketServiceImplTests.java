@@ -17,6 +17,7 @@
 
 package org.opengoofy.index12306.biz.ticketservice.service;
 
+import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -54,6 +55,7 @@ import org.opengoofy.index12306.biz.ticketservice.service.impl.TicketServiceImpl
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchaseMetrics;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.cache.core.CacheLoader;
+import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.designpattern.chain.AbstractChainHandler;
 import org.opengoofy.index12306.framework.starter.designpattern.chain.AbstractChainContext;
 import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractStrategyChoose;
@@ -61,7 +63,6 @@ import org.opengoofy.index12306.framework.starter.web.Results;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InOrder;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -72,6 +73,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -84,8 +86,6 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -164,11 +164,11 @@ class TicketServiceImplTests {
     }
 
     /**
-     * 验证普通购票先提交 PREPARED 和稳定命令，远程成功后绑定失败仍保留恢复依据。
+     * 验证普通购票只同步提交 PREPARED 与建单事件，不在 HTTP 线程调用订单服务。
      */
     @Test
     @SuppressWarnings("unchecked")
-    void keepsPreparedReservationWhenOrderBindingFails() {
+    void acceptsPurchaseBeforeAsynchronousOrderCreationAndReleasesOptimisticHoldOnDatabaseConflict() {
         // 纯单元测试没有启动 MyBatis，先注册两个 LambdaQueryWrapper 使用的实体元数据。
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "test"),
                 TrainStationPriceDO.class);
@@ -236,15 +236,28 @@ class TicketServiceImplTests {
         passengerDetail.setDiscountType(0);
         passengerDetail.setPhone("13800000000");
         TrainStationPriceDO price = new TrainStationPriceDO();
+        price.setSeatType(1);
         price.setPrice(55300);
         UserContext.setUser(UserInfoDTO.builder().userId("1001").username("alice").build());
 
         // 本地事务先完成 PREPARED，远程订单返回成功后模拟订单绑定数据库失败。
         when(distributedCache.safeGet(anyString(), eq(TrainDO.class),
                 any(CacheLoader.class), anyLong(), eq(TimeUnit.DAYS))).thenReturn(train);
+        when(distributedCache.safeGet(anyString(), eq(String.class),
+                any(CacheLoader.class), anyLong(), eq(TimeUnit.DAYS)))
+                .thenReturn(JSON.toJSONString(List.of(price)));
+        when(distributedCache.safeGet(anyString(), eq(TrainStationRelationDO.class),
+                any(CacheLoader.class), anyLong(), eq(TimeUnit.DAYS))).thenReturn(relation);
+        AtomicBoolean transactionActive = new AtomicBoolean(false);
+        AtomicBoolean rejectDatabaseConfirm = new AtomicBoolean(false);
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
-            return callback.doInTransaction(mock(TransactionStatus.class));
+            transactionActive.set(true);
+            try {
+                return callback.doInTransaction(mock(TransactionStatus.class));
+            } finally {
+                transactionActive.set(false);
+            }
         });
         StringRedisTemplate stringRedisTemplate = mock(StringRedisTemplate.class);
         ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
@@ -257,38 +270,51 @@ class TicketServiceImplTests {
                 anyString(), any(SelectSeatDTO.class))).thenReturn(List.of(selectedTicket));
         when(redisSeatBitmapService.tryHold(eq("1"), eq(ridingDate), eq("北京南"), eq("上海虹桥"),
                 eq(1), anyList(), anyString())).thenAnswer(invocation -> {
+                    // Redis 临时占位必须早于 TransactionTemplate，避免网络往返占用数据库连接。
+                    assertThat(transactionActive).isFalse();
                     String reservationId = invocation.getArgument(6);
                     selectedTicket.setRedisSeatHoldId(reservationId);
                     return reservationId;
                 });
         when(seatService.tryLockSeat(eq("1"), eq(ridingDate), eq("北京南"), eq("上海虹桥"), anyList()))
-                .thenReturn(true);
+                .thenAnswer(invocation -> {
+                    // 数据库 CAS 确认必须与车票、reservation 和 Outbox 同处本地事务。
+                    assertThat(transactionActive).isTrue();
+                    return !rejectDatabaseConfirm.get();
+                });
         when(userRemoteService.listPassengerQueryByIds(eq("alice"), eq(List.of("passenger-1"))))
                 .thenReturn(Results.success(List.of(passengerDetail)));
-        when(priceMapper.selectOne(any())).thenReturn(price);
-        when(relationMapper.selectOne(any())).thenReturn(relation);
-        when(orderRemoteService.createTicketOrder(any())).thenReturn(Results.success("order-1"));
-        doThrow(new IllegalStateException("reservation bind failed"))
-                .when(reservationService).bindOrder(anyString(), eq("order-1"));
-
-        // 绑定失败向客户端报错，但 PREPARED 已先执行且不能释放可能属于已创建订单的库存。
-        assertThatThrownBy(() -> purchaseService.executePurchaseTickets(request))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("reservation bind failed");
+        // 本地事务提交后立即返回受理标识和已选座位。
+        var response = purchaseService.executePurchaseTickets(request);
+        assertThat(response.getReservationId()).isNotBlank();
+        assertThat(response.getOrderCreateStatus()).isEqualTo("PROCESSING");
+        assertThat(response.getOrderSn()).isNull();
+        assertThat(response.getTicketOrderDetails()).singleElement()
+                .extracting("carriageNumber", "seatNumber")
+                .containsExactly("01", "01A");
         ArgumentCaptor<TicketOrderCreateRemoteReqDTO> orderRequestCaptor =
                 ArgumentCaptor.forClass(TicketOrderCreateRemoteReqDTO.class);
-        verify(orderRemoteService).createTicketOrder(orderRequestCaptor.capture());
+        verify(reservationService).prepareReservation(eq(response.getReservationId()), anyString(), anyString(),
+                eq("1001"), eq("alice"), eq(1L), eq("北京南"), eq("上海虹桥"),
+                eq(ridingDate), eq(ridingDate), anyList(), orderRequestCaptor.capture());
         String actionId = orderRequestCaptor.getValue().getActionId();
         String commandId = orderRequestCaptor.getValue().getCommandId();
         assertThat(actionId).startsWith("purchase-");
         assertThat(commandId).isEqualTo(actionId + ":create-order");
-        InOrder flow = inOrder(reservationService, orderRemoteService);
-        flow.verify(reservationService).prepareReservation(anyString(), eq(actionId), eq(commandId),
-                eq("1001"), eq("alice"), eq(1L), eq("北京南"), eq("上海虹桥"),
-                eq(ridingDate), eq(ridingDate), anyList());
-        flow.verify(orderRemoteService).createTicketOrder(any());
-        flow.verify(reservationService).bindOrder(anyString(), eq("order-1"));
+        assertThat(orderRequestCaptor.getValue().getTicketOrderItems()).singleElement()
+                .extracting("carriageNumber", "seatNumber")
+                .containsExactly("01", "01A");
+        verify(orderRemoteService, never()).createTicketOrder(any());
+        verify(reservationService, never()).bindOrder(anyString(), anyString());
         verify(redisSeatBitmapService, never()).releaseHeld(eq("1"), eq(ridingDate),
+                eq("北京南"), eq("上海虹桥"), anyList());
+
+        // Redis 已占位但数据库 CAS 冲突时，外层必须按当前 reservation 回收临时 owner。
+        rejectDatabaseConfirm.set(true);
+        assertThatThrownBy(() -> purchaseService.executePurchaseTickets(request))
+                .isInstanceOf(ServiceException.class)
+                .hasMessageContaining("座位资源冲突");
+        verify(redisSeatBitmapService).releaseHeld(eq("1"), eq(ridingDate),
                 eq("北京南"), eq("上海虹桥"), anyList());
     }
 

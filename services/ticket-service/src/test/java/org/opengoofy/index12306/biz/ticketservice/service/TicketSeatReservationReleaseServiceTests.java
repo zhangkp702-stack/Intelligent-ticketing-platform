@@ -21,12 +21,15 @@ import com.alibaba.fastjson2.JSON;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketSeatReservationMapper;
+import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapReleaseResult;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.tokenbucket.TicketAvailabilityTokenBucket;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventDefinition;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.mockito.ArgumentCaptor;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
@@ -57,15 +60,20 @@ class TicketSeatReservationReleaseServiceTests {
     @Test
     void preparesReservationBeforeOrderCreation() {
         TicketSeatReservationMapper reservationMapper = mock(TicketSeatReservationMapper.class);
+        ReliableEventStore reliableEventStore = mock(ReliableEventStore.class);
         when(reservationMapper.insert(any())).thenReturn(1);
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
                 reservationMapper, mock(SeatService.class), mock(RedisSeatBitmapService.class),
-                mock(TicketAvailabilityTokenBucket.class), mock(TransactionTemplate.class));
+                mock(TicketAvailabilityTokenBucket.class), mock(TransactionTemplate.class), reliableEventStore);
         TrainPurchaseTicketRespDTO ticket = ticket();
+        TicketOrderCreateRemoteReqDTO orderRequest = TicketOrderCreateRemoteReqDTO.builder()
+                .commandId("purchase-a:create-order")
+                .userId("1001")
+                .build();
 
-        // PREPARED 记录只绑定稳定命令和座位 owner，订单号等待远程成功后再写入。
+        // PREPARED 和完整建单事件必须由同一事务方法写入。
         service.prepareReservation("reservation-a", "purchase-a", "purchase-a:create-order",
-                "1001", "alice", 1L, "A", "B", new Date(1L), new Date(1L), List.of(ticket));
+                "1001", "alice", 1L, "A", "B", new Date(1L), new Date(1L), List.of(ticket), orderRequest);
 
         ArgumentCaptor<TicketSeatReservationDO> captor = ArgumentCaptor.forClass(TicketSeatReservationDO.class);
         verify(reservationMapper).insert(captor.capture());
@@ -75,6 +83,12 @@ class TicketSeatReservationReleaseServiceTests {
         assertEquals("1001", prepared.getUserId());
         assertEquals(0, prepared.getReservationStatus());
         assertNull(prepared.getOrderSn());
+        ArgumentCaptor<ReliableEventDefinition> eventCaptor = ArgumentCaptor.forClass(ReliableEventDefinition.class);
+        verify(reliableEventStore).enqueue(eventCaptor.capture(), any());
+        assertEquals("reservation-a", eventCaptor.getValue().aggregateId());
+        assertEquals("purchase-a:create-order", eventCaptor.getValue().deduplicationKey());
+        assertEquals("1001", JSON.parseObject(eventCaptor.getValue().payload(),
+                TicketOrderCreateRemoteReqDTO.class).getUserId());
     }
 
     /**
@@ -96,7 +110,7 @@ class TicketSeatReservationReleaseServiceTests {
         });
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
                 reservationMapper, mock(SeatService.class), mock(RedisSeatBitmapService.class),
-                mock(TicketAvailabilityTokenBucket.class), transactionTemplate);
+                mock(TicketAvailabilityTokenBucket.class), transactionTemplate, mock(ReliableEventStore.class));
 
         // 绑定同时写入订单号和生命周期，避免关闭扫描读取到半完成关系。
         service.bindOrder("reservation-a", "order-1");
@@ -128,7 +142,8 @@ class TicketSeatReservationReleaseServiceTests {
         when(redisSeatBitmapService.releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), anyList(), eq("reservation-a")))
                 .thenReturn(RedisSeatBitmapReleaseResult.RELEASED);
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
-                reservationMapper, seatService, redisSeatBitmapService, tokenBucket, transactionTemplate);
+                reservationMapper, seatService, redisSeatBitmapService, tokenBucket, transactionTemplate,
+                mock(ReliableEventStore.class));
 
         service.releasePreparedReservation("reservation-a");
 
@@ -158,7 +173,7 @@ class TicketSeatReservationReleaseServiceTests {
         });
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
                 reservationMapper, mock(SeatService.class), mock(RedisSeatBitmapService.class),
-                mock(TicketAvailabilityTokenBucket.class), transactionTemplate);
+                mock(TicketAvailabilityTokenBucket.class), transactionTemplate, mock(ReliableEventStore.class));
 
         ServiceException exception = assertThrows(ServiceException.class,
                 () -> service.bindOrder("reservation-a", "order-1"));
@@ -189,7 +204,8 @@ class TicketSeatReservationReleaseServiceTests {
         when(redisSeatBitmapService.releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), anyList(), eq("reservation-a")))
                 .thenReturn(RedisSeatBitmapReleaseResult.OWNER_CHANGED);
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
-                reservationMapper, seatService, redisSeatBitmapService, tokenBucket, transactionTemplate);
+                reservationMapper, seatService, redisSeatBitmapService, tokenBucket, transactionTemplate,
+                mock(ReliableEventStore.class));
 
         service.releaseOrder("order-1");
 

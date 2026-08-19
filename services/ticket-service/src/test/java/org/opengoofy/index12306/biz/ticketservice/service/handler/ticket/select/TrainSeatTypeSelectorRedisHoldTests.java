@@ -24,8 +24,10 @@ import org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilit
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.UserRemoteService;
+import org.opengoofy.index12306.biz.ticketservice.remote.dto.PassengerRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.TrainStationService;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseSeatContext;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.SelectSeatDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
@@ -39,6 +41,7 @@ import org.springframework.data.redis.core.ValueOperations;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +56,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -82,7 +86,8 @@ class TrainSeatTypeSelectorRedisHoldTests {
         when(fixture.seatService.tryLockSeat(anyString(), any(Date.class), anyString(), anyString(), anyList()))
                 .thenThrow(new IllegalStateException("database unavailable"));
 
-        assertThrows(IllegalStateException.class, () -> fixture.selector.select(0, fixture.request, "reservation-a"));
+        assertThrows(IllegalStateException.class, () -> fixture.selector.select(
+                0, fixture.request, "reservation-a", fixture.purchaseContext));
 
         verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
                 eq("A"), eq("B"), eq(List.of(fixture.ticket)));
@@ -100,27 +105,27 @@ class TrainSeatTypeSelectorRedisHoldTests {
                 .when(fixture.seatService)
                 .adjustCarriageRemainingSummary(anyString(), any(Date.class), anyString(), anyString(), anyInt(), anyString(), anyLong());
 
-        assertThrows(IllegalStateException.class, () -> fixture.selector.select(0, fixture.request, "reservation-a"));
+        assertThrows(IllegalStateException.class, () -> fixture.selector.select(
+                0, fixture.request, "reservation-a", fixture.purchaseContext));
 
         verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
                 eq("A"), eq("B"), eq(List.of(fixture.ticket)));
     }
 
     /**
-     * 选座完成后乘车人信息补充失败时，外层尚未获得结果，选座器必须自行补偿 Redis owner。
+     * 乘车人预加载失败时必须在进入锁座前终止，不得写入 Redis owner。
      */
     @Test
-    void releasesRedisHoldWhenPassengerEnrichmentThrows() {
+    void passengerPreparationFailureShouldNotEnterSeatSelection() {
         SelectorFixture fixture = fixture();
-        when(fixture.seatService.tryLockSeat(anyString(), any(Date.class), anyString(), anyString(), anyList()))
-                .thenReturn(true);
         when(fixture.userRemoteService.listPassengerQueryByIds(any(), anyList()))
                 .thenThrow(new IllegalStateException("user service unavailable"));
 
-        assertThrows(IllegalStateException.class, () -> fixture.selector.select(0, fixture.request, "reservation-a"));
+        // 乘车人权威数据未准备完成时，锁座流程尚未开始，因此没有需要补偿的 owner。
+        assertThrows(IllegalStateException.class, () -> fixture.selector.preparePurchaseContext(fixture.request));
 
-        verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
-                eq("A"), eq("B"), eq(List.of(fixture.ticket)));
+        verify(fixture.redisSeatBitmapService, never()).tryHold(
+                anyString(), any(Date.class), anyString(), anyString(), anyInt(), anyList(), anyString());
     }
 
     /**
@@ -158,7 +163,8 @@ class TrainSeatTypeSelectorRedisHoldTests {
                     return true;
                 });
 
-        assertThrows(RuntimeException.class, () -> fixture.selector.select(0, fixture.request, "reservation-a"));
+        assertThrows(RuntimeException.class, () -> fixture.selector.select(
+                0, fixture.request, "reservation-a", fixture.purchaseContext));
 
         ArgumentCaptor<List<TrainPurchaseTicketRespDTO>> heldTicketsCaptor = ArgumentCaptor.forClass(List.class);
         verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
@@ -177,7 +183,8 @@ class TrainSeatTypeSelectorRedisHoldTests {
                 .when(fixture.ticketPurchaseMetrics)
                 .recordStage(any(), eq("redis_hold"), anyString());
 
-        assertThrows(IllegalStateException.class, () -> fixture.selector.select(0, fixture.request, "reservation-a"));
+        assertThrows(IllegalStateException.class, () -> fixture.selector.select(
+                0, fixture.request, "reservation-a", fixture.purchaseContext));
 
         verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
                 eq("A"), eq("B"), eq(List.of(fixture.ticket)));
@@ -235,8 +242,31 @@ class TrainSeatTypeSelectorRedisHoldTests {
                     return "reservation-a";
                 });
         when(trainStationService.listTakeoutTrainStationRoute(eq("1001"), eq("A"), eq("B"))).thenReturn(List.of());
-        return new SelectorFixture(selector, request, ticket, seatService, userRemoteService, redisSeatBitmapService,
-                abstractStrategyChoose, ticketPurchaseMetrics);
+        PassengerRespDTO firstPassenger = passenger("passenger-1");
+        PassengerRespDTO secondPassenger = passenger("passenger-2");
+        PurchaseSeatContext purchaseContext = new PurchaseSeatContext(
+                Map.of("passenger-1", firstPassenger, "passenger-2", secondPassenger),
+                Map.of(1, 10000, 2, 20000));
+        return new SelectorFixture(selector, request, ticket, purchaseContext, seatService, userRemoteService,
+                redisSeatBitmapService, abstractStrategyChoose, ticketPurchaseMetrics);
+    }
+
+    /**
+     * 构造可用于内存补齐的乘车人快照。
+     *
+     * @param passengerId 乘车人标识
+     * @return 当前用户的乘车人快照
+     */
+    private PassengerRespDTO passenger(String passengerId) {
+        // 测试只关心选座后的内存映射，使用固定非敏感字段即可。
+        PassengerRespDTO passenger = new PassengerRespDTO();
+        passenger.setId(passengerId);
+        passenger.setRealName(passengerId);
+        passenger.setIdType(0);
+        passenger.setIdCard("test-card-" + passengerId);
+        passenger.setPhone("13800000000");
+        passenger.setDiscountType(0);
+        return passenger;
     }
 
     /**
@@ -274,6 +304,7 @@ class TrainSeatTypeSelectorRedisHoldTests {
     private record SelectorFixture(TrainSeatTypeSelector selector,
                                    PurchaseTicketReqDTO request,
                                    TrainPurchaseTicketRespDTO ticket,
+                                   PurchaseSeatContext purchaseContext,
                                    SeatService seatService,
                                    UserRemoteService userRemoteService,
                                    RedisSeatBitmapService redisSeatBitmapService,
