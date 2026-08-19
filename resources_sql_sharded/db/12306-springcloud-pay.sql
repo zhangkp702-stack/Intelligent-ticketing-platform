@@ -390,6 +390,9 @@ CREATE TABLE `t_refund`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
     `refund_request_id` varchar(64) NOT NULL COMMENT '退款请求幂等标识',
+    `action_id`           varchar(64) DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) DEFAULT NULL COMMENT 'stable refund command',
+    `request_fingerprint` varchar(64) DEFAULT NULL COMMENT 'immutable request SHA-256',
     `pay_sn`         varchar(64)  DEFAULT NULL COMMENT '支付流水号',
     `order_sn`       varchar(64)  DEFAULT NULL COMMENT '订单号',
     `trade_no`       varchar(64)  DEFAULT NULL COMMENT '三方交易凭证号',
@@ -415,7 +418,8 @@ CREATE TABLE `t_refund`
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_refund_request_id_card` (`refund_request_id`, `id_card`) USING BTREE,
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    KEY              `idx_refund_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退款记录表';
 
 CREATE DATABASE IF NOT EXISTS `12306_pay_1` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

@@ -5,6 +5,9 @@ USE
 CREATE TABLE `t_order_0`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -25,12 +28,16 @@ CREATE TABLE `t_order_0`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_1`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -51,12 +58,16 @@ CREATE TABLE `t_order_1`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_10`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -77,12 +88,16 @@ CREATE TABLE `t_order_10`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_11`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -103,12 +118,16 @@ CREATE TABLE `t_order_11`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_12`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -129,12 +148,16 @@ CREATE TABLE `t_order_12`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_13`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -155,12 +178,16 @@ CREATE TABLE `t_order_13`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_14`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -181,12 +208,16 @@ CREATE TABLE `t_order_14`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_15`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -207,12 +238,16 @@ CREATE TABLE `t_order_15`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_2`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -233,12 +268,16 @@ CREATE TABLE `t_order_2`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_3`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -259,12 +298,16 @@ CREATE TABLE `t_order_3`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_4`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -285,12 +328,16 @@ CREATE TABLE `t_order_4`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_5`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -311,12 +358,16 @@ CREATE TABLE `t_order_5`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_6`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -337,12 +388,16 @@ CREATE TABLE `t_order_6`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_7`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -363,12 +418,16 @@ CREATE TABLE `t_order_7`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_8`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -389,12 +448,16 @@ CREATE TABLE `t_order_8`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_9`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -415,7 +478,8 @@ CREATE TABLE `t_order_9`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 
 CREATE TABLE `t_order_item_0`
@@ -1033,6 +1097,9 @@ USE
 CREATE TABLE `t_order_16`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1053,7 +1120,8 @@ CREATE TABLE `t_order_16`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_16`
 (
@@ -1094,6 +1162,9 @@ CREATE TABLE `t_order_item_passenger_16`
 CREATE TABLE `t_order_17`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1114,7 +1185,8 @@ CREATE TABLE `t_order_17`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_17`
 (
@@ -1155,6 +1227,9 @@ CREATE TABLE `t_order_item_passenger_17`
 CREATE TABLE `t_order_18`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1175,7 +1250,8 @@ CREATE TABLE `t_order_18`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_18`
 (
@@ -1216,6 +1292,9 @@ CREATE TABLE `t_order_item_passenger_18`
 CREATE TABLE `t_order_19`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1236,7 +1315,8 @@ CREATE TABLE `t_order_19`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_19`
 (
@@ -1277,6 +1357,9 @@ CREATE TABLE `t_order_item_passenger_19`
 CREATE TABLE `t_order_20`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1297,7 +1380,8 @@ CREATE TABLE `t_order_20`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_20`
 (
@@ -1338,6 +1422,9 @@ CREATE TABLE `t_order_item_passenger_20`
 CREATE TABLE `t_order_21`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1358,7 +1445,8 @@ CREATE TABLE `t_order_21`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_21`
 (
@@ -1399,6 +1487,9 @@ CREATE TABLE `t_order_item_passenger_21`
 CREATE TABLE `t_order_22`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1419,7 +1510,8 @@ CREATE TABLE `t_order_22`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_22`
 (
@@ -1460,6 +1552,9 @@ CREATE TABLE `t_order_item_passenger_22`
 CREATE TABLE `t_order_23`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1480,7 +1575,8 @@ CREATE TABLE `t_order_23`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_23`
 (
@@ -1521,6 +1617,9 @@ CREATE TABLE `t_order_item_passenger_23`
 CREATE TABLE `t_order_24`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1541,7 +1640,8 @@ CREATE TABLE `t_order_24`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_24`
 (
@@ -1582,6 +1682,9 @@ CREATE TABLE `t_order_item_passenger_24`
 CREATE TABLE `t_order_25`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1602,7 +1705,8 @@ CREATE TABLE `t_order_25`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_25`
 (
@@ -1643,6 +1747,9 @@ CREATE TABLE `t_order_item_passenger_25`
 CREATE TABLE `t_order_26`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1663,7 +1770,8 @@ CREATE TABLE `t_order_26`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_26`
 (
@@ -1704,6 +1812,9 @@ CREATE TABLE `t_order_item_passenger_26`
 CREATE TABLE `t_order_27`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1724,7 +1835,8 @@ CREATE TABLE `t_order_27`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_27`
 (
@@ -1765,6 +1877,9 @@ CREATE TABLE `t_order_item_passenger_27`
 CREATE TABLE `t_order_28`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1785,7 +1900,8 @@ CREATE TABLE `t_order_28`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_28`
 (
@@ -1826,6 +1942,9 @@ CREATE TABLE `t_order_item_passenger_28`
 CREATE TABLE `t_order_29`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1846,7 +1965,8 @@ CREATE TABLE `t_order_29`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_29`
 (
@@ -1887,6 +2007,9 @@ CREATE TABLE `t_order_item_passenger_29`
 CREATE TABLE `t_order_30`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1907,7 +2030,8 @@ CREATE TABLE `t_order_30`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_30`
 (
@@ -1948,6 +2072,9 @@ CREATE TABLE `t_order_item_passenger_30`
 CREATE TABLE `t_order_31`
 (
     `id`             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `action_id`           varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '订单创建动作标识',
+    `command_id`          varchar(96) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'stable create order command',
+    `request_fingerprint` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'immutable request SHA-256',
     `order_sn`       varchar(64) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '订单号',
     `user_id`        bigint(20) DEFAULT NULL COMMENT '用户ID',
     `username`       varchar(256) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '用户名',
@@ -1968,7 +2095,8 @@ CREATE TABLE `t_order_31`
     `del_flag`       tinyint(1) DEFAULT NULL COMMENT '删除标识',
     PRIMARY KEY (`id`),
     KEY              `idx_user_id` (`user_id`) USING BTREE,
-    KEY              `idx_order_sn` (`order_sn`) USING BTREE
+    KEY              `idx_order_sn` (`order_sn`) USING BTREE,
+    UNIQUE KEY       `uk_order_command_id` (`command_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单表';
 CREATE TABLE `t_order_item_31`
 (
@@ -2007,48 +2135,710 @@ CREATE TABLE `t_order_item_passenger_31`
     KEY           `idx_id_card` (`id_card`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='乘车人订单关系表';
 
--- 订单创建稳定命令终态表与订单使用同一用户分片规则，供远程超时后的安全对账使用。
-DELIMITER //
-
-CREATE PROCEDURE `12306_order_0`.create_order_command_tables()
-BEGIN
-    DECLARE database_index INT DEFAULT 0;
-    DECLARE table_index INT DEFAULT 0;
-    WHILE database_index < 2 DO
-        SET table_index = 0;
-        WHILE table_index < 32 DO
-            SET @create_order_command_sql = CONCAT(
-                    'CREATE TABLE IF NOT EXISTS `12306_order_', database_index, '`.`t_order_command_', table_index, '` (',
-                    '`id` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT ''ID'', ',
-                    '`command_id` varchar(160) NOT NULL COMMENT ''稳定订单创建命令标识'', ',
-                    '`action_id` varchar(128) NOT NULL COMMENT ''订单创建动作标识'', ',
-                    '`user_id` bigint(20) NOT NULL COMMENT ''用户ID'', ',
-                    '`request_fingerprint` char(64) NOT NULL COMMENT ''不可变请求参数摘要'', ',
-                    '`status` varchar(16) NOT NULL COMMENT ''PROCESSING、SUCCEEDED 或 FAILED'', ',
-                    '`order_sn` varchar(64) DEFAULT NULL COMMENT ''成功订单号'', ',
-                    '`failure_reason` varchar(128) DEFAULT NULL COMMENT ''失败原因摘要'', ',
-                    '`delay_close_status` tinyint(1) DEFAULT NULL COMMENT ''延迟关单消息：0待发送 1发送中 2已发送'', ',
-                    '`delay_close_retry_count` int NOT NULL DEFAULT 0 COMMENT ''延迟关单消息失败次数'', ',
-                    '`delay_close_next_retry_time` datetime DEFAULT NULL COMMENT ''下次重试或发送租约到期时间'', ',
-                    '`delay_close_failure_reason` varchar(128) DEFAULT NULL COMMENT ''最近一次发送失败摘要'', ',
-                    '`create_time` datetime DEFAULT NULL COMMENT ''创建时间'', ',
-                    '`update_time` datetime DEFAULT NULL COMMENT ''修改时间'', ',
-                    '`del_flag` tinyint(1) NOT NULL DEFAULT 0 COMMENT ''删除标识'', ',
-                    'PRIMARY KEY (`id`), ',
-                    'UNIQUE KEY `uk_order_command_id` (`command_id`), ',
-                    'KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`), ',
-                    'KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)',
-                    ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT=''订单创建稳定命令终态表''');
-            PREPARE create_order_command_statement FROM @create_order_command_sql;
-            EXECUTE create_order_command_statement;
-            DEALLOCATE PREPARE create_order_command_statement;
-            SET table_index = table_index + 1;
-        END WHILE;
-        SET database_index = database_index + 1;
-    END WHILE;
-END//
-
-DELIMITER ;
-
-CALL `12306_order_0`.create_order_command_tables();
-DROP PROCEDURE `12306_order_0`.create_order_command_tables;
+-- 订单创建稳定命令终态表与订单使用同一用户分片规则。
+USE `12306_order_0`;
+CREATE TABLE `t_order_command_0`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_1`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_2`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_3`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_4`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_5`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_6`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_7`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_8`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_9`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_10`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_11`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_12`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_13`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_14`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_15`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+USE `12306_order_1`;
+CREATE TABLE `t_order_command_16`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_17`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_18`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_19`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_20`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_21`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_22`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_23`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_24`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_25`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_26`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_27`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_28`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_29`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_30`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';
+CREATE TABLE `t_order_command_31`
+(
+    `id`                             bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `command_id`                     varchar(160) NOT NULL COMMENT '稳定订单创建命令标识',
+    `action_id`                      varchar(128) NOT NULL COMMENT '订单创建动作标识',
+    `user_id`                        bigint(20) NOT NULL COMMENT '用户ID',
+    `request_fingerprint`            char(64) NOT NULL COMMENT '不可变请求参数摘要',
+    `status`                         varchar(16) NOT NULL COMMENT 'PROCESSING、SUCCEEDED 或 FAILED',
+    `order_sn`                       varchar(64) DEFAULT NULL COMMENT '成功订单号',
+    `failure_reason`                 varchar(128) DEFAULT NULL COMMENT '失败原因摘要',
+    `delay_close_status`             tinyint(1) DEFAULT NULL COMMENT '延迟关单消息：0待发送 1发送中 2已发送',
+    `delay_close_retry_count`        int NOT NULL DEFAULT 0 COMMENT '延迟关单消息失败次数',
+    `delay_close_next_retry_time`    datetime DEFAULT NULL COMMENT '下次重试或发送租约到期时间',
+    `delay_close_failure_reason`     varchar(128) DEFAULT NULL COMMENT '最近一次发送失败摘要',
+    `create_time`                    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`                    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`                       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_order_command_id` (`command_id`),
+    KEY `idx_order_command_user_status` (`user_id`, `status`, `update_time`),
+    KEY `idx_delay_close_retry` (`delay_close_status`, `delay_close_next_retry_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单创建稳定命令终态表';

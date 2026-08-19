@@ -16,6 +16,7 @@ CREATE TABLE `t_user_0`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -40,6 +41,7 @@ CREATE TABLE `t_user_1`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -64,6 +66,7 @@ CREATE TABLE `t_user_10`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -88,6 +91,7 @@ CREATE TABLE `t_user_11`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -112,6 +116,7 @@ CREATE TABLE `t_user_12`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -136,6 +141,7 @@ CREATE TABLE `t_user_13`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -160,6 +166,7 @@ CREATE TABLE `t_user_14`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -184,6 +191,7 @@ CREATE TABLE `t_user_15`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -208,6 +216,7 @@ CREATE TABLE `t_user_2`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -232,6 +241,7 @@ CREATE TABLE `t_user_3`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -256,6 +266,7 @@ CREATE TABLE `t_user_4`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -280,6 +291,7 @@ CREATE TABLE `t_user_5`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -304,6 +316,7 @@ CREATE TABLE `t_user_6`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -328,6 +341,7 @@ CREATE TABLE `t_user_7`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -352,6 +366,7 @@ CREATE TABLE `t_user_8`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -376,6 +391,7 @@ CREATE TABLE `t_user_9`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1451,6 +1467,7 @@ CREATE TABLE `t_user_16`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1475,6 +1492,7 @@ CREATE TABLE `t_user_17`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1499,6 +1517,7 @@ CREATE TABLE `t_user_18`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1523,6 +1542,7 @@ CREATE TABLE `t_user_19`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1547,6 +1567,7 @@ CREATE TABLE `t_user_20`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1571,6 +1592,7 @@ CREATE TABLE `t_user_21`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1595,6 +1617,7 @@ CREATE TABLE `t_user_22`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1619,6 +1642,7 @@ CREATE TABLE `t_user_23`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1643,6 +1667,7 @@ CREATE TABLE `t_user_24`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1667,6 +1692,7 @@ CREATE TABLE `t_user_25`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1691,6 +1717,7 @@ CREATE TABLE `t_user_26`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1715,6 +1742,7 @@ CREATE TABLE `t_user_27`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1739,6 +1767,7 @@ CREATE TABLE `t_user_28`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1763,6 +1792,7 @@ CREATE TABLE `t_user_29`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1787,6 +1817,7 @@ CREATE TABLE `t_user_30`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -1811,6 +1842,7 @@ CREATE TABLE `t_user_31`
     `mail`          varchar(256) COLLATE utf8mb4_unicode_ci  DEFAULT NULL COMMENT '邮箱',
     `user_type`     int(3) DEFAULT NULL COMMENT '旅客类型',
     `verify_status` int(3) DEFAULT NULL COMMENT '审核状态',
+    `balance`       bigint(20) NOT NULL DEFAULT 1000000 COMMENT '账户余额，单位为分',
     `post_code`     varchar(64) COLLATE utf8mb4_unicode_ci   DEFAULT NULL COMMENT '邮编',
     `address`       varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '地址',
     `deletion_time` bigint(20) DEFAULT '0' COMMENT '注销时间戳',
@@ -2236,3 +2268,551 @@ CREATE TABLE `t_user_phone_31`
     PRIMARY KEY (`id`),
     UNIQUE KEY `idx_phone` (`phone`,`deletion_time`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户号码表';
+
+-- 用户余额流水与用户表采用相同的 32 个固定分片规则。
+USE `12306_user_0`;
+CREATE TABLE `t_user_balance_flow_0`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_1`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_2`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_3`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_4`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_5`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_6`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_7`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_8`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_9`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_10`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_11`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_12`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_13`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_14`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_15`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+USE `12306_user_1`;
+CREATE TABLE `t_user_balance_flow_16`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_17`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_18`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_19`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_20`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_21`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_22`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_23`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_24`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_25`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_26`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_27`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_28`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_29`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_30`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';
+CREATE TABLE `t_user_balance_flow_31`
+(
+    `id`             bigint(20) NOT NULL AUTO_INCREMENT COMMENT 'ID',
+    `username`       varchar(256) NOT NULL COMMENT '用户名',
+    `biz_no`         varchar(128) NOT NULL COMMENT '业务幂等号',
+    `biz_type`       tinyint(1) NOT NULL COMMENT '业务类型：0支付扣款，1退款入账',
+    `amount`         bigint(20) NOT NULL COMMENT '变动金额，单位为分',
+    `balance_before` bigint(20) DEFAULT NULL COMMENT '变动前余额，单位为分',
+    `balance_after`  bigint(20) DEFAULT NULL COMMENT '变动后余额，单位为分',
+    `status`         tinyint(1) NOT NULL DEFAULT 0 COMMENT '状态：0处理中，1成功',
+    `create_time`    datetime DEFAULT NULL COMMENT '创建时间',
+    `update_time`    datetime DEFAULT NULL COMMENT '修改时间',
+    `del_flag`       tinyint(1) NOT NULL DEFAULT 0 COMMENT '删除标记',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_biz_type` (`username`, `biz_no`, `biz_type`),
+    KEY `idx_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户余额流水';

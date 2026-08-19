@@ -51,6 +51,22 @@ CREATE TABLE `t_seat`
     KEY `idx_train_carriage_seat_no` (`train_id`, `carriage_number`, `seat_number`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=1683022080920494081 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='座位表';
 
+CREATE TABLE `t_train_seat_occupancy`
+(
+    `id`            bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '主键',
+    `train_id`      bigint(20) unsigned NOT NULL COMMENT '列车ID',
+    `service_date`  date                 NOT NULL COMMENT '列车始发日期',
+    `seat_id`       bigint(20) unsigned NOT NULL COMMENT '静态座位ID',
+    `occupy_bitmap` bigint(20)          NOT NULL DEFAULT 0 COMMENT '区间占用位图',
+    `version`       bigint(20)          NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+    `create_time`   datetime                     DEFAULT NULL COMMENT '创建时间',
+    `update_time`   datetime                     DEFAULT NULL COMMENT '修改时间',
+    `del_flag`      tinyint(1)                   DEFAULT 0 COMMENT '删除标识',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_train_service_seat` (`train_id`, `service_date`, `seat_id`),
+    KEY `idx_train_service_date` (`train_id`, `service_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='列车指定始发日期的座位运行库存表';
+
 CREATE TABLE `t_station`
 (
     `id`          bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT 'ID',
@@ -110,21 +126,51 @@ CREATE TABLE `t_ticket_seat_reservation`
     KEY `idx_reservation_release_recovery` (`reservation_status`, `update_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单座位占用及释放状态表';
 
-CREATE TABLE `t_business_operation`
+CREATE TABLE `t_reliable_command`
 (
-    `operation_id`        varchar(64)  NOT NULL COMMENT '调用方生成的全局操作标识',
-    `operation_type`      varchar(32)  NOT NULL COMMENT '业务操作类型',
-    `user_id`             varchar(64)  NOT NULL COMMENT '发起操作的用户标识',
-    `request_fingerprint` char(64)     NOT NULL COMMENT '不可变业务参数 SHA-256 摘要',
-    `status`              tinyint(2)   NOT NULL COMMENT '0 处理中，1 已成功，2 已失败',
-    `result_json`         text                  COMMENT '成功响应 JSON',
-    `failure_message`     varchar(500)          COMMENT '失败原因摘要',
-    `create_time`         datetime     NOT NULL COMMENT '创建时间',
-    `update_time`         datetime     NOT NULL COMMENT '修改时间',
-    `del_flag`            tinyint(1)   NOT NULL DEFAULT 0 COMMENT '删除标识',
-    PRIMARY KEY (`operation_id`),
-    KEY `idx_business_operation_user_time` (`user_id`, `create_time`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='业务操作幂等记录';
+    `routing_key`             varchar(128) NOT NULL COMMENT '后端业务路由键',
+    `namespace`               varchar(64)  NOT NULL COMMENT '命令命名空间',
+    `command_id`              varchar(128) NOT NULL COMMENT '稳定命令标识',
+    `command_type`            varchar(64)  NOT NULL COMMENT '稳定业务命令类型',
+    `execution_mode`          varchar(32)  NOT NULL COMMENT '副作用执行模式',
+    `owner_id`                varchar(128) NOT NULL COMMENT '命令所属用户',
+    `request_fingerprint`     varchar(128) NOT NULL COMMENT '规范化请求摘要',
+    `fingerprint_version`     varchar(32)  NOT NULL COMMENT '摘要规则版本',
+    `status`                  varchar(32)  NOT NULL COMMENT '可靠命令状态',
+    `result_payload`          text                  COMMENT '成功结果序列化文本',
+    `failure_category`        varchar(64)           COMMENT '失败或未知分类',
+    `failure_message`         varchar(512)          COMMENT '限长故障摘要',
+    `business_reference`      varchar(256)          COMMENT '订单号等安全业务引用',
+    `lease_owner`             varchar(128)          COMMENT '当前租约实例',
+    `lease_until`             datetime(3)           COMMENT '租约截止时间',
+    `fencing_token`           bigint       NOT NULL DEFAULT 1 COMMENT '围栏令牌',
+    `last_heartbeat_at`       datetime(3)           COMMENT '最近心跳时间',
+    `attempt_count`           int          NOT NULL DEFAULT 1 COMMENT '执行认领次数',
+    `next_reconcile_at`       datetime(3)           COMMENT '下一次对账时间',
+    `reconcile_attempt_count` int          NOT NULL DEFAULT 0 COMMENT '对账认领次数',
+    `created_at`              datetime(3)  NOT NULL COMMENT '创建时间',
+    `updated_at`              datetime(3)  NOT NULL COMMENT '修改时间',
+    PRIMARY KEY (`routing_key`, `namespace`, `command_id`),
+    KEY `idx_reliable_command_reconcile` (`namespace`, `status`, `next_reconcile_at`),
+    KEY `idx_reliable_command_lease` (`namespace`, `status`, `lease_until`),
+    KEY `idx_reliable_command_owner` (`owner_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='可靠命令执行记录';
+
+CREATE TABLE `t_reliable_command_audit`
+(
+    `id`           bigint       NOT NULL AUTO_INCREMENT COMMENT '审计流水主键',
+    `routing_key`  varchar(128) NOT NULL COMMENT '后端业务路由键',
+    `namespace`    varchar(64)  NOT NULL COMMENT '命令命名空间',
+    `command_id`   varchar(128) NOT NULL COMMENT '稳定命令标识',
+    `operator_id`  varchar(128) NOT NULL COMMENT '执行实例或恢复器标识',
+    `old_status`   varchar(32)           COMMENT '原状态',
+    `new_status`   varchar(32)  NOT NULL COMMENT '新状态',
+    `reason`       varchar(128) NOT NULL COMMENT '状态迁移原因',
+    `evidence`     varchar(512)          COMMENT '安全证据摘要',
+    `created_at`   datetime(3)  NOT NULL COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_reliable_command_audit_key` (`routing_key`, `namespace`, `command_id`, `id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='可靠命令状态迁移审计';
 
 CREATE TABLE `t_train`
 (
