@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.ticketservice.service;
+package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import com.alibaba.fastjson2.JSON;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.ticketservice.service;
+package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

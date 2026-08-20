@@ -17,6 +17,8 @@
 
 package org.opengoofy.index12306.biz.ticketservice.service;
 
+import org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService;
+
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;

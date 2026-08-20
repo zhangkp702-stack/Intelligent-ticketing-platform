@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.ticketservice.service;
+package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import com.alibaba.fastjson2.JSON;
 import org.junit.jupiter.api.Test;
@@ -23,6 +23,7 @@ import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservati
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketSeatReservationMapper;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapReleaseResult;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;

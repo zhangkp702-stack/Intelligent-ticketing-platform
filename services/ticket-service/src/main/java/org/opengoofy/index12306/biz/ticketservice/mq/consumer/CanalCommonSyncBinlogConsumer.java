@@ -26,7 +26,7 @@ import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.opengoofy.index12306.biz.ticketservice.common.constant.TicketRocketMQConstant;
 import org.opengoofy.index12306.biz.ticketservice.common.enums.CanalExecuteStrategyMarkEnum;
 import org.opengoofy.index12306.biz.ticketservice.mq.event.CanalBinlogEvent;
-import org.opengoofy.index12306.biz.ticketservice.service.OrderCloseRollbackService;
+import org.opengoofy.index12306.biz.ticketservice.service.impl.OrderCloseRollbackService;
 import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractStrategyChoose;
 import org.opengoofy.index12306.framework.starter.idempotent.annotation.Idempotent;
 import org.opengoofy.index12306.framework.starter.idempotent.enums.IdempotentSceneEnum;

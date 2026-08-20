@@ -32,7 +32,7 @@ import java.time.Instant;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.opengoofy.index12306.biz.ticketservice.service.TicketSeatReservationReleaseService.ORDER_CREATION_EVENT_NAMESPACE;
+import static org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService.ORDER_CREATION_EVENT_NAMESPACE;
 
 /**
  * 记录异步建单执行器和本地 Outbox 的低基数指标，支持识别积压、拒绝和重试。

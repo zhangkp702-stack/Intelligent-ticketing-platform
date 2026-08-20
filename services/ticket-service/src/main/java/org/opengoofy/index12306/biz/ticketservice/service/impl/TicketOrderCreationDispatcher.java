@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.ticketservice.service;
+package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import com.alibaba.fastjson2.JSON;
 import lombok.extern.slf4j.Slf4j;
@@ -44,9 +44,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 
-import static org.opengoofy.index12306.biz.ticketservice.service.TicketSeatReservationReleaseService.ORDER_CREATION_EVENT_NAMESPACE;
-import static org.opengoofy.index12306.biz.ticketservice.service.TicketSeatReservationReleaseService.ORDER_CREATION_FAILED;
-import static org.opengoofy.index12306.biz.ticketservice.service.TicketSeatReservationReleaseService.ORDER_CREATION_SUCCEEDED;
+import static org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService.ORDER_CREATION_EVENT_NAMESPACE;
+import static org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService.ORDER_CREATION_FAILED;
+import static org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService.ORDER_CREATION_SUCCEEDED;
 
 /**
  * 从本地 Outbox 可恢复地派发订单创建请求。

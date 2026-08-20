@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.ticketservice.service;
+package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservationDO;
