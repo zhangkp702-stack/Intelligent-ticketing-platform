@@ -41,5 +41,5 @@ build/
 /docs/
 
 ### Local load-test artifacts ###
-/loadtest/jmeter/results/
+/loadtest/
 /locust/load_test_users_*.sql
