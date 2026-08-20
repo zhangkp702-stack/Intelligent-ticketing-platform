@@ -171,6 +171,11 @@ public final class RedisKeyConstant {
     public static final String TICKET_AVAILABILITY_TOKEN_BUCKET = "index12306-ticket-service:ticket_availability_token_bucket:";
 
     /**
+     * 统一列车区间库存，Hash Tag 按车次和始发日期隔离。
+     */
+    public static final String TRAIN_STATION_INVENTORY = "index12306-ticket-service:train_inventory:{%s:%s}";
+
+    /**
      * reservation 令牌桶回滚标记，reservationId 作为稳定去重键
      */
     public static final String TICKET_RESERVATION_TOKEN_ROLLBACK_MARKER = "index12306-ticket-service:ticket_reservation_token_rollback:%s";
