@@ -29,7 +29,7 @@ import java.util.Date;
 /**
  * 订单一次座位占用的持久化记录。
  *
- * <p>该表保存订单、座位区间与 Redis owner 的稳定关联，并分别记录数据库座位、Redis 位图和令牌桶的释放进度。</p>
+ * <p>该表保存订单、座位区间与 Redis owner 的稳定关联，并分别记录数据库座位、Redis 位图和统一库存的释放进度。</p>
  */
 @Data
 @NoArgsConstructor
@@ -86,6 +86,6 @@ public class TicketSeatReservationDO extends BaseDO {
     /** Redis 位图释放状态。 */
     private Integer redisBitmapReleaseStatus;
 
-    /** 令牌桶回滚状态。 */
+    /** 统一库存回滚状态。 */
     private Integer tokenRollbackStatus;
 }

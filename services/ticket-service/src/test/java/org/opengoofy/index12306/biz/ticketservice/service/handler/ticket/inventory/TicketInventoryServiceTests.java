@@ -17,8 +17,8 @@
 
 package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.inventory;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
-import org.opengoofy.index12306.biz.ticketservice.common.enums.TicketInventoryModeEnum;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -34,27 +34,29 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 验证统一库存第一阶段的模式、键结构和只读访问契约。
+ * 验证统一库存的键结构和只读查询契约。
  */
 class TicketInventoryServiceTests {
 
     /**
-     * 统一库存键必须同时包含车次和始发日期，并使用同一个 Redis Hash Tag。
+     * 统一库存键必须同时包含车次和始发日期，区间席别只作为 Hash Field。
      */
     @Test
     void buildsDateIsolatedInventoryKeyAndIntervalField() {
         Date serviceDate = Date.from(LocalDate.of(2026, 8, 20)
                 .atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant());
 
-        // 车次和始发日期共同决定库存槽位，区间席别只作为 Hash Field。
+        // 车次和始发日期共同决定库存槽位，操作标记使用相同的日期隔离规则。
         assertEquals("index12306-ticket-service:train_inventory:{1001:20260820}",
                 TicketInventoryKeyUtil.buildInventoryKey("1001", serviceDate));
+        assertEquals("index12306-ticket-service:train_inventory_operation:{1001:20260820}",
+                TicketInventoryKeyUtil.buildOperationMarkerKey("1001", serviceDate));
         assertEquals("北京南_济南西_1",
                 TicketInventoryKeyUtil.buildInventoryField("北京南", "济南西", 1));
     }
 
     /**
-     * 缺少始发日期时必须拒绝构造新库存键，避免跨日期共用库存。
+     * 缺少始发日期时必须拒绝构造库存键，避免不同开行日共用库存。
      */
     @Test
     void rejectsInventoryKeyWithoutServiceDate() {
@@ -63,22 +65,11 @@ class TicketInventoryServiceTests {
     }
 
     /**
-     * 模式配置必须兼容大小写并拒绝未知值。
-     */
-    @Test
-    void parsesInventoryMigrationMode() {
-        assertEquals(TicketInventoryModeEnum.LEGACY, TicketInventoryModeEnum.from(null));
-        assertEquals(TicketInventoryModeEnum.SHADOW, TicketInventoryModeEnum.from("shadow"));
-        assertEquals(TicketInventoryModeEnum.UNIFIED, TicketInventoryModeEnum.from("UNIFIED"));
-        assertThrows(IllegalArgumentException.class, () -> TicketInventoryModeEnum.from("invalid"));
-    }
-
-    /**
-     * 只读服务必须从统一 Hash 的区间席别字段读取数量，且不触发旧库存写入。
+     * 统一库存查询只读取对应 Hash 字段，不触发旧库存或数据库回源。
      */
     @Test
     @SuppressWarnings("unchecked")
-    void queriesUnifiedInventoryWithoutChangingLegacyPath() {
+    void queriesUnifiedInventoryHash() {
         DistributedCache distributedCache = mock(DistributedCache.class);
         StringRedisTemplate stringRedisTemplate = mock(StringRedisTemplate.class);
         HashOperations<String, Object, Object> hashOperations = mock(HashOperations.class);
@@ -88,11 +79,9 @@ class TicketInventoryServiceTests {
                 .atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant());
         String inventoryKey = "index12306-ticket-service:train_inventory:{1001:20260820}";
         when(hashOperations.get(inventoryKey, "北京南_济南西_1")).thenReturn("36");
-        TicketInventoryService service = new TicketInventoryService(
-                distributedCache, new TicketInventoryProperties("legacy"));
+        TicketInventoryService service = new TicketInventoryService(distributedCache, new SimpleMeterRegistry());
 
-        // 第一阶段只验证统一库存可读，业务入口仍由 legacy 模式控制。
-        assertEquals(TicketInventoryModeEnum.LEGACY, service.mode());
+        // 统一库存服务直接返回 Hash 中的数量，调用方可据此进行购票预校验。
         assertEquals(36, service.query("1001", serviceDate, "北京南", "济南西", 1).orElseThrow());
         verify(hashOperations).get(inventoryKey, "北京南_济南西_1");
     }

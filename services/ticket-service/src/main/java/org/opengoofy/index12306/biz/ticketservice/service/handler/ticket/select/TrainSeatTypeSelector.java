@@ -32,7 +32,6 @@ import org.opengoofy.index12306.biz.ticketservice.dao.entity.TrainStationPriceDO
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilityDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
-import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.UserRemoteService;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.PassengerRespDTO;
@@ -76,7 +75,6 @@ import java.util.stream.Collectors;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.Index12306Constant.ADVANCE_TICKET_DAY;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_CARRIAGE_SEAT_ALLOCATION_CURSOR;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_PRICE;
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
 
 
 
@@ -106,9 +104,6 @@ public final class TrainSeatTypeSelector {
     private final TicketPurchaseMetrics ticketPurchaseMetrics;
     private final SeatSelectionStrategySharedSelector seatSelectionStrategySharedSelector;
     private final SingleChannelSeatSelectionLimiter singleChannelSeatSelectionLimiter;
-
-    @Value("${ticket.availability.cache-update.type:}")
-    private String ticketAvailabilityCacheUpdateType;
 
     @Value("${ticket.seat.redis-bitmap.enabled:true}")
     private Boolean redisSeatBitmapEnabled;
@@ -422,11 +417,10 @@ public final class TrainSeatTypeSelector {
                     requestParam.getDeparture(), requestParam.getArrival(), selectedTickets)) {
                 throw new ServiceException("座位资源冲突，请稍后重试");
             }
-            // 数据库确认成功后再更新各席别、各车厢的 Redis 余票摘要。
+            // 数据库确认成功后只更新车厢维度摘要；区间总余票摘要由 Canal 统一失效并按位图重建。
             Map<Integer, List<TrainPurchaseTicketRespDTO>> ticketsBySeatType = selectedTickets.stream()
                     .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType));
             ticketsBySeatType.forEach((seatType, sameTypeTickets) -> {
-                decrementRemainingTicketAfterLock(requestParam, seatType, sameTypeTickets.size());
                 sameTypeTickets.stream()
                         .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getCarriageNumber))
                         .forEach((carriageNumber, sameCarriageTickets) -> seatService.adjustCarriageRemainingSummary(
@@ -549,19 +543,6 @@ public final class TrainSeatTypeSelector {
         }
     }
 
-    private void decrementRemainingTicketAfterLock(PurchaseTicketReqDTO requestParam, Integer seatType, int count) {
-        if (StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
-            return;
-        }
-        StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-        List<RouteDTO> routeDTOList = trainStationService.listTakeoutTrainStationRoute(requestParam.getTrainId(), requestParam.getDeparture(), requestParam.getArrival());
-        routeDTOList.forEach(each -> {
-            String keySuffix = StrUtil.join("_", requestParam.getTrainId(), ServiceDateKeyUtil.format(requestParam.getServiceDate()),
-                    each.getStartStation(), each.getEndStation());
-            stringRedisTemplate.opsForHash().increment(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType), -count);
-        });
-    }
-
     /**
      * 使用 Redis 位图临时占位后再写入数据库座位位图。
      *
@@ -666,7 +647,6 @@ public final class TrainSeatTypeSelector {
                     throw ex;
                 }
                 if (databaseLocked) {
-                    decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
                     seatService.adjustCarriageRemainingSummary(
                             requestParam.getTrainId(),
                             requestParam.getServiceDate(),
@@ -768,9 +748,7 @@ public final class TrainSeatTypeSelector {
                     }
                     if (seatService.tryLockSeat(requestParam.getTrainId(), requestParam.getServiceDate(),
                             requestParam.getDeparture(), requestParam.getArrival(), selectedSeats)) {
-                        // 这里使用canal加binlog日志跟新
-                        decrementRemainingTicketAfterLock(requestParam, seatType, selectedSeats.size());
-                        // 再扣减当前车厢的摘要余票
+                        // 车厢摘要即时扣减，区间总余票摘要由 Canal 统一失效。
                         seatService.adjustCarriageRemainingSummary(
                                 requestParam.getTrainId(),
                                 requestParam.getServiceDate(),

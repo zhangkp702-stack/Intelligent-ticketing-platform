@@ -120,7 +120,7 @@ class TicketSeatReservationRecoveryServiceTests {
 
         service.recoverStaleLoadTestPreparedReservationsWithoutOutbox();
 
-        // 测试孤儿必须复用正式释放器，禁止测试代码直接修改数据库、Redis 或令牌桶状态。
+        // 测试孤儿必须复用正式释放器，禁止测试代码直接修改数据库、Redis 或统一库存状态。
         verify(ticketSeatReservationReleaseService).releasePreparedReservation("reservation-prepared");
         verify(ticketOrderRemoteService, never()).queryCommandStatus(any());
     }

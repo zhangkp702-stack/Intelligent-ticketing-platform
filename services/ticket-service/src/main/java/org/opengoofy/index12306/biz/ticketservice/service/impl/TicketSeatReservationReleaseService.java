@@ -29,22 +29,21 @@ import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapReleaseResult;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
-import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.tokenbucket.TicketAvailabilityTokenBucket;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.inventory.TicketInventoryRollbackService;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventDefinition;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventKey;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 
 /**
- * 以 reservationId 串行释放订单持有的座位、Redis 位图和令牌桶。
+ * 以 reservationId 串行释放订单持有的座位、Redis 位图和统一库存。
  *
- * <p>数据库座位释放与数据库状态在同一事务中提交；Redis 和令牌桶通过 reservationId 在 Lua 中幂等执行。</p>
+ * <p>数据库座位释放与数据库状态在同一事务中提交；Redis 和统一库存通过 reservationId 幂等执行。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -68,12 +67,9 @@ public class TicketSeatReservationReleaseService {
     private final TicketSeatReservationMapper ticketSeatReservationMapper;
     private final SeatService seatService;
     private final RedisSeatBitmapService redisSeatBitmapService;
-    private final TicketAvailabilityTokenBucket ticketAvailabilityTokenBucket;
+    private final TicketInventoryRollbackService ticketInventoryRollbackService;
     private final TransactionTemplate transactionTemplate;
     private final ReliableEventStore reliableEventStore;
-
-    @Value("${ticket.availability.cache-update.type:}")
-    private String ticketAvailabilityCacheUpdateType;
 
     /**
      * 在调用订单服务前保存座位占用快照和稳定订单命令。
@@ -291,7 +287,7 @@ public class TicketSeatReservationReleaseService {
                     || !isReleaseStepCompleted(reservation.getTokenRollbackStatus())) {
                 return false;
             }
-            // 仅当数据库、位图和令牌均完成后进入 RELEASED，扫描器才会停止重试。
+            // 仅当数据库、位图和统一库存均完成后进入 RELEASED，扫描器才会停止重试。
             reservation.setReservationStatus(RESERVATION_RELEASED);
             if (ticketSeatReservationMapper.updateById(reservation) != 1) {
                 throw new ServiceException("标记失败释放座位占用记录失败");
@@ -314,7 +310,7 @@ public class TicketSeatReservationReleaseService {
     }
 
     /**
-     * 推进单个 reservation 的数据库座位、Redis 位图和令牌桶释放。
+     * 推进单个 reservation 的数据库座位、Redis 位图和统一库存释放。
      *
      * @param reservation 座位占用快照
      */
@@ -326,8 +322,8 @@ public class TicketSeatReservationReleaseService {
         // Redis owner 校验只允许释放本 reservation 的临时位图，owner 已变化时保留新用户的位图。
         releaseRedisBitmap(latest, tickets);
 
-        // 令牌桶使用 reservationId 去重，Redis 成功而数据库状态未写入时重试也不会多还令牌。
-        rollbackTokenBucket(latest, tickets);
+        // 统一库存使用 reservationId 去重，Redis 成功而数据库状态未写入时重试也不会多回补库存。
+        rollbackInventory(latest, tickets);
     }
 
     /**
@@ -384,23 +380,22 @@ public class TicketSeatReservationReleaseService {
     }
 
     /**
-     * 回滚 reservation 已扣除的令牌桶资源并写回完成状态。
+     * 回滚 reservation 已扣除的统一库存资源并写回完成状态。
      *
      * @param reservation 当前座位占用记录
      * @param tickets 当前 reservation 持有的座位明细
      */
-    private void rollbackTokenBucket(TicketSeatReservationDO reservation, List<TrainPurchaseTicketRespDTO> tickets) {
-        // 令牌桶状态已完成时直接返回，避免数据库正常状态下重复调用 Lua。
+    private void rollbackInventory(TicketSeatReservationDO reservation, List<TrainPurchaseTicketRespDTO> tickets) {
+        // 库存回滚状态已完成时直接返回，避免数据库正常状态下重复调用 Lua。
         if (reservation.getTokenRollbackStatus() == STEP_DONE) {
             return;
         }
-        // 令牌桶仍复用既有聚合算法，但唯一幂等键改为 reservationId 而非订单号。
-        ticketAvailabilityTokenBucket.rollbackInBucketIfNecessary(
-                buildTokenRollbackOrder(reservation, tickets), reservation.getServiceDate(), reservation.getReservationId(),
-                !"binlog".equals(ticketAvailabilityCacheUpdateType));
+        // 统一库存和车厢摘要使用 reservationId 作为幂等键，覆盖关闭消息重复投递与进程重启。
+        ticketInventoryRollbackService.rollbackIfNecessary(
+                buildInventoryRollbackOrder(reservation, tickets), reservation.getServiceDate(), reservation.getReservationId());
         reservation.setTokenRollbackStatus(STEP_DONE);
         if (ticketSeatReservationMapper.updateById(reservation) != 1) {
-            throw new ServiceException("更新令牌桶回滚状态失败");
+            throw new ServiceException("更新统一库存回滚状态失败");
         }
     }
 
@@ -420,15 +415,15 @@ public class TicketSeatReservationReleaseService {
     }
 
     /**
-     * 将 reservation 快照转换为既有令牌桶回滚接口所需的订单明细。
+     * 将 reservation 快照转换为统一库存回滚接口所需的订单明细。
      *
      * @param reservation 当前座位占用记录
      * @param tickets 当前 reservation 持有的座位明细
-     * @return 仅包含令牌计算所需字段的订单明细
+     * @return 仅包含库存回滚所需字段的订单明细
      */
-    private TicketOrderDetailRespDTO buildTokenRollbackOrder(TicketSeatReservationDO reservation,
-                                                              List<TrainPurchaseTicketRespDTO> tickets) {
-        // 令牌桶只依赖车次、区间、座位类型和车厢，因此从持久化快照重建最小明细。
+    private TicketOrderDetailRespDTO buildInventoryRollbackOrder(TicketSeatReservationDO reservation,
+                                                                  List<TrainPurchaseTicketRespDTO> tickets) {
+        // 统一库存回滚只依赖车次、区间、座位类型和车厢，因此从持久化快照重建最小明细。
         TicketOrderDetailRespDTO order = new TicketOrderDetailRespDTO();
         order.setTrainId(reservation.getTrainId());
         order.setDeparture(reservation.getDeparture());

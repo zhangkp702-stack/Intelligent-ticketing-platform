@@ -17,26 +17,20 @@
 
 package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.filter.purchase;
 
-import cn.hutool.core.util.StrUtil;
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseExecutionContext;
-import org.opengoofy.index12306.biz.ticketservice.service.cache.SeatMarginCacheLoader;
+import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.inventory.TicketInventoryService;
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchaseMetrics;
-import org.opengoofy.index12306.biz.ticketservice.toolkit.ServiceDateKeyUtil;
-import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
-
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
 
 /**
  * 购票流程过滤器之验证列车站点库存是否充足
@@ -46,9 +40,7 @@ import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKe
 @RequiredArgsConstructor
 public class TrainPurchaseTicketParamStockChainHandler implements TrainPurchaseTicketChainFilter {
 
-    // 座位余票缓存加载器，当缓存中没有座位余票信息时，调用该加载器用于从缓存中加载座位余票信息
-    private final SeatMarginCacheLoader seatMarginCacheLoader;
-    private final DistributedCache distributedCache;
+    private final TicketInventoryService ticketInventoryService;
     private final TicketPurchaseMetrics ticketPurchaseMetrics;
 
     /**
@@ -61,38 +53,17 @@ public class TrainPurchaseTicketParamStockChainHandler implements TrainPurchaseT
         Timer.Sample stockTimer = ticketPurchaseMetrics.startStageTimer();
         String stockResult = "failed";
         try {
-            // 库存键仍由请求参数组成，车次静态数据不再在本处理器重复读取。
             PurchaseTicketReqDTO requestParam = context.requestParam();
-            // 车次站点是否还有余票。如果用户提交多个乘车人非同一座位类型，拆分验证
-            // 凭借车次 ID、出发站、到达站作为缓存键，获取车次站点的余票信息
-            String keySuffix = StrUtil.join("_", requestParam.getTrainId(), ServiceDateKeyUtil.format(requestParam.getServiceDate()),
-                    requestParam.getDeparture(), requestParam.getArrival());
-            // 从缓存组件中获取StringRedisTemplate实例
-            StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-            // 获取所有乘车人
             List<PurchaseTicketPassengerDetailDTO> passengerDetails = requestParam.getPassengers();
-            // 按照座位类型分组变成一个map，key是座位类型，value是该座位类型的乘车人列表
             Map<Integer, List<PurchaseTicketPassengerDetailDTO>> seatTypeMap = passengerDetails.stream()
                     .collect(Collectors.groupingBy(PurchaseTicketPassengerDetailDTO::getSeatType));
 
             seatTypeMap.forEach((seatType, passengerSeatDetails) -> {
-                // 利用redis的hash结构缓存作为信息，key是座位类型，field是座位类型对应的余票数量
-                Object stockObj = stringRedisTemplate.opsForHash().get(TRAIN_STATION_REMAINING_TICKET + keySuffix, String.valueOf(seatType));
-                int stock = Optional.ofNullable(stockObj)
-                        // 如果stockObj不为null就转换为整数
-                        .map(each -> Integer.parseInt(each.toString()))
-                        // 如果没查到就调用缓存加载器获取车子起点还有终点的票
-                        .orElseGet(() -> {
-                            Map<String, String> seatMarginMap = seatMarginCacheLoader.load(
-                                    String.valueOf(requestParam.getTrainId()),
-                                    requestParam.getServiceDate(),
-                                    String.valueOf(seatType), requestParam.getDeparture(),
-                                    requestParam.getArrival());
-                            // 返回获取到的座位位置
-                            return Optional.ofNullable(seatMarginMap.get(String.valueOf(seatType)))
-                                    .map(Integer::parseInt)
-                                    .orElse(0);
-                        });
+                // 预校验读取与扣减同一个统一库存字段，缺失表示迁移故障而非可回源的缓存未命中。
+                int stock = ticketInventoryService.query(
+                                requestParam.getTrainId(), requestParam.getServiceDate(), requestParam.getDeparture(),
+                                requestParam.getArrival(), seatType)
+                        .orElseThrow(() -> new ServiceException("统一库存未完成初始化，请稍候再试"));
                 // 比较余票数量和乘车人数，粗粒度不足时不再进入真实锁座阶段。
                 if (stock >= passengerSeatDetails.size()) {
                     return;

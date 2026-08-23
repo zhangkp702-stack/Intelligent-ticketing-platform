@@ -122,7 +122,7 @@ class TicketServiceImplTests {
                 List.of(new TrainRefundTicketParamNotNullChainFilter()));
         ticketService = new TicketServiceImpl(
                 null, null, null, null, ticketOrderRemoteService, payRemoteService, null, null, null, null,
-                null, null, null, null, null, refundChain, null, null, null, null, null, null, null);
+                null, null, null, null, refundChain, null, null, null, null, null, null);
     }
 
     /**
@@ -197,10 +197,9 @@ class TicketServiceImplTests {
                 new SeatSelectionStrategySharedSelector(strategyRedisStore,
                         new SeatSelectionStrategySelector(), purchaseMetrics), null);
         ReflectionTestUtils.setField(seatTypeSelector, "redisSeatBitmapEnabled", true);
-        ReflectionTestUtils.setField(seatTypeSelector, "ticketAvailabilityCacheUpdateType", "binlog");
         TicketServiceImpl purchaseService = spy(new TicketServiceImpl(
                 trainMapper, relationMapper, null, distributedCache, orderRemoteService, null, null, null, null,
-                reservationService, seatTypeSelector, null, null, null, null, null, null, null, null,
+                reservationService, seatTypeSelector, null, null, null, null, null, null,
                 redisSeatBitmapService, purchaseMetrics, null, transactionTemplate));
         doReturn(true).when(purchaseService).saveBatch(anyList());
 

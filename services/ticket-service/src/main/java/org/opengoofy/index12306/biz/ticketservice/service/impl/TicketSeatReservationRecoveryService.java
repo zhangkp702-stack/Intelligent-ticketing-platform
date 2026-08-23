@@ -96,13 +96,13 @@ public class TicketSeatReservationRecoveryService {
         int batchSize = Math.max(1, reservationRecoveryBatchSize);
         List<TicketSeatReservationDO> reservations = ticketSeatReservationMapper
                 .selectStaleLoadTestPreparedReservationsWithoutOutbox(deadline, batchSize);
-        // 没有符合严格条件的历史测试孤儿时不触发任何座位、Redis 或令牌桶操作。
+            // 没有符合严格条件的历史测试孤儿时不触发任何座位、Redis 或库存操作。
         if (reservations == null || reservations.isEmpty()) {
             return;
         }
         // 输出本批次规模，便于隔离压测环境确认清理任务已启动并持续收敛。
         log.info("ticket_loadtest_orphan_reservation_release_started count={}", reservations.size());
-        // 复用正式失败释放器，确保数据库占座、Redis owner 位图和令牌桶按 reservationId 幂等回滚。
+            // 复用正式失败释放器，确保数据库占座、Redis owner 位图和统一库存按 reservationId 幂等回滚。
         reservations.forEach(reservation -> {
             try {
                 ticketSeatReservationReleaseService.releasePreparedReservation(reservation.getReservationId());
@@ -176,7 +176,7 @@ public class TicketSeatReservationRecoveryService {
             outcome = RecoveryOutcome.ORDER_CLOSED;
         } catch (RuntimeException ex) {
             // 保留未完成状态供下一轮重试；日志携带人工排查所需的各资源步骤状态。
-            log.error("ticket_reservation_recovery_failed reservationId={}, orderSn={}, dbStatus={}, redisStatus={}, tokenStatus={}",
+            log.error("ticket_reservation_recovery_failed reservationId={}, orderSn={}, dbStatus={}, redisStatus={}, inventoryStatus={}",
                     reservation.getReservationId(), reservation.getOrderSn(), reservation.getDbSeatReleaseStatus(),
                     reservation.getRedisBitmapReleaseStatus(), reservation.getTokenRollbackStatus(), ex);
         } finally {

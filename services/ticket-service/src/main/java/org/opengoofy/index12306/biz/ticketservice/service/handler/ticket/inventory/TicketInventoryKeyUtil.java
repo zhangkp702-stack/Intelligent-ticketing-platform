@@ -23,6 +23,7 @@ import java.util.Date;
 import java.util.Objects;
 
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_INVENTORY;
+import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_INVENTORY_OPERATION_MARKER;
 
 /**
  * 统一余票库存 Redis 键构造工具。
@@ -47,6 +48,21 @@ public final class TicketInventoryKeyUtil {
     }
 
     /**
+     * 构造与统一库存同槽的扣减和回补操作标记键。
+     *
+     * @param trainId 车次标识
+     * @param serviceDate 列车始发日期
+     * @return 统一库存操作标记 Redis Hash 键
+     */
+    public static String buildOperationMarkerKey(String trainId, Date serviceDate) {
+        // 库存和操作标记必须共享 Hash Tag，确保 Redis Cluster 可以原子执行扣减及回补脚本。
+        Objects.requireNonNull(trainId, "trainId must not be null");
+        Objects.requireNonNull(serviceDate, "serviceDate must not be null");
+        return String.format(
+                TRAIN_STATION_INVENTORY_OPERATION_MARKER, trainId, ServiceDateKeyUtil.format(serviceDate));
+    }
+
+    /**
      * 构造统一库存 Hash 中的区间席别字段。
      *
      * @param departure 出发站
@@ -55,7 +71,7 @@ public final class TicketInventoryKeyUtil {
      * @return departure_arrival_seatType 格式的 Hash 字段
      */
     public static String buildInventoryField(String departure, String arrival, Integer seatType) {
-        // Field 继续沿用旧令牌桶格式，后续影子对比无需转换历史区间语义。
+        // Field 采用站点区间和席别的稳定拼接格式，购票与回滚必须复用同一字段。
         Objects.requireNonNull(departure, "departure must not be null");
         Objects.requireNonNull(arrival, "arrival must not be null");
         Objects.requireNonNull(seatType, "seatType must not be null");

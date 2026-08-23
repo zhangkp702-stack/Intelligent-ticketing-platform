@@ -94,11 +94,6 @@ public final class RedisKeyConstant {
     public static final String STATION_ALL = "index12306-ticket-service:all_station";
 
     /**
-     * 列车车厢状态， Key Prefix + 列车 ID + 起始站点 + 目的站点 + 车厢编号
-     */
-    public static final String TRAIN_CARRIAGE_SEAT_STATUS = "index12306-ticket-service:train_carriage_seat_status:";
-
-    /**
      * 用户购票分布式锁 Key v2
      */
     public static final String LOCK_PURCHASE_TICKETS_V2 = "${unique-name:}index12306-ticket-service:lock:purchase_tickets_%s_%d";
@@ -166,19 +161,20 @@ public final class RedisKeyConstant {
     public static final String QUERY_ALL_REGION_LIST = "index12306-ticket-service:query_all_region_list";
 
     /**
-     * 列车购买令牌桶，Key Prefix + 列车ID
-     */
-    public static final String TICKET_AVAILABILITY_TOKEN_BUCKET = "index12306-ticket-service:ticket_availability_token_bucket:";
-
-    /**
      * 统一列车区间库存，Hash Tag 按车次和始发日期隔离。
      */
     public static final String TRAIN_STATION_INVENTORY = "index12306-ticket-service:train_inventory:{%s:%s}";
 
     /**
-     * reservation 令牌桶回滚标记，reservationId 作为稳定去重键
+     * 统一库存幂等操作标记，与对应库存 Hash 使用相同 Redis Hash Tag。
      */
-    public static final String TICKET_RESERVATION_TOKEN_ROLLBACK_MARKER = "index12306-ticket-service:ticket_reservation_token_rollback:%s";
+    public static final String TRAIN_STATION_INVENTORY_OPERATION_MARKER =
+            "index12306-ticket-service:train_inventory_operation:{%s:%s}";
+
+    /**
+     * reservation 统一库存回滚标记，reservationId 作为稳定去重键
+     */
+    public static final String TICKET_INVENTORY_ROLLBACK_MARKER = "index12306-ticket-service:ticket_inventory_rollback:%s";
 
     /**
      * 获取全部地点集合分布式锁 Key
@@ -200,13 +196,4 @@ public final class RedisKeyConstant {
      */
     public static final String LOCK_SAFE_LOAD_SEAT_MARGIN_GET = "index12306-ticket-service:lock:safe_load_seat_margin_%s";
 
-    /**
-     * 列车购买令牌桶加载数据 Key
-     */
-    public static final String LOCK_TICKET_AVAILABILITY_TOKEN_BUCKET = "index12306-ticket-service:lock:ticket_availability_token_bucket:%s";
-
-    /**
-     * 令牌获取失败分布式锁 Key
-     */
-    public static final String LOCK_TOKEN_BUCKET_ISNULL = "index12306-ticket-service:lock:token-bucket-isnull:%s";
 }

@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * 记录购票链路的低基数指标，帮助定位请求在令牌、选座、落库或订单创建阶段的耗时和失败。
+ * 记录购票链路的低基数指标，帮助定位请求在库存、选座、落库或订单创建阶段的耗时和失败。
  *
  * <p>指标标签只允许使用固定阶段和固定结果，订单号、reservationId、车次、站点及日期通过日志关联，避免监控系统产生高基数时序。</p>
  */
@@ -47,7 +47,7 @@ public class TicketPurchaseMetrics {
             {"station_verify", "success"}, {"station_verify", "failed"},
             {"stock_verify", "success"}, {"stock_verify", "failed"},
             {"repeat_verify", "success"}, {"repeat_verify", "failed"},
-            {"inventory_token", "success"}, {"inventory_token", "rejected"},
+            {"inventory", "success"}, {"inventory", "rejected"},
             {"inventory_ready", "success"}, {"inventory_ready", "failed"},
             {"candidate_carriage", "success"}, {"candidate_carriage", "failed"},
             {"strategy_decide", "success"}, {"strategy_decide", "failed"},

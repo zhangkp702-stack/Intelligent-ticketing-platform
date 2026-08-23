@@ -46,7 +46,7 @@ public record PurchaseExecutionContext(
      * @param affectedRoutes 当前购票区间会影响的余票区间
      */
     public PurchaseExecutionContext {
-        // 列表使用不可变副本，责任链、令牌桶和锁座阶段只能读取同一份请求快照。
+    // 列表使用不可变副本，责任链、统一库存和锁座阶段只能读取同一份请求快照。
         stationNames = List.copyOf(stationNames);
         affectedRoutes = List.copyOf(affectedRoutes);
     }

@@ -112,7 +112,7 @@ public class TrainServiceDateResolver implements ApplicationRunner {
                     throw new IllegalStateException("同一车次站点存在冲突的跨天偏移: " + trainId + ':' + station.getDeparture());
                 }
             }
-            // 有序站名同时作为购票责任链和令牌桶的本地只读数据源，避免重复读取并解析 Redis。
+        // 有序站名同时作为购票责任链和统一库存的本地只读数据源，避免重复读取并解析 Redis。
             warmedStationNames.put(trainId, trainStations.stream()
                     .map(TrainStationDO::getDeparture)
                     .toList());
@@ -158,7 +158,7 @@ public class TrainServiceDateResolver implements ApplicationRunner {
      * 从启动预热快照构造单次购票的不可变静态上下文。
      *
      * @param requestParam 已包含车次和乘车区间的购票请求
-     * @return 可在责任链、令牌桶和锁座阶段复用的静态上下文
+     * @return 可在责任链、统一库存和锁座阶段复用的静态上下文
      */
     public PurchaseExecutionContext preparePurchaseExecutionContext(PurchaseTicketReqDTO requestParam) {
         // 车次标识先转换为数值，避免格式错误在后续日期换算中暴露为无语义异常。
@@ -174,7 +174,7 @@ public class TrainServiceDateResolver implements ApplicationRunner {
         if (train == null || stationNames == null || stationNames.isEmpty()) {
             throw new ClientException("请检查车次是否存在");
         }
-        // Lua 扣减所需的关联区间只计算一次，令牌桶和后续阶段共享同一结果。
+            // Lua 扣减所需的关联区间只计算一次，统一库存和后续阶段共享同一结果。
         return new PurchaseExecutionContext(
                 requestParam,
                 train,

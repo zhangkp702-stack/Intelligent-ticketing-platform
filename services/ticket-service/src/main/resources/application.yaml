@@ -75,11 +75,6 @@ framework:
       value-timeout: 16
       value-time-unit: days
 
-ticket:
-  inventory:
-    # 第一阶段仅建立统一库存模型，保持旧余票和库存令牌链路运行。
-    mode: legacy
-
 feign:
   client:
     config:

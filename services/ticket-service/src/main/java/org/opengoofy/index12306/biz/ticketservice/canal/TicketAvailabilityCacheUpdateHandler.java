@@ -36,13 +36,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TICKET_AVAILABILITY_TOKEN_BUCKET;
 import static org.opengoofy.index12306.biz.ticketservice.common.constant.RedisKeyConstant.TRAIN_STATION_REMAINING_TICKET;
 
 /**
  * 列车余票缓存更新组件。
  * 位图改造后，不再基于旧 seat_status 做增量加减，
- * 而是直接删除受影响车次的余票缓存与令牌桶，由后续请求按 DB 位图回源重建。
+ * 而是直接删除受影响车次的余票摘要，由后续请求按 DB 位图回源重建。
  */
 @Slf4j
 @Component
@@ -68,8 +67,7 @@ public class TicketAvailabilityCacheUpdateHandler implements AbstractExecuteStra
             List<RouteDTO> routeDTOList = trainStationService.listTrainStationRoute(trainId, trainDO.getStartStation(), trainDO.getEndStation());
             routeDTOList.forEach(each -> stringRedisTemplate.delete(
                     TRAIN_STATION_REMAINING_TICKET + StrUtil.join("_", trainId, each.getStartStation(), each.getEndStation())));
-            stringRedisTemplate.delete(TICKET_AVAILABILITY_TOKEN_BUCKET + trainId);
-            log.info("[位图模式] 已删除车次余票缓存和令牌桶 trainId={}", trainId);
+            log.info("已删除车次余票摘要缓存 trainId={}", trainId);
         });
     }
 

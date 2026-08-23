@@ -18,7 +18,6 @@
 package org.opengoofy.index12306.biz.ticketservice.mq.consumer;
 
 import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.util.StrUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -31,7 +30,6 @@ import org.opengoofy.index12306.framework.starter.designpattern.strategy.Abstrac
 import org.opengoofy.index12306.framework.starter.idempotent.annotation.Idempotent;
 import org.opengoofy.index12306.framework.starter.idempotent.enums.IdempotentSceneEnum;
 import org.opengoofy.index12306.framework.starter.idempotent.enums.IdempotentTypeEnum;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -54,11 +52,8 @@ public class CanalCommonSyncBinlogConsumer implements RocketMQListener<CanalBinl
     private final AbstractStrategyChoose abstractStrategyChoose;
     private final OrderCloseRollbackService orderCloseRollbackService;
 
-    @Value("${ticket.availability.cache-update.type:}")
-    private String ticketAvailabilityCacheUpdateType;
-
     /**
-     * 消费 Canal 的已提交订单变更；订单关闭释放不依赖余票缓存更新模式，其他 Binlog 缓存策略仍按原配置执行。
+     * 消费 Canal 的已提交订单变更，并固定执行订单关闭回滚和受影响余票摘要失效。
      *
      * @param message Canal 投递的数据库变更消息
      */
@@ -77,9 +72,6 @@ public class CanalCommonSyncBinlogConsumer implements RocketMQListener<CanalBinl
         }
         // 已提交的订单关闭 Binlog 相当于当前架构中的事务事件来源，始终创建/恢复 reservation 释放命令。
         triggerOrderCloseRollback(message);
-        if (!StrUtil.equals(ticketAvailabilityCacheUpdateType, "binlog")) {
-            return;
-        }
         abstractStrategyChoose.chooseAndExecute(
                 message.getTable(),
                 message,

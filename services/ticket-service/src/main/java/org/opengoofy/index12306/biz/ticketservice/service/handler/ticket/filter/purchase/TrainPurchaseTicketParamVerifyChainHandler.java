@@ -49,7 +49,7 @@ public class TrainPurchaseTicketParamVerifyChainHandler implements TrainPurchase
      */
     @Override
     public void handler(PurchaseExecutionContext context) {
-        // 同一次请求的校验、令牌桶和锁座阶段共享车次及站点快照，不再重复访问 Redis。
+        // 同一次请求的校验、统一库存和锁座阶段共享车次及站点快照，不再重复访问 Redis。
         PurchaseTicketReqDTO requestParam = context.requestParam();
         Timer.Sample trainTimer = ticketPurchaseMetrics.startStageTimer();
         String trainResult = "failed";
