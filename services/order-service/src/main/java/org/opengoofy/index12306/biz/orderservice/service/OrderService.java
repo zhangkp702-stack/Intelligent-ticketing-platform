@@ -69,14 +69,6 @@ public interface OrderService {
     PageResponse<TicketOrderDetailRespDTO> pageTicketOrder(TicketOrderPageQueryReqDTO requestParam);
 
     /**
-     * 创建火车票订单
-     *
-     * @param requestParam 商品订单入参
-     * @return 订单号
-     */
-    String createTicketOrder(TicketOrderCreateReqDTO requestParam);
-
-    /**
      * 消费票务创建命令并在订单本地事务内登记回传结果 Outbox。
      *
      * @param requestParam 已转换的订单创建请求

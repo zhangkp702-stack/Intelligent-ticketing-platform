@@ -20,7 +20,6 @@ package org.opengoofy.index12306.biz.orderservice.controller;
 import lombok.RequiredArgsConstructor;
 import org.opengoofy.index12306.biz.orderservice.dto.req.BalancePaymentConfirmReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.CancelTicketOrderReqDTO;
-import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderCreateReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderItemQueryReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderPageQueryReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQueryReqDTO;
@@ -110,14 +109,6 @@ public class TicketOrderController {
     @GetMapping("/api/order-service/order/ticket/self/page")
     public Result<PageResponse<TicketOrderDetailSelfRespDTO>> pageSelfTicketOrder(TicketOrderSelfPageQueryReqDTO requestParam) {
         return Results.success(orderService.pageSelfTicketOrder(requestParam));
-    }
-
-    /**
-     * 车票订单创建
-     */
-    @PostMapping("/api/order-service/order/ticket/create")
-    public Result<String> createTicketOrder(@RequestBody TicketOrderCreateReqDTO requestParam) {
-        return Results.success(orderService.createTicketOrder(requestParam));
     }
 
     /**

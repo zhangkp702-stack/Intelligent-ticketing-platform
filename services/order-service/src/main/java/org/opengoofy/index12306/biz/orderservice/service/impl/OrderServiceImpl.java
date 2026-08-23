@@ -228,27 +228,6 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * 以顺序短事务创建订单，避免命令登记事务与订单事务同时占用两个数据库连接。
-     *
-     * @param requestParam 订单、乘车人和可选稳定命令参数
-     * @return 新创建或幂等复用的订单号
-     */
-    @Override
-    public String createTicketOrder(TicketOrderCreateReqDTO requestParam) {
-        Timer.Sample totalTimer = orderCreateMetrics.startStageTimer();
-        String result = "failed";
-        try {
-            // 对外接口只包裹总耗时，具体阶段由内部创建流程分别记录。
-            String orderSn = doCreateTicketOrder(requestParam, null);
-            result = "success";
-            return orderSn;
-        } finally {
-            // 异常路径也必须停止样本，确保失败请求不会从耗时指标中消失。
-            orderCreateMetrics.recordStage(totalTimer, "order_create_total", result);
-        }
-    }
-
-    /**
      * 执行来自票务服务的创建命令，并把终态结果写入订单服务本地 Outbox。
      *
      * @param requestParam 已转换的订单创建请求
@@ -263,9 +242,12 @@ public class OrderServiceImpl implements OrderService {
             String reservationId) {
         OrderCreateResultContext resultContext = new OrderCreateResultContext(
                 sourceMessageId, reservationId, requestParam.getCommandId());
+        Timer.Sample totalTimer = orderCreateMetrics.startStageTimer();
+        String result = "failed";
         try {
             // 成功结果在订单事务内入 Outbox，避免订单提交后服务宕机导致票务侧永远等待。
             String orderSn = doCreateTicketOrder(requestParam, resultContext);
+            result = "success";
             return resultMessage(resultContext, requestParam.getCommandId(),
                     TicketOrderMessageConstants.RESULT_SUCCEEDED, orderSn, null);
         } catch (RuntimeException exception) {
@@ -278,6 +260,9 @@ public class OrderServiceImpl implements OrderService {
                     exception.getClass().getSimpleName());
             return resultMessage(resultContext, requestParam.getCommandId(),
                     TicketOrderMessageConstants.RESULT_FAILED, null, exception.getClass().getSimpleName());
+        } finally {
+            // MQ 消费路径也记录完整建单耗时，避免删除旧 HTTP 入口后指标缺失。
+            orderCreateMetrics.recordStage(totalTimer, "order_create_total", result);
         }
     }
 
@@ -285,7 +270,7 @@ public class OrderServiceImpl implements OrderService {
      * 以顺序短事务执行命令登记、订单落库和提交后消息入队。
      *
      * @param requestParam 订单、乘车人和可选稳定命令参数
-     * @param resultContext 来自票务消息时用于回传结果的上下文，直接调用时为 null
+     * @param resultContext 票务 MQ 消息携带的回传结果上下文
      * @return 新创建或幂等复用的订单号
      */
     private String doCreateTicketOrder(

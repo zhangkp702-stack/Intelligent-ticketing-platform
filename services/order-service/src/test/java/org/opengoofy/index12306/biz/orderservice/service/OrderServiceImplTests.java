@@ -42,8 +42,11 @@ import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespD
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.service.impl.OrderServiceImpl;
 import org.opengoofy.index12306.biz.orderservice.service.monitor.OrderCreateMetrics;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 import org.redisson.api.RedissonClient;
@@ -100,6 +103,9 @@ class OrderServiceImplTests {
 
     @Mock
     private PlatformTransactionManager transactionManager;
+
+    @Mock
+    private ReliableEventStore reliableEventStore;
 
     @InjectMocks
     private OrderServiceImpl orderService;
@@ -238,7 +244,7 @@ class OrderServiceImplTests {
     void createOrderOrchestratorHasNoOuterTransaction() throws NoSuchMethodException {
         // 事务只能由内部 TransactionTemplate 顺序开启，入口方法本身不能持有数据库连接。
         Transactional annotation = OrderServiceImpl.class
-                .getMethod("createTicketOrder", TicketOrderCreateReqDTO.class)
+                .getMethod("createTicketOrderFromMessage", TicketOrderCreateReqDTO.class, String.class, String.class)
                 .getAnnotation(Transactional.class);
         assertThat(annotation).isNull();
     }
@@ -266,9 +272,11 @@ class OrderServiceImplTests {
         when(orderMapper.selectOne(any())).thenReturn(existing);
         when(orderCommandMapper.update(any(), any())).thenReturn(1);
 
-        String orderSn = orderService.createTicketOrder(request);
+        TicketOrderCreateResultMessage result = orderService.createTicketOrderFromMessage(
+                request, "source-message-a", "reservation-a");
 
-        assertThat(orderSn).isEqualTo("order-1");
+        assertThat(result.getStatus()).isEqualTo(TicketOrderMessageConstants.RESULT_SUCCEEDED);
+        assertThat(result.getOrderSn()).isEqualTo("order-1");
         ArgumentCaptor<TransactionDefinition> definitions = ArgumentCaptor.forClass(TransactionDefinition.class);
         verify(transactionManager, times(2)).getTransaction(definitions.capture());
         assertThat(definitions.getAllValues())
@@ -312,7 +320,8 @@ class OrderServiceImplTests {
         when(orderCommandMapper.insert(any())).thenReturn(1);
         when(orderMapper.selectOne(any())).thenReturn(conflictingOrder);
 
-        assertThatThrownBy(() -> orderService.createTicketOrder(request))
+        assertThatThrownBy(() -> orderService.createTicketOrderFromMessage(
+                request, "source-message-a", "reservation-a"))
                 .hasMessageContaining("订单命令标识与原请求不一致");
 
         InOrder transactionOrder = inOrder(transactionManager);
