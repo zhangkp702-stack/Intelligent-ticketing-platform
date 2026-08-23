@@ -72,6 +72,18 @@ index12306
 └── docs                        # 项目文档
 ```
 
+## Commit Message Example
+
+Keep the `refactor` type and the module scope in parentheses. Write the subject and body in English so the change remains clear across the project.
+
+```text
+refactor(ticket-service): reorganize ticket service implementations
+
+- Move ticket service implementations and tests into the impl package
+- Update Canal, metrics, and ticket service imports for the new package layout
+- Preserve the existing reservation, recovery, and order creation behavior
+```
+
 ## 环境要求
 
 - JDK 17
