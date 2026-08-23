@@ -30,6 +30,9 @@ public final class TicketOrderMessageConstants {
     /** 订单创建命令标签。 */
     public static final String CREATE_ORDER_TAG = "CREATE_ORDER";
 
+    /** 订单创建命令消费者组。 */
+    public static final String CREATE_ORDER_CONSUMER_GROUP = "index12306_order-service_create-order_cg${unique-name:}";
+
     /** 订单创建结果标签。 */
     public static final String CREATE_ORDER_RESULT_TAG = "CREATE_ORDER_RESULT";
 

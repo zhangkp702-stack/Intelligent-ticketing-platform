@@ -144,6 +144,29 @@ public interface ReliableEventStore {
             int maxAttempts);
 
     /**
+     * 领取由其他服务 Outbox 发布的外部消息，不要求当前数据库存在同一条 Outbox。
+     *
+     * <p>RocketMQ 负责重新投递，当前服务只以 Inbox 记录消费幂等、租约和最大尝试次数。</p>
+     *
+     * @param eventKey 生产者提供的稳定事件主键
+     * @param eventVersion 消息携带的事件版本
+     * @param consumerName 稳定消费者名称
+     * @param owner 消费实例
+     * @param now 当前时间
+     * @param leaseUntil 租约截止时间
+     * @param maxAttempts 最大处理次数
+     * @return 成功领取后的 Inbox
+     */
+    Optional<ReliableInboxRecord> claimExternalConsumption(
+            ReliableEventKey eventKey,
+            long eventVersion,
+            String consumerName,
+            String owner,
+            Instant now,
+            Instant leaseUntil,
+            int maxAttempts);
+
+    /**
      * 查询消费者当前 Inbox 状态。
      *
      * @param key Inbox 主键
@@ -186,6 +209,27 @@ public interface ReliableEventStore {
      * @return 更新后的消费状态，围栏竞争失败时为空
      */
     Optional<ReliableConsumptionResult> retryConsumption(
+            ReliableInboxKey key,
+            ReliableEventLease lease,
+            String category,
+            String message,
+            Instant nextRetryAt,
+            Instant now);
+
+    /**
+     * 记录外部消息消费失败，由消息代理按既有消息重新投递。
+     *
+     * <p>该方法不会尝试更新当前服务不存在的生产者 Outbox；调用方应在返回后抛出异常触发 Broker 重试。</p>
+     *
+     * @param key Inbox 主键
+     * @param lease 消费租约
+     * @param category 稳定失败分类
+     * @param message 安全失败摘要
+     * @param nextRetryAt 下一次允许领取时间
+     * @param now 当前时间
+     * @return 更新后的消费状态，围栏竞争失败时为空
+     */
+    Optional<ReliableConsumptionResult> retryExternalConsumption(
             ReliableInboxKey key,
             ReliableEventLease lease,
             String category,

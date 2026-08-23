@@ -165,6 +165,51 @@ class JdbcReliableEventStoreTests {
     }
 
     /**
+     * 验证跨服务消息只使用本地 Inbox，失败后由 Broker 重投而不会写入不存在的本地 Outbox。
+     */
+    @Test
+    void shouldConsumeExternalMessageWithoutLocalOutbox() {
+        ReliableEventKey externalEvent = new ReliableEventKey("ticket-order-creation", "reservation-1");
+        ReliableInboxRecord first = store.claimExternalConsumption(
+                externalEvent, 1L, CONSUMER, "consumer-1",
+                NOW.plusSeconds(2), NOW.plusSeconds(12), 3).orElseThrow();
+
+        assertThat(store.findEvent(externalEvent)).isEmpty();
+        ReliableConsumptionResult retry = store.retryExternalConsumption(
+                first.key(), first.lease(), "TEMPORARY", "retry",
+                NOW.plusSeconds(3), NOW.plusSeconds(3)).orElseThrow();
+        assertThat(retry.retryScheduled()).isTrue();
+        assertThat(retry.record().status()).isEqualTo(ReliableInboxStatus.RETRY_WAIT);
+
+        ReliableInboxRecord second = store.claimExternalConsumption(
+                externalEvent, 1L, CONSUMER, "consumer-2",
+                NOW.plusSeconds(3), NOW.plusSeconds(13), 3).orElseThrow();
+        assertThat(second.attemptCount()).isEqualTo(2);
+        assertThat(store.completeConsumption(second.key(), second.lease(), NOW.plusSeconds(4))).isTrue();
+    }
+
+    /**
+     * 验证消费者进程中断后，新的 Broker 投递可在租约到期时接管外部消息。
+     */
+    @Test
+    void shouldRecoverExpiredExternalConsumptionLease() {
+        ReliableEventKey externalEvent = new ReliableEventKey("ticket-order-creation", "reservation-2");
+        ReliableInboxRecord first = store.claimExternalConsumption(
+                externalEvent, 1L, CONSUMER, "consumer-1",
+                NOW.plusSeconds(2), NOW.plusSeconds(5), 3).orElseThrow();
+
+        assertThat(store.claimExternalConsumption(
+                externalEvent, 1L, CONSUMER, "consumer-2",
+                NOW.plusSeconds(4), NOW.plusSeconds(14), 3)).isEmpty();
+        ReliableInboxRecord recovered = store.claimExternalConsumption(
+                externalEvent, 1L, CONSUMER, "consumer-2",
+                NOW.plusSeconds(5), NOW.plusSeconds(15), 3).orElseThrow();
+
+        assertThat(recovered.attemptCount()).isEqualTo(2);
+        assertThat(recovered.lease().fencingToken()).isGreaterThan(first.lease().fencingToken());
+    }
+
+    /**
      * 验证消费租约到期可被发现，达到次数上限后停止重新投递。
      */
     @Test

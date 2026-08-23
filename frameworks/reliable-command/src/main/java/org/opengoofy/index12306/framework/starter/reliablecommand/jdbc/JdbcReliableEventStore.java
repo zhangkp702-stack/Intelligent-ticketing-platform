@@ -376,6 +376,74 @@ public class JdbcReliableEventStore implements ReliableEventStore {
     }
 
     /**
+     * 领取其他服务发布的消息，并以当前服务 Inbox 处理重复、重试和租约过期。
+     *
+     * @param eventKey 生产者提供的稳定事件主键
+     * @param eventVersion 消息协议版本
+     * @param consumerName 稳定消费者名称
+     * @param owner 当前消费者实例
+     * @param now 当前时间
+     * @param leaseUntil 消费租约截止时间
+     * @param maxAttempts 最大领取次数
+     * @return 成功领取后的 Inbox
+     */
+    @Override
+    public Optional<ReliableInboxRecord> claimExternalConsumption(
+            ReliableEventKey eventKey,
+            long eventVersion,
+            String consumerName,
+            String owner,
+            Instant now,
+            Instant leaseUntil,
+            int maxAttempts) {
+        validateKey(eventKey);
+        requirePositive(eventVersion, "eventVersion");
+        String normalizedConsumer = requireText(consumerName, "consumerName", 128);
+        String normalizedOwner = requireText(owner, "owner", 128);
+        validateWindow(now, leaseUntil);
+        requirePositive(maxAttempts, "maxAttempts");
+        return requireResult(transactionTemplate.execute(status -> {
+            ReliableInboxKey inboxKey = new ReliableInboxKey(eventKey, normalizedConsumer);
+            // 生产者 Outbox 位于远端服务，使用 Inbox 主键唯一约束裁决首次并发领取。
+            int inserted = jdbcTemplate.update(
+                    "INSERT IGNORE INTO t_reliable_inbox_consumption "
+                            + "(namespace, event_id, consumer_name, event_version, status, attempt_count, "
+                            + "max_attempts, lease_owner, lease_until, fencing_token, started_at, "
+                            + "created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 1, ?, ?, ?)",
+                    eventKey.namespace(), eventKey.eventId(), normalizedConsumer, eventVersion,
+                    ReliableInboxStatus.PROCESSING.name(), maxAttempts, normalizedOwner,
+                    timestamp(leaseUntil), timestamp(now), timestamp(now), timestamp(now));
+            ReliableInboxRecord current = findConsumptionInternal(inboxKey).orElseThrow();
+            if (inserted == 1) {
+                return Optional.of(current);
+            }
+            if (current.eventVersion() != eventVersion || current.attemptCount() >= current.maxAttempts()) {
+                return Optional.empty();
+            }
+            // 失败后由 Broker 重新投递，宕机遗留的 PROCESSING 记录则在租约到期后由下一条消息接管。
+            boolean retryDue = current.status() == ReliableInboxStatus.RETRY_WAIT
+                    && current.nextRetryAt() != null && !now.isBefore(current.nextRetryAt());
+            boolean leaseExpired = current.status() == ReliableInboxStatus.PROCESSING
+                    && current.leaseUntil() != null && !now.isBefore(current.leaseUntil());
+            if (!retryDue && !leaseExpired) {
+                return Optional.empty();
+            }
+            int updated = jdbcTemplate.update(
+                    "UPDATE t_reliable_inbox_consumption SET status = ?, attempt_count = attempt_count + 1, "
+                            + "lease_owner = ?, lease_until = ?, fencing_token = fencing_token + 1, "
+                            + "next_retry_at = NULL, started_at = ?, failure_category = NULL, "
+                            + "failure_message = NULL, updated_at = ? WHERE namespace = ? AND event_id = ? "
+                            + "AND consumer_name = ? AND event_version = ? AND status = ? "
+                            + "AND " + (retryDue ? "next_retry_at <= ?" : "lease_until <= ?"),
+                    ReliableInboxStatus.PROCESSING.name(), normalizedOwner, timestamp(leaseUntil),
+                    timestamp(now), timestamp(now), eventKey.namespace(), eventKey.eventId(), normalizedConsumer,
+                    eventVersion, retryDue ? ReliableInboxStatus.RETRY_WAIT.name() : ReliableInboxStatus.PROCESSING.name(),
+                    timestamp(now));
+            return updated == 1 ? findConsumptionInternal(inboxKey) : Optional.empty();
+        }));
+    }
+
+    /**
      * 查询指定消费者的 Inbox。
      *
      * @param key Inbox 主键
@@ -488,6 +556,54 @@ public class JdbcReliableEventStore implements ReliableEventStore {
                         ReliableOutboxStatus.PENDING.name(), timestamp(nextRetryAt), timestamp(now),
                         key.eventKey().namespace(), key.eventKey().eventId());
             }
+            return Optional.of(new ReliableConsumptionResult(
+                    findConsumptionInternal(key).orElseThrow(), retry));
+        }));
+    }
+
+    /**
+     * 记录外部消息消费失败，不操作当前服务不存在的生产者 Outbox。
+     *
+     * @param key Inbox 主键
+     * @param lease 当前消费租约
+     * @param category 稳定失败分类
+     * @param message 安全失败摘要
+     * @param nextRetryAt 下一次允许领取时间
+     * @param now 当前时间
+     * @return 更新后的 Inbox 状态
+     */
+    @Override
+    public Optional<ReliableConsumptionResult> retryExternalConsumption(
+            ReliableInboxKey key,
+            ReliableEventLease lease,
+            String category,
+            String message,
+            Instant nextRetryAt,
+            Instant now) {
+        validateInboxKey(key);
+        validateLease(lease);
+        String normalizedCategory = requireText(category, "category", 64);
+        Objects.requireNonNull(nextRetryAt, "nextRetryAt");
+        Objects.requireNonNull(now, "now");
+        return requireResult(transactionTemplate.execute(status -> {
+            ReliableInboxRecord current = findConsumptionInternal(key)
+                    .orElseThrow(() -> new IllegalStateException("Inbox 记录不存在"));
+            boolean retry = current.attemptCount() < current.maxAttempts();
+            ReliableInboxStatus target = retry
+                    ? ReliableInboxStatus.RETRY_WAIT : ReliableInboxStatus.FAILED;
+            int updated = jdbcTemplate.update(
+                    "UPDATE t_reliable_inbox_consumption SET status = ?, lease_owner = NULL, lease_until = NULL, "
+                            + "next_retry_at = ?, failure_category = ?, failure_message = ?, finished_at = ?, "
+                            + "updated_at = ? WHERE namespace = ? AND event_id = ? AND consumer_name = ? "
+                            + "AND status = ? AND lease_owner = ? AND fencing_token = ?",
+                    target.name(), retry ? timestamp(nextRetryAt) : null, normalizedCategory, sanitize(message),
+                    retry ? null : timestamp(now), timestamp(now), key.eventKey().namespace(),
+                    key.eventKey().eventId(), key.consumerName(), ReliableInboxStatus.PROCESSING.name(),
+                    lease.owner(), lease.fencingToken());
+            if (updated != 1) {
+                return Optional.empty();
+            }
+            // 外部事件只依赖 Broker 重试，不能错误修改本地同名 Outbox。
             return Optional.of(new ReliableConsumptionResult(
                     findConsumptionInternal(key).orElseThrow(), retry));
         }));
