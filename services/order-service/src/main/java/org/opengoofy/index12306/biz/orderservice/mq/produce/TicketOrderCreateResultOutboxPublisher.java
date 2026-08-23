@@ -18,33 +18,40 @@
 package org.opengoofy.index12306.biz.orderservice.mq.produce;
 
 import com.alibaba.fastjson2.JSON;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
+import org.opengoofy.index12306.biz.orderservice.service.monitor.OrderCreateResultOutboxMetrics;
+import org.opengoofy.index12306.biz.orderservice.service.monitor.OrderCreateResultOutboxMetrics.DispatchOutcome;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventLease;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableOutboxRecord;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * 将订单创建结果 Outbox 可靠投递给票务服务。
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class TicketOrderCreateResultOutboxPublisher {
 
     private final ReliableEventStore reliableEventStore;
     private final RocketMQTemplate rocketMQTemplate;
+    private final OrderCreateResultOutboxMetrics metrics;
+    private final Executor executor;
     private final String workerId = "ticket-order-create-result-" + UUID.randomUUID();
 
     @Value("${index12306.order.create-result.batch-size:32}")
@@ -53,11 +60,33 @@ public class TicketOrderCreateResultOutboxPublisher {
     @Value("${index12306.order.create-result.lease-millis:30000}")
     private long leaseMillis;
 
-    @Value("${index12306.order.create-result.retry-delay-millis:500}")
-    private long retryDelayMillis;
+    @Value("${index12306.order.create-result.retry-base-millis:500}")
+    private long retryBaseMillis;
+
+    @Value("${index12306.order.create-result.retry-max-millis:30000}")
+    private long retryMaxMillis;
 
     /**
-     * 回收失效租约并投递有限批次的订单创建结果。
+     * 创建订单创建结果 Outbox 发布器。
+     *
+     * @param reliableEventStore 可靠事件存储
+     * @param rocketMQTemplate RocketMQ 消息发送器
+     * @param metrics 结果 Outbox 指标组件
+     * @param executor 有界结果消息投递执行器
+     */
+    public TicketOrderCreateResultOutboxPublisher(
+            ReliableEventStore reliableEventStore,
+            RocketMQTemplate rocketMQTemplate,
+            OrderCreateResultOutboxMetrics metrics,
+            @Qualifier("orderCreateResultOutboxExecutor") Executor executor) {
+        this.reliableEventStore = reliableEventStore;
+        this.rocketMQTemplate = rocketMQTemplate;
+        this.metrics = metrics;
+        this.executor = executor;
+    }
+
+    /**
+     * 回收失效租约，并使用有界执行器并发投递有限批次的订单创建结果。
      */
     @Scheduled(fixedDelayString = "${index12306.order.create-result.interval-millis:200}")
     public void publishPendingResults() {
@@ -65,8 +94,9 @@ public class TicketOrderCreateResultOutboxPublisher {
             Instant now = Instant.now();
             int normalizedBatchSize = Math.max(1, batchSize);
             // 进程在 MQ 确认前退出时，下一实例先回收其租约再继续同一事件的投递。
-            reliableEventStore.recoverExpiredPublications(
+            int recoveredCount = reliableEventStore.recoverExpiredPublications(
                     TicketOrderMessageConstants.CREATE_ORDER_RESULT_NAMESPACE, now, normalizedBatchSize);
+            metrics.recordLeaseRecovered(recoveredCount);
             List<ReliableOutboxRecord> events = reliableEventStore.claimPublishable(
                     TicketOrderMessageConstants.CREATE_ORDER_RESULT_NAMESPACE,
                     workerId,
@@ -74,9 +104,24 @@ public class TicketOrderCreateResultOutboxPublisher {
                     now.plusMillis(Math.max(1000L, leaseMillis)),
                     normalizedBatchSize);
             // 空批次不做任何 Broker 调用，避免定时扫描对正常建单链路造成额外压力。
-            events.forEach(this::publishOne);
+            if (events.isEmpty()) {
+                return;
+            }
+            metrics.recordClaimed(events.size());
+            // 同一批次并发发送结果，避免串行 syncSend 将确认窗口扩展为整个批次长度。
+            List<CompletableFuture<?>> futures = new ArrayList<>(events.size());
+            for (ReliableOutboxRecord event : events) {
+                try {
+                    futures.add(CompletableFuture.runAsync(() -> publishOne(event), executor));
+                } catch (RejectedExecutionException exception) {
+                    // 任务尚未执行时立即交还租约，不能等待完整 lease 超时才重试。
+                    rescheduleRejectedEvent(event, exception);
+                }
+            }
+            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
         } catch (RuntimeException exception) {
             // 单轮存储层异常由下一轮调度恢复，不能使定时任务永久停止。
+            metrics.recordDispatchCycleFailure();
             log.error("ticket_order_create_result_publish_cycle_failed exceptionType={}",
                     exception.getClass().getSimpleName(), exception);
         }
@@ -88,6 +133,7 @@ public class TicketOrderCreateResultOutboxPublisher {
      * @param event 当前实例已经认领的结果 Outbox 事件
      */
     private void publishOne(ReliableOutboxRecord event) {
+        metrics.recordDispatchWait(event.createdAt());
         try {
             // 载荷在订单事务内固定，投递重试不得重新查询或重建订单结果。
             TicketOrderCreateResultMessage message = JSON.parseObject(
@@ -108,23 +154,63 @@ public class TicketOrderCreateResultOutboxPublisher {
             if (!published) {
                 log.warn("ticket_order_create_result_publish_fence_lost reservationId={}, attempt={}",
                         event.aggregateId(), event.publishAttemptCount());
+                metrics.recordDispatchOutcome(DispatchOutcome.FENCE_LOST);
                 return;
             }
+            metrics.recordDispatchOutcome(DispatchOutcome.PUBLISHED);
             log.info("ticket_order_create_result_published reservationId={}, status={}, attempt={}",
                     message.getReservationId(), message.getStatus(), event.publishAttemptCount());
         } catch (RuntimeException exception) {
             // 发送失败只回退 Outbox；若 Broker 已接收但确认前宕机，票务侧 Inbox 会消除重复消息。
+            long retryDelay = retryDelayMillis(event.publishAttemptCount());
             boolean rescheduled = reliableEventStore.markPublishFailed(
                     event.key(),
                     requireLease(event),
                     event.eventVersion(),
                     "ORDER_CREATE_RESULT_PUBLISH_RETRY",
                     safeMessage(exception),
-                    Instant.now().plusMillis(Math.max(1L, retryDelayMillis)),
+                    Instant.now().plusMillis(retryDelay),
                     Instant.now());
-            log.warn("ticket_order_create_result_publish_retry reservationId={}, attempt={}, rescheduled={}, exceptionType={}",
-                    event.aggregateId(), event.publishAttemptCount(), rescheduled, exception.getClass().getSimpleName());
+            metrics.recordDispatchOutcome(DispatchOutcome.RETRY);
+            log.warn("ticket_order_create_result_publish_retry reservationId={}, attempt={}, retryDelayMillis={}, rescheduled={}, exceptionType={}",
+                    event.aggregateId(), event.publishAttemptCount(), retryDelay, rescheduled,
+                    exception.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * 将未被执行器接收的事件立即退回 Outbox，并保持当前租约围栏。
+     *
+     * @param event 已认领但尚未执行的结果事件
+     * @param exception 执行器拒绝异常
+     */
+    private void rescheduleRejectedEvent(ReliableOutboxRecord event, RejectedExecutionException exception) {
+        long retryDelay = retryDelayMillis(event.publishAttemptCount());
+        boolean rescheduled = reliableEventStore.markPublishFailed(
+                event.key(),
+                requireLease(event),
+                event.eventVersion(),
+                "ORDER_CREATE_RESULT_EXECUTOR_REJECTED",
+                safeMessage(exception),
+                Instant.now().plusMillis(retryDelay),
+                Instant.now());
+        // 拒绝与 Broker 异常分开统计，便于定位本地执行器容量而非消息服务故障。
+        metrics.recordDispatchOutcome(DispatchOutcome.EXECUTOR_REJECTED);
+        log.warn("ticket_order_create_result_executor_rejected reservationId={}, attempt={}, retryDelayMillis={}, rescheduled={}",
+                event.aggregateId(), event.publishAttemptCount(), retryDelay, rescheduled);
+    }
+
+    /**
+     * 计算有上限的指数退避时间。
+     *
+     * @param attemptCount 已认领次数
+     * @return 下次投递前的等待毫秒数
+     */
+    private long retryDelayMillis(int attemptCount) {
+        long base = Math.max(1L, retryBaseMillis);
+        long maximum = Math.max(base, retryMaxMillis);
+        int exponent = Math.min(Math.max(0, attemptCount - 1), 10);
+        return Math.min(maximum, base * (1L << exponent));
     }
 
     /**
