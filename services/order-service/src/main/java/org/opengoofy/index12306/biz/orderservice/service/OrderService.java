@@ -27,6 +27,7 @@ import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespD
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.orderservice.mq.event.PayResultCallbackOrderEvent;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
 
 /**
@@ -74,6 +75,19 @@ public interface OrderService {
      * @return 订单号
      */
     String createTicketOrder(TicketOrderCreateReqDTO requestParam);
+
+    /**
+     * 消费票务创建命令并在订单本地事务内登记回传结果 Outbox。
+     *
+     * @param requestParam 已转换的订单创建请求
+     * @param sourceMessageId 票务服务 Outbox 事件标识
+     * @param reservationId 票务预留座位标识
+     * @return 已持久化的成功或明确失败结果
+     */
+    TicketOrderCreateResultMessage createTicketOrderFromMessage(
+            TicketOrderCreateReqDTO requestParam,
+            String sourceMessageId,
+            String reservationId);
 
     /**
      * 查询当前用户稳定订单命令的权威结果。

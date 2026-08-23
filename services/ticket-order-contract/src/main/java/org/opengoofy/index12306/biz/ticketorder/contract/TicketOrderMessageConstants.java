@@ -36,6 +36,9 @@ public final class TicketOrderMessageConstants {
     /** 订单创建结果标签。 */
     public static final String CREATE_ORDER_RESULT_TAG = "CREATE_ORDER_RESULT";
 
+    /** 订单创建结果消费者组。 */
+    public static final String CREATE_ORDER_RESULT_CONSUMER_GROUP = "index12306_ticket-service_create-order-result_cg${unique-name:}";
+
     /** 订单创建命令协议版本。 */
     public static final long CREATE_ORDER_VERSION = 1L;
 
@@ -44,6 +47,12 @@ public final class TicketOrderMessageConstants {
 
     /** Outbox 事件类型，与当前锁座事务保持一致。 */
     public static final String CREATE_ORDER_EVENT_TYPE = "CREATE_TICKET_ORDER";
+
+    /** 订单创建结果 Outbox 命名空间。 */
+    public static final String CREATE_ORDER_RESULT_NAMESPACE = "ticket-order-creation-result";
+
+    /** 订单创建结果 Outbox 事件类型。 */
+    public static final String CREATE_ORDER_RESULT_EVENT_TYPE = "TICKET_ORDER_CREATE_RESULT";
 
     /** 成功结果状态。 */
     public static final String RESULT_SUCCEEDED = "SUCCEEDED";

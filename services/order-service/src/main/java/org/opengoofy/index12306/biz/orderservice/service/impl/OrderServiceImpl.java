@@ -61,7 +61,12 @@ import org.opengoofy.index12306.framework.starter.convention.exception.ClientExc
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
 import org.opengoofy.index12306.framework.starter.database.toolkit.PageUtil;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventDefinition;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventKey;
+import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.dao.DuplicateKeyException;
@@ -82,6 +87,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.Instant;
 
 /**
  * 订单服务接口层实现
@@ -100,6 +106,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderDelayCloseMessageDispatchService orderDelayCloseMessageDispatchService;
     private final OrderCreateMetrics orderCreateMetrics;
     private final PlatformTransactionManager transactionManager;
+    private final ReliableEventStore reliableEventStore;
 
     private static final String ORDER_COMMAND_PROCESSING = "PROCESSING";
     private static final String ORDER_COMMAND_SUCCEEDED = "SUCCEEDED";
@@ -232,7 +239,7 @@ public class OrderServiceImpl implements OrderService {
         String result = "failed";
         try {
             // 对外接口只包裹总耗时，具体阶段由内部创建流程分别记录。
-            String orderSn = doCreateTicketOrder(requestParam);
+            String orderSn = doCreateTicketOrder(requestParam, null);
             result = "success";
             return orderSn;
         } finally {
@@ -242,12 +249,48 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
+     * 执行来自票务服务的创建命令，并把终态结果写入订单服务本地 Outbox。
+     *
+     * @param requestParam 已转换的订单创建请求
+     * @param sourceMessageId 票务服务 Outbox 事件标识
+     * @param reservationId 座位预留标识
+     * @return 成功或明确失败的订单创建结果
+     */
+    @Override
+    public TicketOrderCreateResultMessage createTicketOrderFromMessage(
+            TicketOrderCreateReqDTO requestParam,
+            String sourceMessageId,
+            String reservationId) {
+        OrderCreateResultContext resultContext = new OrderCreateResultContext(
+                sourceMessageId, reservationId, requestParam.getCommandId());
+        try {
+            // 成功结果在订单事务内入 Outbox，避免订单提交后服务宕机导致票务侧永远等待。
+            String orderSn = doCreateTicketOrder(requestParam, resultContext);
+            return resultMessage(resultContext, requestParam.getCommandId(),
+                    TicketOrderMessageConstants.RESULT_SUCCEEDED, orderSn, null);
+        } catch (RuntimeException exception) {
+            if (!isOrderCommandFailed(requestParam)) {
+                // 未形成明确失败终态时让 Broker 重试，不能把未知状态误判为可释放座位。
+                throw exception;
+            }
+            // 已失败命令的重复投递补写同一去重键的结果事件，覆盖历史结果事件缺失场景。
+            enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_FAILED, null,
+                    exception.getClass().getSimpleName());
+            return resultMessage(resultContext, requestParam.getCommandId(),
+                    TicketOrderMessageConstants.RESULT_FAILED, null, exception.getClass().getSimpleName());
+        }
+    }
+
+    /**
      * 以顺序短事务执行命令登记、订单落库和提交后消息入队。
      *
      * @param requestParam 订单、乘车人和可选稳定命令参数
+     * @param resultContext 来自票务消息时用于回传结果的上下文，直接调用时为 null
      * @return 新创建或幂等复用的订单号
      */
-    private String doCreateTicketOrder(TicketOrderCreateReqDTO requestParam) {
+    private String doCreateTicketOrder(
+            TicketOrderCreateReqDTO requestParam,
+            OrderCreateResultContext resultContext) {
         String commandId = normalizeCreateCommand(requestParam);
         String requestFingerprint = commandId == null ? null : createRequestFingerprint(requestParam);
         String userId = String.valueOf(requestParam.getUserId());
@@ -265,6 +308,9 @@ public class OrderServiceImpl implements OrderService {
             if (ORDER_COMMAND_SUCCEEDED.equals(command.getStatus())) {
                 // 成功命令若仍处于待发送状态，异步投递器会通过数据库认领保证只有一个实例发送。
                 enqueueDelayCloseMessage(userId, commandId, command.getOrderSn());
+                // 历史成功命令没有结果事件时补写 Outbox；同一源消息重复调用只会复用原事件。
+                enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_SUCCEEDED,
+                        command.getOrderSn(), null);
                 return command.getOrderSn();
             }
         }
@@ -323,6 +369,9 @@ public class OrderServiceImpl implements OrderService {
                 // 重复命令只有在订单字段完全匹配时才能复用原订单号。
                 String existingOrderSn = resolveExistingCreateCommand(requestParam, requestFingerprint, existing);
                 completeOrderCommand(commandId, userId, existingOrderSn);
+                // 订单、命令状态和结果事件共享当前本地事务。
+                enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_SUCCEEDED,
+                        existingOrderSn, null);
                 return existingOrderSn;
             }
             String orderSn = existing.getOrderSn();
@@ -365,13 +414,15 @@ public class OrderServiceImpl implements OrderService {
             }
             // 命令成功状态同时充当延迟关单 Outbox，提交后由后台投递器发送 RocketMQ。
             completeOrderCommand(commandId, userId, orderSn);
+            // 订单主记录、命令成功状态和回传结果事件必须原子提交。
+            enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_SUCCEEDED, orderSn, null);
             return orderSn;
             });
             orderCreateMetrics.recordStage(orderTransactionTimer, "order_transaction", "success");
         } catch (RuntimeException ex) {
             orderCreateMetrics.recordStage(orderTransactionTimer, "order_transaction", "failed");
             // 失败终态单独提交，供 ticket-service 对 PREPARED 座位安全释放。
-            markOrderCommandFailed(commandId, userId, ex);
+            markOrderCommandFailed(commandId, userId, ex, resultContext);
             throw ex;
         }
         // 订单和 Outbox 已经提交，当前调用只入有界线程池，不等待 RocketMQ 网络确认。
@@ -562,14 +613,19 @@ public class OrderServiceImpl implements OrderService {
      * @param commandId 稳定订单创建命令标识
      * @param userId 订单所属用户标识
      * @param exception 当前失败异常
+     * @param resultContext 来自票务消息时用于回传结果的上下文，直接调用时为 null
      */
-    private void markOrderCommandFailed(String commandId, String userId, RuntimeException exception) {
+    private void markOrderCommandFailed(
+            String commandId,
+            String userId,
+            RuntimeException exception,
+            OrderCreateResultContext resultContext) {
         if (commandId == null) {
             return;
         }
         executeInNewTransaction(() -> {
             // 只将当前执行中的命令置失败，已成功命令不能因迟到异常被反向覆盖。
-            orderCommandMapper.update(
+            int updated = orderCommandMapper.update(
                     OrderCommandDO.builder()
                             .status(ORDER_COMMAND_FAILED)
                             .failureReason(exception.getClass().getSimpleName())
@@ -578,8 +634,93 @@ public class OrderServiceImpl implements OrderService {
                             .eq(OrderCommandDO::getUserId, userId)
                             .eq(OrderCommandDO::getCommandId, commandId)
                             .eq(OrderCommandDO::getStatus, ORDER_COMMAND_PROCESSING));
+            if (updated == 1) {
+                // 明确失败状态和失败结果事件同事务提交，票务服务才可以安全释放 PREPARED 座位。
+                enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_FAILED, null,
+                        exception.getClass().getSimpleName());
+            }
             return null;
         });
+    }
+
+    /**
+     * 将订单创建终态写入当前事务的结果 Outbox，确保订单状态与票务回传事件原子提交。
+     *
+     * @param resultContext 源消息和座位预留上下文
+     * @param status 已确定的订单创建结果状态
+     * @param orderSn 成功时的订单号
+     * @param failureCategory 失败时的稳定错误分类
+     */
+    private void enqueueOrderCreateResult(
+            OrderCreateResultContext resultContext,
+            String status,
+            String orderSn,
+            String failureCategory) {
+        if (resultContext == null) {
+            return;
+        }
+        // 使用源消息标识作为业务去重键，订单服务重放时只会复用同一条不可变结果事件。
+        TicketOrderCreateResultMessage message = resultMessage(
+                resultContext, resultContext.commandId(), status, orderSn, failureCategory);
+        reliableEventStore.enqueue(new ReliableEventDefinition(
+                new ReliableEventKey(TicketOrderMessageConstants.CREATE_ORDER_RESULT_NAMESPACE,
+                        resultContext.sourceMessageId()),
+                resultContext.sourceMessageId(),
+                TicketOrderMessageConstants.CREATE_ORDER_RESULT_EVENT_TYPE,
+                resultContext.reservationId(),
+                JSON.toJSONString(message),
+                TicketOrderMessageConstants.CREATE_ORDER_VERSION), Instant.now());
+    }
+
+    /**
+     * 构建返回给票务服务的不可变订单创建结果消息。
+     *
+     * @param resultContext 源消息和座位预留上下文
+     * @param commandId 已规范化的稳定建单命令标识
+     * @param status 已确定的订单创建结果状态
+     * @param orderSn 成功时的订单号
+     * @param failureCategory 失败时的稳定错误分类
+     * @return 可写入 Outbox 或直接返回消费者的结果消息
+     */
+    private TicketOrderCreateResultMessage resultMessage(
+            OrderCreateResultContext resultContext,
+            String commandId,
+            String status,
+            String orderSn,
+            String failureCategory) {
+        // 结果消息 ID 可由源消息稳定推导，Broker 重投时不会生成新的消费者 Inbox 主键。
+        return TicketOrderCreateResultMessage.builder()
+                .messageId(resultContext.sourceMessageId() + ":result")
+                .messageVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
+                .sourceMessageId(resultContext.sourceMessageId())
+                .reservationId(resultContext.reservationId())
+                .commandId(commandId)
+                .status(status)
+                .orderSn(orderSn)
+                .failureCategory(failureCategory)
+                .build();
+    }
+
+    /**
+     * 判断当前命令是否已被本服务持久化为明确失败终态。
+     *
+     * @param requestParam 当前订单创建请求
+     * @return 命令已处于 FAILED 时返回 true
+     */
+    private boolean isOrderCommandFailed(TicketOrderCreateReqDTO requestParam) {
+        if (requestParam == null || requestParam.getUserId() == null
+                || requestParam.getCommandId() == null || requestParam.getCommandId().isBlank()) {
+            return false;
+        }
+        // 只接受数据库已经确认的失败状态，其他异常继续交给 MQ 重试而不是释放座位。
+        OrderCommandDO command = findOrderCommand(requestParam.getCommandId(), String.valueOf(requestParam.getUserId()));
+        return command != null && ORDER_COMMAND_FAILED.equals(command.getStatus());
+    }
+
+    /**
+     * 保存订单结果事件所需的源消息、预留座位和稳定命令标识。
+     */
+    private record OrderCreateResultContext(String sourceMessageId, String reservationId, String commandId) {
     }
 
     /**

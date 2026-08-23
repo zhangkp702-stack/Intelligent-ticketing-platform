@@ -28,6 +28,7 @@ import org.opengoofy.index12306.biz.orderservice.service.OrderService;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateRequest;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventKey;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventLease;
@@ -45,6 +46,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -74,14 +76,17 @@ class TicketOrderCreateCommandConsumerTests {
         when(reliableEventStore.claimExternalConsumption(
                 any(ReliableEventKey.class), anyLong(), anyString(), anyString(), any(Instant.class),
                 any(Instant.class), anyInt())).thenReturn(Optional.of(inbox));
-        when(orderService.createTicketOrder(any(TicketOrderCreateReqDTO.class))).thenReturn("O123");
+        when(orderService.createTicketOrderFromMessage(
+                any(TicketOrderCreateReqDTO.class), anyString(), anyString()))
+                .thenReturn(successResult(message));
         when(reliableEventStore.completeConsumption(any(ReliableInboxKey.class), any(ReliableEventLease.class),
                 any(Instant.class))).thenReturn(true);
 
         consumer.onMessage(message);
 
         ArgumentCaptor<TicketOrderCreateReqDTO> requestCaptor = ArgumentCaptor.forClass(TicketOrderCreateReqDTO.class);
-        verify(orderService).createTicketOrder(requestCaptor.capture());
+        verify(orderService).createTicketOrderFromMessage(
+                requestCaptor.capture(), eq(message.getMessageId()), eq(message.getReservationId()));
         TicketOrderCreateReqDTO request = requestCaptor.getValue();
         assertThat(request.getActionId()).isEqualTo(message.getActionId());
         assertThat(request.getCommandId()).isEqualTo(message.getCommandId());
@@ -106,7 +111,8 @@ class TicketOrderCreateCommandConsumerTests {
 
         consumer.onMessage(message());
 
-        verify(orderService, never()).createTicketOrder(any(TicketOrderCreateReqDTO.class));
+        verify(orderService, never()).createTicketOrderFromMessage(
+                any(TicketOrderCreateReqDTO.class), anyString(), anyString());
         verify(reliableEventStore, never()).completeConsumption(
                 any(ReliableInboxKey.class), any(ReliableEventLease.class), any(Instant.class));
     }
@@ -143,6 +149,24 @@ class TicketOrderCreateCommandConsumerTests {
                 .actionId("action-1")
                 .commandId("action-1:create-order")
                 .request(request)
+                .build();
+    }
+
+    /**
+     * 创建订单服务已经持久化的成功结果样例。
+     *
+     * @param message 原始订单创建命令
+     * @return 关联字段完整的成功结果
+     */
+    private TicketOrderCreateResultMessage successResult(TicketOrderCreateCommandMessage message) {
+        return TicketOrderCreateResultMessage.builder()
+                .messageId(message.getMessageId() + ":result")
+                .messageVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
+                .sourceMessageId(message.getMessageId())
+                .reservationId(message.getReservationId())
+                .commandId(message.getCommandId())
+                .status(TicketOrderMessageConstants.RESULT_SUCCEEDED)
+                .orderSn("O123")
                 .build();
     }
 

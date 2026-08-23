@@ -27,6 +27,7 @@ import org.opengoofy.index12306.biz.orderservice.service.OrderService;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateRequest;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableConsumptionResult;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventKey;
@@ -85,17 +86,19 @@ public class TicketOrderCreateCommandConsumer implements RocketMQListener<Ticket
         }
         ReliableInboxRecord inbox = claimed.get();
         try {
-            // 订单服务继续使用 commandId 防重，覆盖创建成功但 Inbox 提交前宕机的重放窗口。
-            String orderSn = orderService.createTicketOrder(toOrderCreateRequest(message));
-            if (orderSn == null || orderSn.isBlank()) {
-                throw new IllegalStateException("订单服务未返回有效订单号");
+            // 订单服务继续使用 commandId 防重，并在其本地事务内登记回传票务服务的结果 Outbox。
+            TicketOrderCreateResultMessage result = orderService.createTicketOrderFromMessage(
+                    toOrderCreateRequest(message), message.getMessageId(), message.getReservationId());
+            if (!isValidResult(result, message)) {
+                throw new IllegalStateException("订单服务未返回有效订单创建结果");
             }
             // 仅持有当前消费围栏的实例可以完成 Inbox，迟到实例不会覆盖新的处理结果。
             if (!reliableEventStore.completeConsumption(inbox.key(), inbox.lease(), Instant.now())) {
                 throw new IllegalStateException("订单创建 Inbox 消费围栏已失效");
             }
-            log.info("ticket_order_create_consumed reservationId={}, commandId={}, orderSn={}, attempt={}",
-                    message.getReservationId(), message.getCommandId(), orderSn, inbox.attemptCount());
+            log.info("ticket_order_create_consumed reservationId={}, commandId={}, status={}, orderSn={}, attempt={}",
+                    message.getReservationId(), message.getCommandId(), result.getStatus(), result.getOrderSn(),
+                    inbox.attemptCount());
         } catch (RuntimeException exception) {
             handleFailure(message, inbox, exception);
         }
@@ -119,6 +122,31 @@ public class TicketOrderCreateCommandConsumer implements RocketMQListener<Ticket
                 && isNumericUserId(message.getRequest().getUserId())
                 && message.getRequest().getTicketOrderItems() != null
                 && !message.getRequest().getTicketOrderItems().isEmpty();
+    }
+
+    /**
+     * 校验订单服务返回的结果能够安全驱动票务侧的绑定或释放。
+     *
+     * @param result 订单服务返回的已持久化结果
+     * @param command 原始订单创建命令
+     * @return 结果关联字段与成功、失败语义均合法时返回 true
+     */
+    private boolean isValidResult(
+            TicketOrderCreateResultMessage result,
+            TicketOrderCreateCommandMessage command) {
+        if (result == null
+                || !hasText(result.getMessageId())
+                || result.getMessageVersion() == null
+                || result.getMessageVersion() != TicketOrderMessageConstants.CREATE_ORDER_VERSION
+                || !command.getMessageId().equals(result.getSourceMessageId())
+                || !command.getReservationId().equals(result.getReservationId())
+                || !command.getCommandId().equals(result.getCommandId())) {
+            return false;
+        }
+        // 成功必须携带订单号，失败则只允许由后续结果消费者释放 PREPARED 座位。
+        return TicketOrderMessageConstants.RESULT_SUCCEEDED.equals(result.getStatus())
+                ? hasText(result.getOrderSn())
+                : TicketOrderMessageConstants.RESULT_FAILED.equals(result.getStatus());
     }
 
     /**
