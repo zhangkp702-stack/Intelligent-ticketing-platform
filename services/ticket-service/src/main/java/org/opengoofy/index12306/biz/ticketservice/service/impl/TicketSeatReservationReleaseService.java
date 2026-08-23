@@ -25,6 +25,10 @@ import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseStatusR
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateRequest;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapReleaseResult;
@@ -51,7 +55,6 @@ public class TicketSeatReservationReleaseService {
 
     public static final String ORDER_CREATION_EVENT_NAMESPACE = "ticket-order-creation";
     public static final String ORDER_CREATION_EVENT_TYPE = "CREATE_TICKET_ORDER";
-    public static final long ORDER_CREATION_EVENT_VERSION = 1L;
     public static final String ORDER_CREATION_PROCESSING = "PROCESSING";
     public static final String ORDER_CREATION_SUCCEEDED = "SUCCEEDED";
     public static final String ORDER_CREATION_FAILED = "FAILED";
@@ -72,7 +75,7 @@ public class TicketSeatReservationReleaseService {
     private final ReliableEventStore reliableEventStore;
 
     /**
-     * 在调用订单服务前保存座位占用快照和稳定订单命令。
+     * 在发送订单创建命令前保存座位占用快照和稳定订单命令。
      *
      * @param reservationId 服务端生成的座位占用标识
      * @param actionId 订单创建动作标识
@@ -92,7 +95,7 @@ public class TicketSeatReservationReleaseService {
                                    String arrival, java.util.Date ridingDate, java.util.Date serviceDate,
                                    List<TrainPurchaseTicketRespDTO> tickets,
                                    TicketOrderCreateRemoteReqDTO orderCreateRequest) {
-        // PREPARED 记录与数据库锁座、车票写入同事务提交，使远程调用前已经具备恢复依据。
+        // PREPARED 记录与数据库锁座、车票写入同事务提交，使 MQ 投递前已经具备恢复依据。
         TicketSeatReservationDO reservation = TicketSeatReservationDO.builder()
                 .reservationId(reservationId)
                 .actionId(actionId)
@@ -113,16 +116,74 @@ public class TicketSeatReservationReleaseService {
         if (ticketSeatReservationMapper.insert(reservation) != 1) {
             throw new ServiceException("创建待绑定订单座位占用记录失败");
         }
-        // 在同一本地事务中写入完整建单载荷，确保座位提交后一定存在可恢复的异步任务。
+        // 在同一本地事务中写入共享建单命令，确保座位提交后一定存在可恢复的 MQ 投递任务。
+        TicketOrderCreateCommandMessage commandMessage = buildOrderCreateCommand(
+                reservationId, actionId, commandId, orderCreateRequest);
         reliableEventStore.enqueue(
                 new ReliableEventDefinition(
                         new ReliableEventKey(ORDER_CREATION_EVENT_NAMESPACE, reservationId),
                         commandId,
                         ORDER_CREATION_EVENT_TYPE,
                         reservationId,
-                        JSON.toJSONString(orderCreateRequest),
-                        ORDER_CREATION_EVENT_VERSION),
+                        JSON.toJSONString(commandMessage),
+                        TicketOrderMessageConstants.CREATE_ORDER_VERSION),
                 java.time.Instant.now());
+    }
+
+    /**
+     * 将票务领域的已固定建单快照转换为共享 MQ 命令，避免订单服务依赖票务内部 DTO。
+     *
+     * @param reservationId 购票受理标识
+     * @param actionId 订单创建动作标识
+     * @param commandId 稳定订单创建命令标识
+     * @param source 已完成乘车人和座位填充的票务建单快照
+     * @return 可独立重放的订单创建命令
+     */
+    private TicketOrderCreateCommandMessage buildOrderCreateCommand(
+            String reservationId,
+            String actionId,
+            String commandId,
+            TicketOrderCreateRemoteReqDTO source) {
+        if (source == null || source.getTicketOrderItems() == null || source.getTicketOrderItems().isEmpty()) {
+            throw new ServiceException("订单创建命令缺少车票明细");
+        }
+        // 明细字段仅从锁座事务已经固定的快照复制，重试时不重新查询乘车人、票价或座位。
+        List<TicketOrderCreateItem> items = source.getTicketOrderItems().stream()
+                .map(item -> TicketOrderCreateItem.builder()
+                        .carriageNumber(item.getCarriageNumber())
+                        .seatType(item.getSeatType())
+                        .seatNumber(item.getSeatNumber())
+                        .realName(item.getRealName())
+                        .idType(item.getIdType())
+                        .idCard(item.getIdCard())
+                        .phone(item.getPhone())
+                        .amount(item.getAmount())
+                        .ticketType(item.getTicketType())
+                        .build())
+                .toList();
+        TicketOrderCreateRequest request = TicketOrderCreateRequest.builder()
+                .userId(source.getUserId())
+                .username(source.getUsername())
+                .trainId(source.getTrainId())
+                .departure(source.getDeparture())
+                .arrival(source.getArrival())
+                .source(source.getSource())
+                .orderTime(source.getOrderTime())
+                .ridingDate(source.getRidingDate())
+                .trainNumber(source.getTrainNumber())
+                .departureTime(source.getDepartureTime())
+                .arrivalTime(source.getArrivalTime())
+                .ticketOrderItems(items)
+                .build();
+        // Outbox eventId 与 messageId 统一为 reservationId，让跨服务 Inbox 使用固定幂等键。
+        return TicketOrderCreateCommandMessage.builder()
+                .messageId(reservationId)
+                .messageVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
+                .reservationId(reservationId)
+                .actionId(actionId)
+                .commandId(commandId)
+                .request(request)
+                .build();
     }
 
     /**

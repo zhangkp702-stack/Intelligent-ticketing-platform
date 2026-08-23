@@ -19,7 +19,6 @@ package org.opengoofy.index12306.biz.ticketservice.remote;
 
 import org.opengoofy.index12306.biz.ticketservice.dto.req.CancelTicketOrderReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.TicketOrderItemQueryReqDTO;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.OrderCommandStatusRespDTO;
@@ -65,15 +64,6 @@ public interface TicketOrderRemoteService {
      */
     @GetMapping("/api/order-service/order/item/ticket/query")
     Result<List<TicketOrderPassengerDetailRespDTO>> queryTicketItemOrderById(@SpringQueryMap TicketOrderItemQueryReqDTO requestParam);
-
-    /**
-     * 创建车票订单
-     *
-     * @param requestParam 创建车票订单请求参数
-     * @return 订单号
-     */
-    @PostMapping("/api/order-service/order/ticket/create")
-    Result<String> createTicketOrder(@RequestBody TicketOrderCreateRemoteReqDTO requestParam);
 
     /**
      * 查询当前用户订单命令的权威状态。

@@ -23,6 +23,8 @@ import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservati
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketSeatReservationMapper;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
+import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderItemCreateRemoteReqDTO;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.TrainPurchaseTicketRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapReleaseResult;
@@ -55,7 +57,7 @@ import static org.mockito.Mockito.when;
 class TicketSeatReservationReleaseServiceTests {
 
     /**
-     * 远程下单前必须保存不含订单号的 PREPARED 快照和稳定命令。
+     * MQ 建单命令发送前必须保存不含订单号的 PREPARED 快照和稳定命令。
      */
     @Test
     void preparesReservationBeforeOrderCreation() {
@@ -67,11 +69,23 @@ class TicketSeatReservationReleaseServiceTests {
                 mock(TicketInventoryRollbackService.class), mock(TransactionTemplate.class), reliableEventStore);
         TrainPurchaseTicketRespDTO ticket = ticket();
         TicketOrderCreateRemoteReqDTO orderRequest = TicketOrderCreateRemoteReqDTO.builder()
+                .actionId("purchase-a")
                 .commandId("purchase-a:create-order")
                 .userId("1001")
+                .ticketOrderItems(List.of(TicketOrderItemCreateRemoteReqDTO.builder()
+                        .carriageNumber("01")
+                        .seatType(1)
+                        .seatNumber("01A")
+                        .realName("alice")
+                        .idType(1)
+                        .idCard("id-card")
+                        .phone("13800000000")
+                        .amount(100)
+                        .ticketType(0)
+                        .build()))
                 .build();
 
-        // PREPARED 和完整建单事件必须由同一事务方法写入。
+        // PREPARED 和完整 MQ 建单事件必须由同一事务方法写入。
         service.prepareReservation("reservation-a", "purchase-a", "purchase-a:create-order",
                 "1001", "alice", 1L, "A", "B", new Date(1L), new Date(1L), List.of(ticket), orderRequest);
 
@@ -87,8 +101,11 @@ class TicketSeatReservationReleaseServiceTests {
         verify(reliableEventStore).enqueue(eventCaptor.capture(), any());
         assertEquals("reservation-a", eventCaptor.getValue().aggregateId());
         assertEquals("purchase-a:create-order", eventCaptor.getValue().deduplicationKey());
-        assertEquals("1001", JSON.parseObject(eventCaptor.getValue().payload(),
-                TicketOrderCreateRemoteReqDTO.class).getUserId());
+        TicketOrderCreateCommandMessage message = JSON.parseObject(
+                eventCaptor.getValue().payload(), TicketOrderCreateCommandMessage.class);
+        assertEquals("reservation-a", message.getMessageId());
+        assertEquals("purchase-a:create-order", message.getCommandId());
+        assertEquals("1001", message.getRequest().getUserId());
     }
 
     /**

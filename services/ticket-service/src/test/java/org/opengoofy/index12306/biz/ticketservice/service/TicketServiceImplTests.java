@@ -305,7 +305,6 @@ class TicketServiceImplTests {
         assertThat(orderRequestCaptor.getValue().getTicketOrderItems()).singleElement()
                 .extracting("carriageNumber", "seatNumber")
                 .containsExactly("01", "01A");
-        verify(orderRemoteService, never()).createTicketOrder(any());
         verify(reservationService, never()).bindOrder(anyString(), anyString());
         verify(redisSeatBitmapService, never()).releaseHeld(eq("1"), eq(ridingDate),
                 eq("北京南"), eq("上海虹桥"), anyList());

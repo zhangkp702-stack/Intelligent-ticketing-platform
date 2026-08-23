@@ -18,19 +18,21 @@
 package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import lombok.extern.slf4j.Slf4j;
-import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseStatusRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.remote.TicketOrderRemoteService;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateRequest;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketOrderCreationMetrics;
 import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketOrderCreationMetrics.DispatchOutcome;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
-import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventLease;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableOutboxRecord;
-import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
-import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
+import org.apache.rocketmq.client.producer.SendResult;
+import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -45,19 +47,16 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 
 import static org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService.ORDER_CREATION_EVENT_NAMESPACE;
-import static org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService.ORDER_CREATION_FAILED;
-import static org.opengoofy.index12306.biz.ticketservice.service.impl.TicketSeatReservationReleaseService.ORDER_CREATION_SUCCEEDED;
 
 /**
- * 从本地 Outbox 可恢复地派发订单创建请求。
+ * 从本地 Outbox 可恢复地向 RocketMQ 派发订单创建命令。
  */
 @Slf4j
 @Service
 public class TicketOrderCreationDispatcher {
 
     private final ReliableEventStore reliableEventStore;
-    private final TicketOrderRemoteService ticketOrderRemoteService;
-    private final TicketSeatReservationReleaseService reservationReleaseService;
+    private final RocketMQTemplate rocketMQTemplate;
     private final TicketOrderCreationMetrics ticketOrderCreationMetrics;
     private final Executor executor;
     private final String workerId = "ticket-order-creation-" + UUID.randomUUID();
@@ -78,20 +77,17 @@ public class TicketOrderCreationDispatcher {
      * 创建异步建单派发器。
      *
      * @param reliableEventStore 本地可靠事件存储
-     * @param ticketOrderRemoteService 订单服务客户端
-     * @param reservationReleaseService 座位占用绑定与状态服务
+     * @param rocketMQTemplate 订单创建命令消息发送器
      * @param ticketOrderCreationMetrics 异步建单指标记录器
      * @param executor 异步建单专用执行器
      */
     public TicketOrderCreationDispatcher(
             ReliableEventStore reliableEventStore,
-            TicketOrderRemoteService ticketOrderRemoteService,
-            TicketSeatReservationReleaseService reservationReleaseService,
+            RocketMQTemplate rocketMQTemplate,
             TicketOrderCreationMetrics ticketOrderCreationMetrics,
             @Qualifier("ticketOrderCreationExecutor") Executor executor) {
         this.reliableEventStore = reliableEventStore;
-        this.ticketOrderRemoteService = ticketOrderRemoteService;
-        this.reservationReleaseService = reservationReleaseService;
+        this.rocketMQTemplate = rocketMQTemplate;
         this.ticketOrderCreationMetrics = ticketOrderCreationMetrics;
         this.executor = executor;
     }
@@ -118,7 +114,7 @@ public class TicketOrderCreationDispatcher {
                 return;
             }
             ticketOrderCreationMetrics.recordClaimed(claimed.size());
-            // 同一批次并发调用订单服务，不持有票务数据库事务或 HTTP 请求线程。
+            // 同一批次并发发送命令消息，不持有票务数据库事务或 HTTP 请求线程。
             List<CompletableFuture<?>> futures = new ArrayList<>(claimed.size());
             for (ReliableOutboxRecord event : claimed) {
                 try {
@@ -137,79 +133,159 @@ public class TicketOrderCreationDispatcher {
     }
 
     /**
-     * 使用稳定 commandId 创建订单，并在本地绑定成功后提交 Outbox 围栏。
+     * 将稳定建单命令发送到 RocketMQ，并在 Broker 确认后提交 Outbox 围栏。
      *
      * @param event 已取得当前实例租约的建单事件
      */
     private void dispatchOne(ReliableOutboxRecord event) {
         ticketOrderCreationMetrics.recordDispatchWait(event.createdAt());
-        UserInfoDTO previousUser = currentUser();
         try {
-            // 载荷是锁座事务中持久化的不可变建单请求，重试不再查询乘车人或票价。
-            TicketOrderCreateRemoteReqDTO request = JSON.parseObject(
-                    event.payload(), TicketOrderCreateRemoteReqDTO.class);
-            if (request == null || request.getUserId() == null || request.getUserId().isBlank()) {
-                throw new ServiceException("异步建单事件缺少用户信息");
+            // 载荷是锁座事务中固定的命令；旧载荷只转换为同一条 MQ 命令，不再走 Feign 建单。
+            TicketOrderCreateCommandMessage message = parseCommandMessage(event);
+            SendResult sendResult = rocketMQTemplate.syncSend(
+                    TicketOrderMessageConstants.CREATE_ORDER_TOPIC + ":"
+                            + TicketOrderMessageConstants.CREATE_ORDER_TAG,
+                    message);
+            if (sendResult == null || sendResult.getMsgId() == null || sendResult.getMsgId().isBlank()) {
+                throw new ServiceException("RocketMQ 未返回订单创建消息标识");
             }
-            UserContext.setUser(UserInfoDTO.builder()
-                    .userId(request.getUserId())
-                    .username(request.getUsername())
-                    .build());
-
-            // 先识别已由对账链路收敛的终态，避免对已绑定或已释放记录继续远程重试。
-            TicketPurchaseStatusRespDTO current = reservationReleaseService
-                    .queryPurchaseStatus(event.aggregateId());
-            if (ORDER_CREATION_SUCCEEDED.equals(current.getStatus())) {
-                recordPublishResult(event, current.getOrderSn(), DispatchOutcome.RECONCILED);
-                return;
-            }
-            if (ORDER_CREATION_FAILED.equals(current.getStatus())) {
-                recordPublishResult(event, event.aggregateId(), DispatchOutcome.RECONCILED);
-                return;
-            }
-
-            // 订单服务以 commandId 幂等执行，可安全覆盖远程成功但本地响应丢失的窗口。
-            Result<String> result = ticketOrderRemoteService.createTicketOrder(request);
-            if (!result.isSuccess() || result.getData() == null || result.getData().isBlank()) {
-                throw new ServiceException("订单服务未返回有效订单号");
-            }
-            // 先幂等绑定真实订单，再标记 Outbox 完成；中间宕机会重放而不会丢单。
-            reservationReleaseService.bindOrder(event.aggregateId(), result.getData());
-            recordPublishResult(event, result.getData(), DispatchOutcome.PUBLISHED);
-            log.info("ticket_async_order_created reservationId={}, orderSn={}, attempt={}",
-                    event.aggregateId(), result.getData(), event.publishAttemptCount());
+            // Broker 已确认后即可完成票务 Outbox；订单最终状态由结果消息消费者异步绑定或释放。
+            recordPublishResult(event, sendResult.getMsgId(), DispatchOutcome.PUBLISHED);
+            log.info("ticket_order_create_command_published reservationId={}, commandId={}, attempt={}",
+                    message.getReservationId(), message.getCommandId(), event.publishAttemptCount());
         } catch (RuntimeException ex) {
-            // 失败不释放座位；未知结果必须使用同一 commandId 重试或由命令对账收敛。
+            // 发送失败不释放座位；同一 commandId 和消息标识将在下一次 Outbox 重试中保持不变。
             long retryDelay = retryDelayMillis(event.publishAttemptCount());
             boolean rescheduled = reliableEventStore.markPublishFailed(
                     event.key(),
                     requireLease(event),
                     event.eventVersion(),
-                    "ORDER_CREATE_RETRY",
+                    "ORDER_CREATE_COMMAND_PUBLISH_RETRY",
                     ex.getClass().getSimpleName() + ": " + safeMessage(ex),
                     Instant.now().plusMillis(retryDelay),
                     Instant.now());
-            log.warn("ticket_async_order_retry reservationId={}, attempt={}, retryDelayMillis={}, rescheduled={}, exceptionType={}",
+            log.warn("ticket_order_create_command_publish_retry reservationId={}, attempt={}, retryDelayMillis={}, rescheduled={}, exceptionType={}",
                     event.aggregateId(), event.publishAttemptCount(), retryDelay, rescheduled,
                     ex.getClass().getSimpleName());
             ticketOrderCreationMetrics.recordDispatchOutcome(DispatchOutcome.RETRY);
-        } finally {
-            // 后台线程会复用，每条事件结束时必须恢复或清理用户上下文。
-            restoreUser(previousUser);
         }
+    }
+
+    /**
+     * 读取当前 Outbox 载荷，并将历史内部 DTO 转换为统一的订单创建 MQ 命令。
+     *
+     * @param event 已取得发布租约的建单 Outbox 事件
+     * @return 字段完整且与 Outbox 主键一致的共享建单命令
+     */
+    private TicketOrderCreateCommandMessage parseCommandMessage(ReliableOutboxRecord event) {
+        JSONObject payload = JSON.parseObject(event.payload());
+        if (payload == null) {
+            throw new ServiceException("异步建单事件载荷为空");
+        }
+        TicketOrderCreateCommandMessage message;
+        if (payload.containsKey("request")) {
+            // 新写入的事件已使用共享协议，直接反序列化以保持重放载荷完全不变。
+            message = JSON.parseObject(event.payload(), TicketOrderCreateCommandMessage.class);
+        } else {
+            // 仅转换已经持久化的旧 DTO，兼容未发送事件但不恢复任何 Feign 建单分支。
+            TicketOrderCreateRemoteReqDTO legacyRequest = JSON.parseObject(
+                    event.payload(), TicketOrderCreateRemoteReqDTO.class);
+            message = convertLegacyMessage(event, legacyRequest);
+        }
+        if (!isValidCommandMessage(message, event)) {
+            throw new ServiceException("异步建单事件缺少有效 MQ 命令字段");
+        }
+        return message;
+    }
+
+    /**
+     * 将历史票务内部建单 DTO 映射为当前共享 MQ 协议。
+     *
+     * @param event 关联的历史 Outbox 事件
+     * @param source 历史持久化的票务内部请求快照
+     * @return 与原稳定命令绑定的共享建单消息
+     */
+    private TicketOrderCreateCommandMessage convertLegacyMessage(
+            ReliableOutboxRecord event,
+            TicketOrderCreateRemoteReqDTO source) {
+        if (source == null || source.getTicketOrderItems() == null || source.getTicketOrderItems().isEmpty()) {
+            throw new ServiceException("历史异步建单事件缺少车票明细");
+        }
+        // 历史消息只从原载荷复制，绝不查询当前票价、乘车人或座位以避免重试改变订单内容。
+        List<TicketOrderCreateItem> items = source.getTicketOrderItems().stream()
+                .map(item -> TicketOrderCreateItem.builder()
+                        .carriageNumber(item.getCarriageNumber())
+                        .seatType(item.getSeatType())
+                        .seatNumber(item.getSeatNumber())
+                        .realName(item.getRealName())
+                        .idType(item.getIdType())
+                        .idCard(item.getIdCard())
+                        .phone(item.getPhone())
+                        .amount(item.getAmount())
+                        .ticketType(item.getTicketType())
+                        .build())
+                .toList();
+        TicketOrderCreateRequest request = TicketOrderCreateRequest.builder()
+                .userId(source.getUserId())
+                .username(source.getUsername())
+                .trainId(source.getTrainId())
+                .departure(source.getDeparture())
+                .arrival(source.getArrival())
+                .source(source.getSource())
+                .orderTime(source.getOrderTime())
+                .ridingDate(source.getRidingDate())
+                .trainNumber(source.getTrainNumber())
+                .departureTime(source.getDepartureTime())
+                .arrivalTime(source.getArrivalTime())
+                .ticketOrderItems(items)
+                .build();
+        // 历史 Outbox eventId 与 aggregateId 已分别是消息 ID 和 reservationId，可直接作为共享协议主键。
+        return TicketOrderCreateCommandMessage.builder()
+                .messageId(event.key().eventId())
+                .messageVersion(event.eventVersion())
+                .reservationId(event.aggregateId())
+                .actionId(source.getActionId())
+                .commandId(source.getCommandId())
+                .request(request)
+                .build();
+    }
+
+    /**
+     * 校验命令版本及主键与当前 Outbox 记录一致，防止错误载荷进入订单服务。
+     *
+     * @param message 待发送的订单创建命令
+     * @param event 当前 Outbox 事件
+     * @return 所有稳定关联字段完整且版本匹配时返回 true
+     */
+    private boolean isValidCommandMessage(TicketOrderCreateCommandMessage message, ReliableOutboxRecord event) {
+        return message != null
+                && message.getMessageVersion() != null
+                && message.getMessageVersion() == event.eventVersion()
+                && message.getMessageVersion() == TicketOrderMessageConstants.CREATE_ORDER_VERSION
+                && event.key().eventId().equals(message.getMessageId())
+                && event.aggregateId().equals(message.getReservationId())
+                && hasText(message.getActionId())
+                && (message.getActionId() + ":create-order").equals(message.getCommandId())
+                && message.getRequest() != null
+                && hasText(message.getRequest().getUserId())
+                && message.getRequest().getTicketOrderItems() != null
+                && !message.getRequest().getTicketOrderItems().isEmpty();
     }
 
     /**
      * 用当前租约围栏完成建单事件，并记录成功或围栏丢失结果。
      *
      * @param event 已认领事件
-     * @param orderReference 真实订单号或失败终态的 reservationId
+     * @param brokerMessageId RocketMQ 返回的消息标识
      * @param successOutcome 围栏提交成功时应记录的固定结果
      */
-    private void recordPublishResult(ReliableOutboxRecord event, String orderReference, DispatchOutcome successOutcome) {
+    private void recordPublishResult(
+            ReliableOutboxRecord event,
+            String brokerMessageId,
+            DispatchOutcome successOutcome) {
         // 围栏更新失败代表租约已被新实例接管，不能覆盖新实例的处理结果。
         boolean published = reliableEventStore.markPublished(
-                event.key(), requireLease(event), event.eventVersion(), orderReference, Instant.now());
+                event.key(), requireLease(event), event.eventVersion(), brokerMessageId, Instant.now());
         if (!published) {
             log.warn("ticket_async_order_publish_fence_lost reservationId={}, attempt={}",
                     event.aggregateId(), event.publishAttemptCount());
@@ -233,7 +309,7 @@ public class TicketOrderCreationDispatcher {
                 safeMessage(exception),
                 Instant.now().plusMillis(retryDelay),
                 Instant.now());
-        // 拒绝事件与远程调用失败分开统计，便于区分容量不足和下游服务异常。
+        // 拒绝事件与 Broker 发送失败分开统计，便于区分本地容量不足和消息服务异常。
         ticketOrderCreationMetrics.recordDispatchOutcome(DispatchOutcome.EXECUTOR_REJECTED);
         log.warn("ticket_async_order_executor_rejected reservationId={}, attempt={}, retryDelayMillis={}, rescheduled={}",
                 event.aggregateId(), event.publishAttemptCount(), retryDelay, rescheduled);
@@ -280,34 +356,12 @@ public class TicketOrderCreationDispatcher {
     }
 
     /**
-     * 复制当前线程用户上下文。
+     * 判断字符串是否包含非空白内容。
      *
-     * @return 当前线程没有用户时返回空
+     * @param value 待校验字符串
+     * @return 存在有效字符时返回 true
      */
-    private UserInfoDTO currentUser() {
-        if (UserContext.getUserId() == null) {
-            return null;
-        }
-        // 仅复制已存在字段，不为后台任务伪造额外权限。
-        return UserInfoDTO.builder()
-                .userId(UserContext.getUserId())
-                .username(UserContext.getUsername())
-                .realName(UserContext.getRealName())
-                .token(UserContext.getToken())
-                .build();
-    }
-
-    /**
-     * 恢复调用前的用户上下文。
-     *
-     * @param previousUser 调用前捕获的用户
-     */
-    private void restoreUser(UserInfoDTO previousUser) {
-        // 没有旧上下文时必须 remove，避免线程池泄露前一用户。
-        if (previousUser == null) {
-            UserContext.removeUser();
-        } else {
-            UserContext.setUser(previousUser);
-        }
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

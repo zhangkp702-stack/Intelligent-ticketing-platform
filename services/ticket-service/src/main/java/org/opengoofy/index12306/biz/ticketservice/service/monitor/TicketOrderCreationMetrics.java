@@ -181,11 +181,9 @@ public class TicketOrderCreationMetrics {
 
     /** 异步建单派发的固定结果分类。 */
     public enum DispatchOutcome {
-        /** 远程订单创建及本地状态绑定均完成。 */
+        /** 建单命令已获得 RocketMQ 确认。 */
         PUBLISHED,
-        /** 当前状态已由对账链路收敛，无需再次远程建单。 */
-        RECONCILED,
-        /** 远程建单或本地绑定失败，已安排下一次重试。 */
+        /** 命令发送失败，已安排下一次重试。 */
         RETRY,
         /** 执行器已满，事件已立即退回 Outbox 等待短退避。 */
         EXECUTOR_REJECTED,

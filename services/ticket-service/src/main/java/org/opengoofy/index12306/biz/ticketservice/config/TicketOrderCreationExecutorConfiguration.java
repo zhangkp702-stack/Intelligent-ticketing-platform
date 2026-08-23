@@ -32,7 +32,7 @@ import java.util.concurrent.RejectedExecutionException;
 public class TicketOrderCreationExecutorConfiguration {
 
     /**
-     * 创建有界建单执行器，隔离 HTTP 线程与后台订单远程调用。
+     * 创建有界建单执行器，隔离 HTTP 线程与后台订单命令消息投递。
      *
      * @param corePoolSize 常驻建单线程数
      * @param maxPoolSize 建单峰值线程数
@@ -51,7 +51,7 @@ public class TicketOrderCreationExecutorConfiguration {
         executor.setMaxPoolSize(Math.max(Math.max(1, corePoolSize), maxPoolSize));
         executor.setQueueCapacity(Math.max(1, queueCapacity));
         executor.setThreadNamePrefix("ticket-order-create-");
-        // 拒绝必须显式回传给 Outbox 调度器，不能让调度线程代跑远程建单请求。
+        // 拒绝必须显式回传给 Outbox 调度器，不能让调度线程代跑 Broker 消息发送。
         executor.setRejectedExecutionHandler((task, threadPool) -> {
             ticketOrderCreationMetrics.recordExecutorRejected();
             throw new RejectedExecutionException("ticket order creation executor is saturated");
