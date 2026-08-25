@@ -103,26 +103,43 @@ public class TicketInventoryService {
      */
     public boolean deductInUnified(String trainId, Date serviceDate, List<RouteDTO> affectedRoutes,
                                    Map<Integer, Long> seatTypeCountMap, String reservationId) {
+        // 将“受影响区间 × 席别数量”展开成 Lua 所需的 field -> count 参数；这里只组装数据，不修改 Redis。
+        // 例如两段区间、两个席别会生成四个库存 field，保证一次脚本覆盖本次车票涉及的全部库存维度。
+        // {
+        //  "北京_廊坊_2": 2,
+        //  "北京_廊坊_1": 1,
+        //  "廊坊_天津_2": 2,
+        //  "廊坊_天津_1": 1
+        //}
         Map<String, Long> inventoryDeltas = buildInventoryDeltas(affectedRoutes, seatTypeCountMap);
         if (inventoryDeltas.isEmpty()) {
+            // 没有任何有效库存 field 时不能执行脚本，否则无法判断请求对应的真实库存范围。
             recordOperation("deduct", "missing");
             throw new ServiceException("购票参数缺少有效库存区间");
         }
+        // inventoryKey 对应一个 Redis Hash，Hash field 是“出发站_到达站_席别”，value 是当前剩余数量。
+        // Key 中同时带 trainId 和始发日期，避免同一车次不同开行日期共用库存。
         String inventoryKey = TicketInventoryKeyUtil.buildInventoryKey(trainId, serviceDate);
+        // operationMarkerKey 是独立的 Redis Hash，不保存库存数量，只保存 deduct:<reservationId> 等操作标记。
+        // 它与 inventoryKey 使用相同 Hash Tag，保证两个 Key 位于同一 Redis Cluster 槽位，可由同一个 Lua 脚本原子操作。
         String operationMarkerKey = TicketInventoryKeyUtil.buildOperationMarkerKey(trainId, serviceDate);
         try {
-            // Lua 先校验所有字段，再一次性扣减并写入预订标记，统一库存是唯一裁决来源。
+            // Lua 的 KEYS[1]/KEYS[2] 分别接收库存 Hash 和幂等标记 Hash；ARGV[1] 是库存变化 JSON，ARGV[2] 是稳定 reservationId。
+            // 脚本会先检查 deduct:<reservationId>，再校验全部库存，最后统一扣减并写入标记，避免重复消息造成二次扣减。
             Long result = ((StringRedisTemplate) distributedCache.getInstance()).execute(
                     getLongScript(LUA_DEDUCT_PATH), List.of(inventoryKey, operationMarkerKey),
                     JSON.toJSONString(inventoryDeltas), reservationId);
             if (Long.valueOf(0L).equals(result) || Long.valueOf(3L).equals(result)) {
+                // 0 表示本次首次扣减完成，3 表示同一 reservationId 已扣减过；两者对调用方都代表库存已被成功占用。
                 recordDeductResult(result, trainId, serviceDate);
                 return true;
             }
             recordDeductResult(result, trainId, serviceDate);
             if (Long.valueOf(1L).equals(result)) {
+                // Lua 在任何库存不足时不会执行第二轮 hincrby，因此可以安全返回“无票”而不产生部分扣减。
                 return false;
             }
+            // 2 表示库存 Hash 缺少目标 field，通常说明预热初始化不完整，不能继续选座或创建订单。
             throw new ServiceException("统一库存未完成初始化，请稍候再试");
         } catch (ServiceException ex) {
             throw ex;
@@ -146,25 +163,32 @@ public class TicketInventoryService {
      */
     public void rollbackInUnified(String trainId, Date serviceDate, List<RouteDTO> affectedRoutes,
                                   Map<Integer, Long> seatTypeCountMap, String rollbackId) {
+        // 回补必须使用与扣减完全相同的区间和席别数量，才能把此前扣除的每一个库存 field 对称地加回。
         Map<String, Long> inventoryDeltas = buildInventoryDeltas(affectedRoutes, seatTypeCountMap);
         if (inventoryDeltas.isEmpty()) {
+            // 缺少库存明细时拒绝回补，避免在无法定位原始库存的情况下继续处理。
             recordOperation("rollback", "missing");
             throw new ServiceException("订单缺少有效库存区间");
         }
         try {
+            // 回补与扣减复用同一车次、始发日期 Key，确保增加的是原来被扣减的库存 Hash。
             String inventoryKey = TicketInventoryKeyUtil.buildInventoryKey(trainId, serviceDate);
             String operationMarkerKey = TicketInventoryKeyUtil.buildOperationMarkerKey(trainId, serviceDate);
-            // 通过扣减标记约束回补，避免未成功扣减的请求凭空增加库存。
+            // Lua 会先检查 rollback:<rollbackId> 防止重复回补，再确认 deduct:<rollbackId> 存在，避免凭空增加库存。
+            // 回补成功后写入 rollback:<rollbackId>，即使消息重复投递也只会增加一次。
             Long result = ((StringRedisTemplate) distributedCache.getInstance()).execute(
                     getLongScript(LUA_ROLLBACK_PATH), List.of(inventoryKey, operationMarkerKey),
                     JSON.toJSONString(inventoryDeltas), rollbackId);
             recordRollbackResult(result, trainId, serviceDate, rollbackId);
             if (Long.valueOf(0L).equals(result) || Long.valueOf(1L).equals(result)) {
+                // 0 表示首次回补完成，1 表示之前已经回补过；两种情况都不需要再次重试业务动作。
                 return;
             }
             if (Long.valueOf(3L).equals(result)) {
+                // 没有对应扣减标记时不能回补，否则可能把从未扣除的库存错误增加。
                 throw new ServiceException("统一库存缺少对应扣减标记，请稍候重试");
             }
+            // 2 表示库存 field 缺失，说明库存初始化或数据生命周期存在问题，应保留异常等待后续处理。
             throw new ServiceException("统一库存回补失败，请稍候重试");
         } catch (ServiceException ex) {
             throw ex;
@@ -186,12 +210,14 @@ public class TicketInventoryService {
      */
     private Map<String, Long> buildInventoryDeltas(List<RouteDTO> affectedRoutes,
                                                    Map<Integer, Long> seatTypeCountMap) {
-        // 每个受影响区间都必须按席别应用同一购买或回补数量。
+        // 每个受影响区间都必须按席别应用同一购买或回补数量；购票和回补共用该方法，保证两条路径使用完全相同的 field。
         Map<String, Long> result = new LinkedHashMap<>();
+        // 外层遍历区间，内层遍历席别，形成“区间 × 席别”的库存字段集合。
         affectedRoutes.forEach(route -> seatTypeCountMap.forEach((seatType, count) -> result.put(
                 TicketInventoryKeyUtil.buildInventoryField(
                         route.getStartStation(), route.getEndStation(), seatType),
                 count)));
+        // 返回值只描述变化量；扣减脚本使用 -count，回补脚本使用 +count，方法本身不直接修改库存。
         return result;
     }
 

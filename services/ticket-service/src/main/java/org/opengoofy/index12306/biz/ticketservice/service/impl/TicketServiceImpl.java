@@ -43,6 +43,7 @@ import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationRelationMapper;
+import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatClassDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.TicketListDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.CancelTicketOrderReqDTO;
@@ -131,12 +132,24 @@ import static org.opengoofy.index12306.biz.ticketservice.toolkit.DateUtil.conver
 
 /**
  * 车票接口实现
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资�?
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> implements TicketService {
+
+    private static final String PURCHASE_STAGE_REQUEST_VALIDATION = "request_validation";
+    private static final String PURCHASE_STAGE_DATE_VALIDATE = "purchase_date_validate";
+    private static final String PURCHASE_STAGE_SERVICE_DATE_RESOLVE = "service_date_resolve";
+    private static final String PURCHASE_STAGE_INVENTORY = "inventory";
+    private static final String PURCHASE_STAGE_EXECUTION = "purchase_execution";
+    private static final String PURCHASE_STAGE_TOTAL = "purchase_total";
+    private static final String PURCHASE_RESULT_SUCCESS = "success";
+    private static final String PURCHASE_RESULT_FAILED = "failed";
+    private static final String PURCHASE_RESULT_REJECTED = "rejected";
+    private static final String PURCHASE_RESULT_ACCEPTED = "accepted";
+    private static final String PURCHASE_RESULT_NO_TICKET = "no_ticket";
+    private static final String PURCHASE_RESULT_SYSTEM_ERROR = "system_error";
 
     private static final int ORDER_ITEM_PAID_STATUS = 10;
 
@@ -165,126 +178,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     @Value("${framework.cache.redis.prefix:}")
     private String cacheRedisPrefix;
 
-    @Override
-    public TicketPageQueryRespDTO pageListTicketQueryV1(TicketPageQueryReqDTO requestParam) {
-        // 责任链模�?验证城市名称是否存在、不存在加载缓存以及出发日期不能小于当前日期等等
-        ticketPageQueryAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_QUERY_FILTER.name(), requestParam);
-        StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-        // 列车查询逻辑较为复杂，详细解析文章查�?https://nageoffer.com/12306/question
-        // v1 版本存在严重的性能深渊问题，v2 版本完美的解决了该问题。通过 Jmeter 压测聚合报告得知，性能提升�?300% - 500%+
-        List<Object> stationDetails = stringRedisTemplate.opsForHash()
-                .multiGet(REGION_TRAIN_STATION_MAPPING, Lists.newArrayList(requestParam.getFromStation(), requestParam.getToStation()));
-        long count = stationDetails.stream().filter(Objects::isNull).count();
-        if (count > 0) {
-            RLock lock = redissonClient.getLock(LOCK_REGION_TRAIN_STATION_MAPPING);
-            lock.lock();
-            try {
-                stationDetails = stringRedisTemplate.opsForHash()
-                        .multiGet(REGION_TRAIN_STATION_MAPPING, Lists.newArrayList(requestParam.getFromStation(), requestParam.getToStation()));
-                count = stationDetails.stream().filter(Objects::isNull).count();
-                if (count > 0) {
-                    List<StationDO> stationDOList = stationMapper.selectList(Wrappers.emptyWrapper());
-                    Map<String, String> regionTrainStationMap = new HashMap<>();
-                    stationDOList.forEach(each -> regionTrainStationMap.put(each.getCode(), each.getRegionName()));
-                    stringRedisTemplate.opsForHash().putAll(REGION_TRAIN_STATION_MAPPING, regionTrainStationMap);
-                    stationDetails = new ArrayList<>();
-                    stationDetails.add(regionTrainStationMap.get(requestParam.getFromStation()));
-                    stationDetails.add(regionTrainStationMap.get(requestParam.getToStation()));
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-        List<TicketListDTO> seatResults = new ArrayList<>();
-        String buildRegionTrainStationHashKey = String.format(REGION_TRAIN_STATION, stationDetails.get(0), stationDetails.get(1));
-        Map<Object, Object> regionTrainStationAllMap = stringRedisTemplate.opsForHash().entries(buildRegionTrainStationHashKey);
-        if (MapUtil.isEmpty(regionTrainStationAllMap)) {
-            RLock lock = redissonClient.getLock(LOCK_REGION_TRAIN_STATION);
-            lock.lock();
-            try {
-                regionTrainStationAllMap = stringRedisTemplate.opsForHash().entries(buildRegionTrainStationHashKey);
-                if (MapUtil.isEmpty(regionTrainStationAllMap)) {
-                    LambdaQueryWrapper<TrainStationRelationDO> queryWrapper = Wrappers.lambdaQuery(TrainStationRelationDO.class)
-                            .eq(TrainStationRelationDO::getStartRegion, stationDetails.get(0))
-                            .eq(TrainStationRelationDO::getEndRegion, stationDetails.get(1));
-                    List<TrainStationRelationDO> trainStationRelationList = trainStationRelationMapper.selectList(queryWrapper);
-                    for (TrainStationRelationDO each : trainStationRelationList) {
-                        TrainDO trainDO = distributedCache.safeGet(
-                                TRAIN_INFO + each.getTrainId(),
-                                TrainDO.class,
-                                () -> trainMapper.selectById(each.getTrainId()),
-                                ADVANCE_TICKET_DAY,
-                                TimeUnit.DAYS);
-                        TicketListDTO result = new TicketListDTO();
-                        result.setTrainId(String.valueOf(trainDO.getId()));
-                        result.setTrainNumber(trainDO.getTrainNumber());
-                        result.setDepartureTime(convertDateToLocalTime(each.getDepartureTime(), "HH:mm"));
-                        result.setArrivalTime(convertDateToLocalTime(each.getArrivalTime(), "HH:mm"));
-                        result.setDuration(DateUtil.calculateHourDifference(each.getDepartureTime(), each.getArrivalTime()));
-                        result.setDeparture(each.getDeparture());
-                        result.setArrival(each.getArrival());
-                        result.setDepartureFlag(each.getDepartureFlag());
-                        result.setArrivalFlag(each.getArrivalFlag());
-                        result.setTrainType(trainDO.getTrainType());
-                        result.setTrainBrand(trainDO.getTrainBrand());
-                        if (StrUtil.isNotBlank(trainDO.getTrainTag())) {
-                            result.setTrainTags(StrUtil.split(trainDO.getTrainTag(), ","));
-                        }
-                        long betweenDay = cn.hutool.core.date.DateUtil.betweenDay(each.getDepartureTime(), each.getArrivalTime(), false);
-                        result.setDaysArrived((int) betweenDay);
-                        result.setSaleStatus(new Date().after(trainDO.getSaleTime()) ? 0 : 1);
-                        result.setSaleTime(convertDateToLocalTime(trainDO.getSaleTime(), "MM-dd HH:mm"));
-                        seatResults.add(result);
-                        regionTrainStationAllMap.put(CacheUtil.buildKey(String.valueOf(each.getTrainId()), each.getDeparture(), each.getArrival()), JSON.toJSONString(result));
-                    }
-                    stringRedisTemplate.opsForHash().putAll(buildRegionTrainStationHashKey, regionTrainStationAllMap);
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-        seatResults = CollUtil.isEmpty(seatResults)
-                ? regionTrainStationAllMap.values().stream().map(each -> JSON.parseObject(each.toString(), TicketListDTO.class)).toList()
-                : seatResults;
-        seatResults = seatResults.stream().sorted(new TimeStringComparator()).toList();
-        for (TicketListDTO each : seatResults) {
-            String trainStationPriceStr = distributedCache.safeGet(
-                    String.format(TRAIN_STATION_PRICE, each.getTrainId(), each.getDeparture(), each.getArrival()),
-                    String.class,
-                    () -> {
-                        LambdaQueryWrapper<TrainStationPriceDO> trainStationPriceQueryWrapper = Wrappers.lambdaQuery(TrainStationPriceDO.class)
-                                .eq(TrainStationPriceDO::getDeparture, each.getDeparture())
-                                .eq(TrainStationPriceDO::getArrival, each.getArrival())
-                                .eq(TrainStationPriceDO::getTrainId, each.getTrainId());
-                        return JSON.toJSONString(trainStationPriceMapper.selectList(trainStationPriceQueryWrapper));
-                    },
-                    ADVANCE_TICKET_DAY,
-                    TimeUnit.DAYS
-            );
-            List<TrainStationPriceDO> trainStationPriceDOList = JSON.parseArray(trainStationPriceStr, TrainStationPriceDO.class);
-            List<SeatClassDTO> seatClassList = new ArrayList<>();
-            trainStationPriceDOList.forEach(item -> {
-                String seatType = String.valueOf(item.getSeatType());
-                int quantity = queryRemainingTicketQuantity(
-                        stringRedisTemplate,
-                        String.valueOf(each.getTrainId()),
-                        requestParam.getDepartureDate(),
-                        item.getDeparture(),
-                        item.getArrival(),
-                        seatType);
-                seatClassList.add(new SeatClassDTO(item.getSeatType(), quantity, new BigDecimal(item.getPrice()).divide(new BigDecimal("100"), 1, RoundingMode.HALF_UP), false));
-            });
-            each.setSeatClassList(seatClassList);
-        }
-        return TicketPageQueryRespDTO.builder()
-                .trainList(seatResults)
-                .departureStationList(buildDepartureStationList(seatResults))
-                .arrivalStationList(buildArrivalStationList(seatResults))
-                .trainBrandList(buildTrainBrandList(seatResults))
-                .seatClassTypeList(buildSeatClassList(seatResults))
-                .build();
-    }
-
 
     // 批量查询票信�?
     @Override
@@ -293,7 +186,6 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         ticketPageQueryAbstractChainContext.handler(TicketChainMarkEnum.TRAIN_QUERY_FILTER.name(), requestParam);
         // 获取stringRedisTemplate 实例
         StringRedisTemplate stringRedisTemplate = (StringRedisTemplate) distributedCache.getInstance();
-        // 列车查询逻辑较为复杂，详细解析文章查�?https://nageoffer.com/12306/question
         // v2 版本更符合企业级高并发真实场景的解决方案，完美解决了 v1 版本的性能深渊问题。通过 Jmeter 压测聚合报告可见，性能提升约 300% - 500%+
 
         // 这里是站点名称映射位地区名称，根据起点和终点获取地区名称
@@ -385,76 +277,61 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     )
     @Override
     public TicketPurchaseRespDTO purchaseTicketsV2(PurchaseTicketReqDTO requestParam) {
+        // 创建整条购票链路的计时器，finally 中会将成功、无票或失败结果统一上报。
         Timer.Sample totalTimer = ticketPurchaseMetrics.startStageTimer();
-        String failedStage = "request_validation";
-        String purchaseResult = "failed";
+        // 保存当前执行阶段；发生异常时用于记录失败指标并定位失败位置。
+        String failedStage = PURCHASE_STAGE_REQUEST_VALIDATION;
+        // 保存接口最终结果；finally 使用该值记录整条购票链路的耗时指标。
+        String purchaseResult = PURCHASE_RESULT_FAILED;
         try {
-            log.debug("ticket_purchase_start trainId={}, boardingDate={}, departure={}, arrival={}, passengerCount={}",
-                    requestParam == null ? null : requestParam.getTrainId(), requestParam == null ? null : requestParam.getDepartureDate(),
-                    requestParam == null ? null : requestParam.getDeparture(), requestParam == null ? null : requestParam.getArrival(),
-                    requestParam == null ? 0 : CollUtil.size(requestParam.getPassengers()));
-            Timer.Sample validationTimer = ticketPurchaseMetrics.startStageTimer();
-            // 在扣减统一库存前确认乘车日期存在，避免无效请求占用库存。
-            Timer.Sample purchaseDateTimer = ticketPurchaseMetrics.startStageTimer();
-            try {
-                validatePurchaseDate(requestParam);
-                ticketPurchaseMetrics.recordStage(purchaseDateTimer, "purchase_date_validate", "success");
-            } catch (Throwable ex) {
-                ticketPurchaseMetrics.recordStage(purchaseDateTimer, "purchase_date_validate", "failed");
-                throw ex;
-            }
-            // 构造上下文前先拒绝缺少定位字段的请求，保留原有客户端错误语义。
-            validatePurchaseContextPrerequisites(requestParam);
-            // 从启动预热数据一次性构造车次、站点及关联区间快照，后续阶段不再重复读取静态缓存。
-            PurchaseExecutionContext purchaseExecutionContext =
-                    trainServiceDateResolver.preparePurchaseExecutionContext(requestParam);
-            // 始发日期必须在责任链、统一库存和选座之前统一计算，禁止以用户上车日期直接作为库存维度。
-            Timer.Sample serviceDateTimer = ticketPurchaseMetrics.startStageTimer();
-            try {
-                initializePurchaseServiceDate(purchaseExecutionContext);
-                ticketPurchaseMetrics.recordStage(serviceDateTimer, "service_date_resolve", "success");
-            } catch (Throwable ex) {
-                ticketPurchaseMetrics.recordStage(serviceDateTimer, "service_date_resolve", "failed");
-                throw ex;
-            }
-            // 责任链模式，验证参数、站点及乘客是否允许购买当前车次。
-            purchaseTicketAbstractChainContext.handler(
-                    TicketChainMarkEnum.TRAIN_PURCHASE_TICKET_FILTER.name(), purchaseExecutionContext);
-            ticketPurchaseMetrics.recordStage(validationTimer, "request_validation", "success");
+            // 完成库存扣减前的校验和上下文准备，返回后续库存、选座共用的车次及受影响区间快照。
+            PurchaseExecutionContext purchaseExecutionContext = prepareValidatedPurchaseExecutionContext(requestParam);
 
-            // 在库存扣减前生成稳定 reservationId，统一库存扣减和后续回补才能使用同一个幂等标识。
+            // 每个新的购票受理请求生成一个唯一 reservationId；同一受理流程的 MQ 重试和补偿必须复用它。
+            // 该标识同时贯穿统一库存幂等标记、Redis 座位 owner、座位预留记录、Outbox 消息和建单结果绑定。
+            // 如果下游重试时重新生成 ID，deduct:<reservationId> 将无法命中，可能造成重复扣减或无法回补。
             String reservationId = UUID.randomUUID().toString().replace("-", "");
-            failedStage = "inventory";
+            failedStage = PURCHASE_STAGE_INVENTORY;
+            // 创建统一库存扣减阶段的计时器，用于区分库存服务耗时和后续本地锁座耗时。
             Timer.Sample inventoryTimer = ticketPurchaseMetrics.startStageTimer();
-            // 统一库存 Hash 原子扣减全部受影响区间，后续选座和数据库锁定仍负责最终正确性。
+            // 按席别聚合乘车人数，得到统一库存一次原子扣减所需的席别数量。
             Map<Integer, Long> seatTypeCountMap = requestParam.getPassengers().stream()
-                    .collect(Collectors.groupingBy(each -> each.getSeatType(), Collectors.counting()));
+                    .collect(Collectors.groupingBy(PurchaseTicketPassengerDetailDTO::getSeatType, Collectors.counting()));
+            // 将稳定 reservationId 传入库存服务，由 Lua 使用 deduct:<reservationId> 检查本次扣减是否已经执行过。
+            // 扣减列车所有受影响区间的统一库存；返回 false 说明任一席别库存不足，不能继续锁座。
             boolean inventoryAvailable = ticketInventoryService.deductInUnified(
                     requestParam.getTrainId(), requestParam.getServiceDate(), purchaseExecutionContext.affectedRoutes(),
                     seatTypeCountMap, reservationId);
             if (!inventoryAvailable) {
-                ticketPurchaseMetrics.recordStage(inventoryTimer, "inventory", "rejected");
-                ticketPurchaseMetrics.recordOutcome("no_ticket");
-                purchaseResult = "no_ticket";
+                // 上报库存拒绝和无票结果，使监控将预期无票与系统异常区分开。
+                ticketPurchaseMetrics.recordStage(inventoryTimer, PURCHASE_STAGE_INVENTORY, PURCHASE_RESULT_REJECTED);
+                ticketPurchaseMetrics.recordOutcome(PURCHASE_RESULT_NO_TICKET);
+                purchaseResult = PURCHASE_RESULT_NO_TICKET;
                 // 允许少买，但是不允许多卖。
                 throw new ServiceException("列车站点已无余票");
             }
-            ticketPurchaseMetrics.recordStage(inventoryTimer, "inventory", "success");
+            // 统一库存扣减成功后结束库存阶段计时，后续失败会归入 purchase_execution 阶段。
+            ticketPurchaseMetrics.recordStage(inventoryTimer, PURCHASE_STAGE_INVENTORY, PURCHASE_RESULT_SUCCESS);
 
-            failedStage = "purchase_execution";
-            // 选座、票据落库和 Outbox 受理复用同一静态上下文，订单落库由后台可靠派发。
+            failedStage = PURCHASE_STAGE_EXECUTION;
+            // 执行选座、票据落库和 Outbox 受理；返回 reservationId 对应的异步建单受理状态，而非正式订单号。
             TicketPurchaseRespDTO response = executePreparedPurchase(purchaseExecutionContext, reservationId);
-            ticketPurchaseMetrics.recordOutcome("accepted");
-            purchaseResult = "accepted";
+            // 记录请求已被受理，订单服务创建成功与否仍由后续 MQ 结果消息决定。
+            ticketPurchaseMetrics.recordOutcome(PURCHASE_RESULT_ACCEPTED);
+            purchaseResult = PURCHASE_RESULT_ACCEPTED;
             log.debug("ticket_purchase_accepted trainId={}, boardingDate={}, departure={}, arrival={}, reservationId={}, status={}",
                     requestParam.getTrainId(), requestParam.getDepartureDate(), requestParam.getDeparture(), requestParam.getArrival(),
                     response.getReservationId(), response.getOrderCreateStatus());
             return response;
         } catch (Throwable ex) {
-            String reason = "inventory".equals(failedStage) ? "no_ticket" : "system_error";
+            // 库存不足属于预期业务拒绝，其余阶段异常统一归类为系统错误供指标告警使用。
+            String reason = PURCHASE_STAGE_INVENTORY.equals(failedStage)
+                    ? PURCHASE_RESULT_NO_TICKET : PURCHASE_RESULT_SYSTEM_ERROR;
+            // 根据最后执行阶段写入失败指标，保留无票和系统异常两类可观测结果。
             ticketPurchaseMetrics.recordFailure(failedStage, reason);
-            if (!"inventory".equals(failedStage)) {
-                ticketPurchaseMetrics.recordOutcome("failed");
+            if (!PURCHASE_STAGE_INVENTORY.equals(failedStage)) {
+                // 非库存拒绝的异常统一计为接口失败，库存拒绝已经在上方记录为 no_ticket。
+                ticketPurchaseMetrics.recordOutcome(PURCHASE_RESULT_FAILED);
             }
             log.warn("ticket_purchase_failed stage={}, trainId={}, boardingDate={}, departure={}, arrival={}",
                     failedStage, requestParam == null ? null : requestParam.getTrainId(),
@@ -464,7 +341,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             throw ex;
         } finally {
             // 无论购票成功、无票还是异常都记录完整入口耗时，便于比较排队和失败路径。
-            ticketPurchaseMetrics.recordStage(totalTimer, "purchase_total", purchaseResult);
+            ticketPurchaseMetrics.recordStage(totalTimer, PURCHASE_STAGE_TOTAL, purchaseResult);
         }
     }
     /**
@@ -476,6 +353,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
     @Override
     public TicketPurchaseRespDTO executePurchaseTickets(PurchaseTicketReqDTO requestParam) {
         // 兼容既有内部调用；标准购票入口已经从启动快照传入车次，不会执行本段缓存读取。
+        // 车次字符串标识用于拼接车次缓存键，并在缓存未命中时查询对应的车次快照。
         String trainId = requestParam.getTrainId();
         TrainDO trainDO = distributedCache.safeGet(
                 TRAIN_INFO + trainId,
@@ -501,6 +379,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         // 后续本地事务和订单载荷只读取本次请求固定的车次快照。
         PurchaseTicketReqDTO requestParam = executionContext.requestParam();
         TrainDO trainDO = executionContext.train();
+        // 保留请求中的车次字符串，供乘车人查询、座位选择和订单载荷使用。
         String trainId = requestParam.getTrainId();
         // 用户上车日期可能晚于列车始发日期，必须先按基础时刻表换算出运行库存所属的始发日期。
         Date serviceDate = requestParam.getServiceDate();
@@ -528,8 +407,9 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             throw new ServiceException("列车站点关系不存在");
         }
         Date localPreparationServiceDate = serviceDate;
-        // 服务端为异步建单生成稳定动作标识，客户端不再传入外部动作标识。
+        // actionId 标识当前 reservation 发起的一次购票动作，服务端生成以防客户端伪造。
         String actionId = resolvePurchaseActionId(reservationId);
+        // commandId 标识该动作中的“创建订单”命令，是 Outbox、Inbox 和订单唯一约束的业务幂等键。
         String orderCreateCommandId = actionId + ":create-order";
         AtomicReference<List<TrainPurchaseTicketRespDTO>> heldTickets = new AtomicReference<>();
         // 先在事务外完成 Redis 乐观临时占位；低余票或基础设施回退场景仍保留原有事务内单通道选座。
@@ -765,6 +645,60 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
                             .findFirst()
                             .orElse(null), releaseEx);
         }
+    }
+
+    /**
+     * 准备已完成基础校验的购票执行上下文。
+     *
+     * <p>该方法只处理库存扣减前的确定性准备工作，不触发统一库存、选座、票据落库或 Outbox 写入。
+     * 返回的上下文会被后续库存扣减和本地锁座流程复用，避免重复解析车次与区间信息。</p>
+     *
+     * @param requestParam 用户提交的购票请求
+     * @return 已包含车次、区间和始发日期的购票执行上下文
+     */
+    private PurchaseExecutionContext prepareValidatedPurchaseExecutionContext(PurchaseTicketReqDTO requestParam) {
+        // 记录请求摘要，便于在不输出乘车人敏感信息的情况下定位购票入口问题。
+        log.debug("ticket_purchase_start trainId={}, boardingDate={}, departure={}, arrival={}, passengerCount={}",
+                requestParam == null ? null : requestParam.getTrainId(), requestParam == null ? null : requestParam.getDepartureDate(),
+                requestParam == null ? null : requestParam.getDeparture(), requestParam == null ? null : requestParam.getArrival(),
+                requestParam == null ? 0 : CollUtil.size(requestParam.getPassengers()));
+        // 该计时器覆盖全部前置准备阶段，只有责任链通过才记录 request_validation 成功。
+        Timer.Sample validationTimer = ticketPurchaseMetrics.startStageTimer();
+
+        // 单独统计日期校验耗时；日期缺失时立即抛出，避免无效请求进入库存扣减。
+        Timer.Sample purchaseDateTimer = ticketPurchaseMetrics.startStageTimer();
+        try {
+            validatePurchaseDate(requestParam);
+            ticketPurchaseMetrics.recordStage(purchaseDateTimer, PURCHASE_STAGE_DATE_VALIDATE, PURCHASE_RESULT_SUCCESS);
+        } catch (Throwable ex) {
+            ticketPurchaseMetrics.recordStage(purchaseDateTimer, PURCHASE_STAGE_DATE_VALIDATE, PURCHASE_RESULT_FAILED);
+            throw ex;
+        }
+
+        // 上下文构造依赖车次和区间定位字段，先校验以保留明确的客户端错误语义。
+        validatePurchaseContextPrerequisites(requestParam);
+        // 从启动预热快照取得车次、站点和受影响区间，后续阶段使用同一份不可变上下文。
+        PurchaseExecutionContext purchaseExecutionContext =
+                trainServiceDateResolver.preparePurchaseExecutionContext(requestParam);
+
+        // 始发日期而非用户上车日期才是库存维度；单独计时便于定位跨天车次解析问题。
+        Timer.Sample serviceDateTimer = ticketPurchaseMetrics.startStageTimer();
+        try {
+            initializePurchaseServiceDate(purchaseExecutionContext);
+            ticketPurchaseMetrics.recordStage(
+                    serviceDateTimer, PURCHASE_STAGE_SERVICE_DATE_RESOLVE, PURCHASE_RESULT_SUCCESS);
+        } catch (Throwable ex) {
+            ticketPurchaseMetrics.recordStage(
+                    serviceDateTimer, PURCHASE_STAGE_SERVICE_DATE_RESOLVE, PURCHASE_RESULT_FAILED);
+            throw ex;
+        }
+
+        // 责任链基于已准备快照校验参数、站点、乘车人和余票，避免链内重复读取静态缓存。
+        purchaseTicketAbstractChainContext.handler(
+                TicketChainMarkEnum.TRAIN_PURCHASE_TICKET_FILTER.name(), purchaseExecutionContext);
+        // 仅在上述所有阶段成功后记录整体前置校验成功；异常由调用方统一记录失败阶段。
+        ticketPurchaseMetrics.recordStage(validationTimer, PURCHASE_STAGE_REQUEST_VALIDATION, PURCHASE_RESULT_SUCCESS);
+        return purchaseExecutionContext;
     }
 
     /**

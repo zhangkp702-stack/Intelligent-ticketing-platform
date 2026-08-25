@@ -34,7 +34,6 @@ import java.util.Objects;
 /**
  * 购票流程过滤器之验证参数是否有效
  * 车次和站点静态数据来自单次请求上下文，本处理器只执行本地业务校验。
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
 @Component
 @RequiredArgsConstructor

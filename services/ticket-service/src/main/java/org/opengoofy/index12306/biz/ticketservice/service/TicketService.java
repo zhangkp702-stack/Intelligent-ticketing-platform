@@ -34,17 +34,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 
 /**
  * 车票接口
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
 public interface TicketService extends IService<TicketDO> {
 
-    /**
-     * 根据条件分页查询车票
-     *
-     * @param requestParam 分页查询车票请求参数
-     * @return 查询车票返回结果
-     */
-    TicketPageQueryRespDTO pageListTicketQueryV1(TicketPageQueryReqDTO requestParam);
+
 
     /**
      * 根据条件分页查询车票V2高性能版本

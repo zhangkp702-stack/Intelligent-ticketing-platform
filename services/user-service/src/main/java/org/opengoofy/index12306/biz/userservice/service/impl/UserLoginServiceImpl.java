@@ -73,7 +73,6 @@ import static org.opengoofy.index12306.biz.userservice.toolkit.UserReuseUtil.has
 
 /**
  * 用户登录接口实现
- * 公众号：马丁玩编程，回复：加群，添加马哥微信（备注：12306）获取项目资料
  */
 @Slf4j
 @Service
@@ -208,7 +207,6 @@ public class UserLoginServiceImpl implements UserLoginService {
             userReuseMapper.delete(Wrappers.update(new UserReuseDO(username)));
             StringRedisTemplate instance = (StringRedisTemplate) distributedCache.getInstance();
             instance.opsForSet().remove(USER_REGISTER_REUSE_SHARDING + hashShardingIdx(username), username);
-            // 布隆过滤器设计问题：设置多大、碰撞率以及初始容量不够了怎么办？详情查看：https://nageoffer.com/12306/question
             userRegisterCachePenetrationBloomFilter.add(username);
         } finally {
             lock.unlock();
