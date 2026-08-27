@@ -94,7 +94,7 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
             List<List<String>> candidates = buildSeatCandidates(availableSeats, requestParam.getRequestParam().getChooseSeats(), passengers.size(), profile);
             for (List<String> candidate : candidates) {
                 if (candidate.size() == passengers.size()) {
-                    return buildResult(passengers, carriageNumber, candidate);
+                    return buildResult(passengers, requestParam.getSeatType(), carriageNumber, candidate);
                 }
             }
         }
@@ -240,13 +240,26 @@ public class TrainFirstClassPurchaseTicketHandler extends AbstractTrainPurchaseT
         return score;
     }
 
-    private List<TrainPurchaseTicketRespDTO> buildResult(List<PurchaseTicketPassengerDetailDTO> passengers, String carriageNumber, List<String> seatNumbers) {
+    /**
+     * 将一等座候选座位按乘车人顺序组装为统一席别的购票结果。
+     *
+     * @param passengers 本次订单的乘车人
+     * @param seatType 本次订单统一席别
+     * @param carriageNumber 已选车厢号
+     * @param seatNumbers 已选座位号
+     * @return 绑定乘车人与座位的购票结果
+     */
+    private List<TrainPurchaseTicketRespDTO> buildResult(List<PurchaseTicketPassengerDetailDTO> passengers,
+                                                          Integer seatType,
+                                                          String carriageNumber,
+                                                          List<String> seatNumbers) {
+        // 每张票沿用同一个选座任务席别，乘车人明细只提供乘车人标识。
         List<TrainPurchaseTicketRespDTO> results = new ArrayList<>(passengers.size());
         for (int i = 0; i < passengers.size(); i++) {
             PurchaseTicketPassengerDetailDTO passenger = passengers.get(i);
             TrainPurchaseTicketRespDTO ticket = new TrainPurchaseTicketRespDTO();
             ticket.setPassengerId(passenger.getPassengerId());
-            ticket.setSeatType(passenger.getSeatType());
+            ticket.setSeatType(seatType);
             ticket.setCarriageNumber(carriageNumber);
             ticket.setSeatNumber(seatNumbers.get(i));
             results.add(ticket);

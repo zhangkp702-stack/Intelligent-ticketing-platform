@@ -25,8 +25,10 @@ import java.util.Map;
  * 锁座前准备完成的乘车人和席别价格快照。
  *
  * @param passengerById 当前用户的乘车人权威快照
- * @param priceBySeatType 当前车次区间的席别价格
+ * @param seatType 本次购票统一使用的座位类型
+ * @param price 当前车次区间对应席别的价格
  */
 public record PurchaseSeatContext(Map<String, PassengerRespDTO> passengerById,
-                                  Map<Integer, Integer> priceBySeatType) {
+                                  Integer seatType,
+                                  Integer price) {
 }

@@ -43,7 +43,6 @@ import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationRelationMapper;
-import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.SeatClassDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.TicketListDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.CancelTicketOrderReqDTO;
@@ -294,14 +293,12 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             failedStage = PURCHASE_STAGE_INVENTORY;
             // 创建统一库存扣减阶段的计时器，用于区分库存服务耗时和后续本地锁座耗时。
             Timer.Sample inventoryTimer = ticketPurchaseMetrics.startStageTimer();
-            // 按席别聚合乘车人数，得到统一库存一次原子扣减所需的席别数量。
-            Map<Integer, Long> seatTypeCountMap = requestParam.getPassengers().stream()
-                    .collect(Collectors.groupingBy(PurchaseTicketPassengerDetailDTO::getSeatType, Collectors.counting()));
             // 将稳定 reservationId 传入库存服务，由 Lua 使用 deduct:<reservationId> 检查本次扣减是否已经执行过。
-            // 扣减列车所有受影响区间的统一库存；返回 false 说明任一席别库存不足，不能继续锁座。
+
+            // 按订单级席别和全部乘车人数扣减受影响区间库存；返回 false 说明库存不足，不能继续锁座。
             boolean inventoryAvailable = ticketInventoryService.deductInUnified(
                     requestParam.getTrainId(), requestParam.getServiceDate(), purchaseExecutionContext.affectedRoutes(),
-                    seatTypeCountMap, reservationId);
+                    requestParam.getSeatType(), requestParam.getPassengers().size(), reservationId);
             if (!inventoryAvailable) {
                 // 上报库存拒绝和无票结果，使监控将预期无票与系统异常区分开。
                 ticketPurchaseMetrics.recordStage(inventoryTimer, PURCHASE_STAGE_INVENTORY, PURCHASE_RESULT_REJECTED);
@@ -520,7 +517,8 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
             ticketSeatReservationReleaseService.prepareReservation(
                     reservationId, actionId, commandId, UserContext.getUserId(), UserContext.getUsername(),
                     Long.parseLong(requestParam.getTrainId()), requestParam.getDeparture(), requestParam.getArrival(),
-                    requestParam.getDepartureDate(), serviceDate, selectedTickets, orderCreateRequest);
+                    requestParam.getDepartureDate(), serviceDate, requestParam.getSeatType(),
+                    selectedTickets, orderCreateRequest);
             ticketPurchaseMetrics.recordStage(reservationPrepareTimer, "reservation_prepare", "success");
             log.debug("ticket_reservation_prepared reservationId={}, commandId={}, trainId={}, serviceDate={}",
                     reservationId, commandId, requestParam.getTrainId(), serviceDate);
@@ -632,7 +630,7 @@ public class TicketServiceImpl extends ServiceImpl<TicketMapper, TicketDO> imple
         try {
             // 释放动作只使用本次已持有座位携带的 reservationId，避免误释放其他请求的座位。
             redisSeatBitmapService.releaseHeld(requestParam.getTrainId(), requestParam.getServiceDate(),
-                    requestParam.getDeparture(), requestParam.getArrival(), tickets);
+                    requestParam.getDeparture(), requestParam.getArrival(), requestParam.getSeatType(), tickets);
             ticketPurchaseMetrics.recordStage(compensationTimer, "redis_compensation", "success");
         } catch (Throwable releaseEx) {
             // 原始异常仍需继续抛出，补偿异常通过指标和日志交给后续可靠恢复机制处理。

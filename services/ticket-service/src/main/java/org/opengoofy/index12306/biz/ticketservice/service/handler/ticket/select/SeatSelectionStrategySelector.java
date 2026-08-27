@@ -58,7 +58,7 @@ public class SeatSelectionStrategySelector {
      * 判断本次选座是否应跳过乐观 Redis 占位，直接进入区间锁单通道。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @param candidateCarriages 当前候选车厢余票摘要
      * @return true 表示采用单通道，false 表示采用 Redis 乐观占位
      */
@@ -80,7 +80,7 @@ public class SeatSelectionStrategySelector {
      * 记录一次 Redis Lua 临时占位的直接结果，为后续请求的策略切换提供低成本窗口指标。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @param conflict Redis Lua 是否因座位已被其它请求占用而返回冲突
      */
     public void recordOptimisticSelectionResult(PurchaseTicketReqDTO requestParam, Integer seatType, boolean conflict) {
@@ -94,7 +94,7 @@ public class SeatSelectionStrategySelector {
      * 生成同一运行库存下的冲突统计键。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @return 固定维度的本地统计键
      */
     private String buildConflictWindowKey(PurchaseTicketReqDTO requestParam, Integer seatType) {

@@ -29,9 +29,4 @@ public class PurchaseTicketPassengerDetailDTO {
      * 乘车人 ID
      */
     private String passengerId;
-
-    /**
-     * 座位类型
-     */
-    private Integer seatType;
 }

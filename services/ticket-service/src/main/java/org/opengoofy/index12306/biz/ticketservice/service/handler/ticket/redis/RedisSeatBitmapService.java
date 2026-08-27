@@ -160,48 +160,22 @@ public class RedisSeatBitmapService {
     }
 
     /**
-     * 释放本次购票已写入 Redis 的临时座位位图。
-     *
-     * @param trainId 列车标识
-     * @param departure 出发站
-     * @param arrival 到达站
-     * @param tickets 待释放座位
-     */
-    public void releaseHeld(String trainId, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
-        releaseHeld(trainId, null, departure, arrival, tickets);
-    }
-
-    /**
      * 释放指定始发日期下本次购票已持有的全部 Redis 临时座位。
      *
      * @param trainId 列车标识
      * @param serviceDate 列车始发日期
      * @param departure 出发站
      * @param arrival 到达站
+     * @param seatType 本次购票统一使用的席别
      * @param tickets 待释放座位
      */
-    public void releaseHeld(String trainId, Date serviceDate, String departure, String arrival, List<TrainPurchaseTicketRespDTO> tickets) {
+    public void releaseHeld(String trainId, Date serviceDate, String departure, String arrival, Integer seatType,
+                            List<TrainPurchaseTicketRespDTO> tickets) {
         if (CollUtil.isEmpty(tickets)) {
             return;
         }
-        tickets.stream()
-                .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType))
-                .forEach((seatType, eachSeatTypeTickets) -> releaseByHoldId(trainId, serviceDate, departure, arrival, seatType, eachSeatTypeTickets));
-    }
-
-    /**
-     * 按 reservationId 条件释放 Redis 座位位图。
-     *
-     * @param trainId 列车标识
-     * @param departure 出发站
-     * @param arrival 到达站
-     * @param tickets reservation 持有的座位明细
-     * @param reservationId 预期的 Redis owner
-     * @return 当前 owner 是否已被新的 reservation 接管
-     */
-    public RedisSeatBitmapReleaseResult releaseByReservationId(String trainId, String departure, String arrival,
-                                                                List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {
-        return releaseByReservationId(trainId, null, departure, arrival, tickets, reservationId);
+        // 每个订单只持有一种席别，直接使用订单根席别释放各车厢位图。
+        releaseByHoldId(trainId, serviceDate, departure, arrival, seatType, tickets);
     }
 
     /**
@@ -211,26 +185,22 @@ public class RedisSeatBitmapService {
      * @param serviceDate 列车始发日期
      * @param departure 出发站
      * @param arrival 到达站
+     * @param seatType reservation 统一使用的席别
      * @param tickets 预订关系持有的座位
      * @param reservationId 预期 Redis owner
      * @return 释放结果
      */
     public RedisSeatBitmapReleaseResult releaseByReservationId(String trainId, Date serviceDate, String departure, String arrival,
-                                                                List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {
+                                                                Integer seatType, List<TrainPurchaseTicketRespDTO> tickets,
+                                                                String reservationId) {
         if (CollUtil.isEmpty(tickets)) {
             return RedisSeatBitmapReleaseResult.RELEASED;
         }
         if (StrUtil.isBlank(reservationId)) {
             throw new IllegalArgumentException("reservationId 不能为空");
         }
-        // 分座位类型执行以复用既有位图 key；任一车厢被新 owner 接管都只返回冲突，不清理对方资源。
-        boolean ownerChanged = tickets.stream()
-                .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType))
-                .entrySet()
-                .stream()
-                .map(each -> release(trainId, serviceDate, departure, arrival, each.getKey(), each.getValue(), reservationId))
-                .anyMatch(each -> each == RedisSeatBitmapReleaseResult.OWNER_CHANGED);
-        return ownerChanged ? RedisSeatBitmapReleaseResult.OWNER_CHANGED : RedisSeatBitmapReleaseResult.RELEASED;
+        // 统一席别复用同一位图 key；任一车厢被新 owner 接管都只返回冲突，不清理对方资源。
+        return release(trainId, serviceDate, departure, arrival, seatType, tickets, reservationId);
     }
 
     /**
@@ -253,18 +223,16 @@ public class RedisSeatBitmapService {
     }
 
     /**
-     * 按同一车厢执行一次 owner 条件释放脚本。
+     * 按同一车厢执行 owner 校验后的 Lua 释放，防止重复消息释放新请求持有的座位。
      *
      * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
      * @param departure 出发站
      * @param arrival 到达站
-     * @param seatType 座位类型
-     * @param tickets 当前座位类型的座位明细
+     * @param seatType 订单统一使用的席别
+     * @param tickets 同一订单的座位明细
      * @param reservationId 预期 Redis owner
      * @return 释放结果
-     */
-    /**
-     * 执行 owner 校验后的 Lua 释放，防止重复消息释放新请求持有的座位。
      */
     private RedisSeatBitmapReleaseResult release(String trainId, Date serviceDate, String departure, String arrival, Integer seatType,
                                                  List<TrainPurchaseTicketRespDTO> tickets, String reservationId) {

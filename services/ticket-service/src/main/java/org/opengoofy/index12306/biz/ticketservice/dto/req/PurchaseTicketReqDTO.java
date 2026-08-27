@@ -49,6 +49,11 @@ public class PurchaseTicketReqDTO {
     private Date serviceDate;
 
     /**
+     * 本次购票统一使用的座位类型
+     */
+    private Integer seatType;
+
+    /**
      * 乘车人
      */
     private List<PurchaseTicketPassengerDetailDTO> passengers;

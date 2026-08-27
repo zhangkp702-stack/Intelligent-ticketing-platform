@@ -22,7 +22,6 @@ import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservationDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketSeatReservationMapper;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderItemCreateRemoteReqDTO;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketservice.service.SeatService;
@@ -87,7 +86,7 @@ class TicketSeatReservationReleaseServiceTests {
 
         // PREPARED 和完整 MQ 建单事件必须由同一事务方法写入。
         service.prepareReservation("reservation-a", "purchase-a", "purchase-a:create-order",
-                "1001", "alice", 1L, "A", "B", new Date(1L), new Date(1L), List.of(ticket), orderRequest);
+                "1001", "alice", 1L, "A", "B", new Date(1L), new Date(1L), 1, List.of(ticket), orderRequest);
 
         ArgumentCaptor<TicketSeatReservationDO> captor = ArgumentCaptor.forClass(TicketSeatReservationDO.class);
         verify(reservationMapper).insert(captor.capture());
@@ -95,6 +94,8 @@ class TicketSeatReservationReleaseServiceTests {
         assertEquals("reservation-a", prepared.getReservationId());
         assertEquals("purchase-a:create-order", prepared.getCommandId());
         assertEquals("1001", prepared.getUserId());
+        assertEquals(1, prepared.getSeatType());
+        assertEquals(1, prepared.getSeatCount());
         assertEquals(0, prepared.getReservationStatus());
         assertNull(prepared.getOrderSn());
         ArgumentCaptor<ReliableEventDefinition> eventCaptor = ArgumentCaptor.forClass(ReliableEventDefinition.class);
@@ -156,7 +157,7 @@ class TicketSeatReservationReleaseServiceTests {
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
-        when(redisSeatBitmapService.releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), anyList(), eq("reservation-a")))
+        when(redisSeatBitmapService.releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), eq(1), anyList(), eq("reservation-a")))
                 .thenReturn(RedisSeatBitmapReleaseResult.RELEASED);
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
                 reservationMapper, seatService, redisSeatBitmapService, inventoryRollbackService, transactionTemplate,
@@ -218,7 +219,7 @@ class TicketSeatReservationReleaseServiceTests {
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(mock(TransactionStatus.class));
         });
-        when(redisSeatBitmapService.releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), anyList(), eq("reservation-a")))
+        when(redisSeatBitmapService.releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), eq(1), anyList(), eq("reservation-a")))
                 .thenReturn(RedisSeatBitmapReleaseResult.OWNER_CHANGED);
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
                 reservationMapper, seatService, redisSeatBitmapService, inventoryRollbackService, transactionTemplate,
@@ -230,9 +231,9 @@ class TicketSeatReservationReleaseServiceTests {
         assertEquals(2, reservation.getRedisBitmapReleaseStatus());
         assertEquals(1, reservation.getTokenRollbackStatus());
         verify(seatService).unlock(eq("1"), any(Date.class), eq("A"), eq("B"), anyList());
-        verify(redisSeatBitmapService).releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), anyList(), eq("reservation-a"));
-        verify(inventoryRollbackService).rollbackIfNecessary(any(TicketOrderDetailRespDTO.class),
-                any(Date.class), eq("reservation-a"));
+        verify(redisSeatBitmapService).releaseByReservationId(eq("1"), any(Date.class), eq("A"), eq("B"), eq(1), anyList(), eq("reservation-a"));
+        verify(inventoryRollbackService).rollbackIfNecessary(eq("1"), any(Date.class), eq("A"), eq("B"),
+                eq(1), eq(1), anyList(), eq("reservation-a"));
     }
 
     /**
@@ -251,6 +252,8 @@ class TicketSeatReservationReleaseServiceTests {
                 .serviceDate(new Date())
                 .departure("A")
                 .arrival("B")
+                .seatType(1)
+                .seatCount(1)
                 .seatPayload(JSON.toJSONString(List.of(ticket)))
                 .dbSeatReleaseStatus(0)
                 .redisBitmapReleaseStatus(0)

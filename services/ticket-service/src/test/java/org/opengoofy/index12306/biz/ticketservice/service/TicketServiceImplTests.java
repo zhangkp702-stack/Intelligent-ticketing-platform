@@ -75,10 +75,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -99,8 +97,6 @@ import static org.mockito.Mockito.when;
  */
 class TicketServiceImplTests {
 
-    private final ThreadPoolExecutor selectSeatExecutor = new ThreadPoolExecutor(
-            1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
     private TicketOrderRemoteService ticketOrderRemoteService;
     private TicketServiceImpl ticketService;
 
@@ -132,8 +128,6 @@ class TicketServiceImplTests {
     void tearDown() {
         // UserContext 使用线程本地变量，测试结束必须显式释放。
         UserContext.removeUser();
-        // 单席别用例不会提交并行任务，仍关闭夹具线程池避免测试进程遗留资源。
-        selectSeatExecutor.shutdownNow();
     }
 
     /**
@@ -192,7 +186,7 @@ class TicketServiceImplTests {
         TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
         SeatSelectionStrategyRedisStore strategyRedisStore = mock(SeatSelectionStrategyRedisStore.class);
         TrainSeatTypeSelector seatTypeSelector = new TrainSeatTypeSelector(
-                seatService, userRemoteService, priceMapper, strategyChoose, selectSeatExecutor, distributedCache,
+                seatService, userRemoteService, priceMapper, strategyChoose, distributedCache,
                 trainStationService, null, null, redisSeatBitmapService, purchaseMetrics,
                 new SeatSelectionStrategySharedSelector(strategyRedisStore,
                         new SeatSelectionStrategySelector(), purchaseMetrics), null);
@@ -211,9 +205,9 @@ class TicketServiceImplTests {
         request.setArrival("上海虹桥");
         request.setDepartureDate(ridingDate);
         request.setServiceDate(ridingDate);
+        request.setSeatType(1);
         PurchaseTicketPassengerDetailDTO passenger = new PurchaseTicketPassengerDetailDTO();
         passenger.setPassengerId("passenger-1");
-        passenger.setSeatType(1);
         request.setPassengers(List.of(passenger));
         TrainDO train = new TrainDO();
         train.setTrainType(0);
@@ -297,7 +291,7 @@ class TicketServiceImplTests {
                 ArgumentCaptor.forClass(TicketOrderCreateRemoteReqDTO.class);
         verify(reservationService).prepareReservation(eq(response.getReservationId()), anyString(), anyString(),
                 eq("1001"), eq("alice"), eq(1L), eq("北京南"), eq("上海虹桥"),
-                eq(ridingDate), eq(ridingDate), anyList(), orderRequestCaptor.capture());
+                eq(ridingDate), eq(ridingDate), eq(1), anyList(), orderRequestCaptor.capture());
         String actionId = orderRequestCaptor.getValue().getActionId();
         String commandId = orderRequestCaptor.getValue().getCommandId();
         assertThat(actionId).startsWith("purchase-");
@@ -307,7 +301,7 @@ class TicketServiceImplTests {
                 .containsExactly("01", "01A");
         verify(reservationService, never()).bindOrder(anyString(), anyString());
         verify(redisSeatBitmapService, never()).releaseHeld(eq("1"), eq(ridingDate),
-                eq("北京南"), eq("上海虹桥"), anyList());
+                eq("北京南"), eq("上海虹桥"), eq(1), anyList());
 
         // Redis 已占位但数据库 CAS 冲突时，外层必须按当前 reservation 回收临时 owner。
         rejectDatabaseConfirm.set(true);
@@ -315,7 +309,7 @@ class TicketServiceImplTests {
                 .isInstanceOf(ServiceException.class)
                 .hasMessageContaining("座位资源冲突");
         verify(redisSeatBitmapService).releaseHeld(eq("1"), eq(ridingDate),
-                eq("北京南"), eq("上海虹桥"), anyList());
+                eq("北京南"), eq("上海虹桥"), eq(1), anyList());
     }
 
     /**

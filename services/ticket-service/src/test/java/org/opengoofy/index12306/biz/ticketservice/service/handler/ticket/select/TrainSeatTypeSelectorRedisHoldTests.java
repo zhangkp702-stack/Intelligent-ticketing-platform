@@ -17,7 +17,6 @@
 
 package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.select;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TrainStationPriceMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.CarriageAvailabilityDTO;
@@ -35,19 +34,14 @@ import org.opengoofy.index12306.biz.ticketservice.service.monitor.TicketPurchase
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractStrategyChoose;
 import org.springframework.test.util.ReflectionTestUtils;
-import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -65,18 +59,6 @@ import static org.mockito.Mockito.when;
  */
 class TrainSeatTypeSelectorRedisHoldTests {
 
-    private final ThreadPoolExecutor selectSeatExecutor = new ThreadPoolExecutor(
-            1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
-
-    /**
-     * 关闭测试创建的专用线程池，避免遗留非守护线程影响模块测试退出。
-     */
-    @AfterEach
-    void tearDown() {
-        // 单席别测试不会提交异步任务，仍主动关闭线程池以保持测试资源边界清晰。
-        selectSeatExecutor.shutdownNow();
-    }
-
     /**
      * Redis 占位成功后数据库锁座异常，必须在向上抛出原异常前释放当前 owner。
      */
@@ -90,7 +72,7 @@ class TrainSeatTypeSelectorRedisHoldTests {
                 0, fixture.request, "reservation-a", fixture.purchaseContext));
 
         verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
-                eq("A"), eq("B"), eq(List.of(fixture.ticket)));
+                eq("A"), eq("B"), eq(fixture.request.getSeatType()), eq(List.of(fixture.ticket)));
     }
 
     /**
@@ -109,7 +91,7 @@ class TrainSeatTypeSelectorRedisHoldTests {
                 0, fixture.request, "reservation-a", fixture.purchaseContext));
 
         verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
-                eq("A"), eq("B"), eq(List.of(fixture.ticket)));
+                eq("A"), eq("B"), eq(fixture.request.getSeatType()), eq(List.of(fixture.ticket)));
     }
 
     /**
@@ -129,50 +111,6 @@ class TrainSeatTypeSelectorRedisHoldTests {
     }
 
     /**
-     * 多席别任务中任一任务失败时，必须等待其它任务结束并补偿全部已写入的 Redis owner。
-     */
-    @Test
-    void releasesAllRedisHoldsWhenAnotherSeatTypeFails() {
-        SelectorFixture fixture = fixture();
-        PurchaseTicketPassengerDetailDTO secondPassenger = new PurchaseTicketPassengerDetailDTO();
-        secondPassenger.setPassengerId("passenger-2");
-        secondPassenger.setSeatType(2);
-        fixture.request.setPassengers(List.of(fixture.request.getPassengers().get(0), secondPassenger));
-        when(fixture.seatService.listCandidateCarriages(eq("1001"), eq(fixture.request.getServiceDate()), anyInt(), eq("A"), eq("B"), eq(1)))
-                .thenReturn(List.of(new CarriageAvailabilityDTO("01", 100)));
-        when(fixture.abstractStrategyChoose.<SelectSeatDTO, List<TrainPurchaseTicketRespDTO>>chooseAndExecuteResp(anyString(), any(SelectSeatDTO.class)))
-                .thenAnswer(invocation -> {
-                    SelectSeatDTO selectSeat = invocation.getArgument(1);
-                    TrainPurchaseTicketRespDTO selectedTicket = ticket();
-                    selectedTicket.setPassengerId("passenger-" + selectSeat.getSeatType());
-                    selectedTicket.setSeatType(selectSeat.getSeatType());
-                    return List.of(selectedTicket);
-                });
-        when(fixture.redisSeatBitmapService.tryHold(eq("1001"), eq(fixture.request.getServiceDate()), eq("A"), eq("B"), anyInt(), anyList(), eq("reservation-a")))
-                .thenAnswer(invocation -> {
-                    List<TrainPurchaseTicketRespDTO> selectedTickets = invocation.getArgument(5);
-                    selectedTickets.forEach(each -> each.setRedisSeatHoldId("reservation-a"));
-                    return "reservation-a";
-                });
-        when(fixture.seatService.tryLockSeat(anyString(), any(Date.class), anyString(), anyString(), anyList()))
-                .thenAnswer(invocation -> {
-                    List<TrainPurchaseTicketRespDTO> selectedTickets = invocation.getArgument(4);
-                    if (selectedTickets.get(0).getSeatType() == 2) {
-                        throw new IllegalStateException("database unavailable");
-                    }
-                    return true;
-                });
-
-        assertThrows(RuntimeException.class, () -> fixture.selector.select(
-                0, fixture.request, "reservation-a", fixture.purchaseContext));
-
-        ArgumentCaptor<List<TrainPurchaseTicketRespDTO>> heldTicketsCaptor = ArgumentCaptor.forClass(List.class);
-        verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
-                eq("A"), eq("B"), heldTicketsCaptor.capture());
-        assertEquals(2, heldTicketsCaptor.getValue().size());
-    }
-
-    /**
      * Redis owner 已写入后指标记录失败时，补偿必须继续执行且指标异常不能阻断释放。
      */
     @Test
@@ -187,7 +125,7 @@ class TrainSeatTypeSelectorRedisHoldTests {
                 0, fixture.request, "reservation-a", fixture.purchaseContext));
 
         verify(fixture.redisSeatBitmapService).releaseHeld(eq("1001"), eq(fixture.request.getServiceDate()),
-                eq("A"), eq("B"), eq(List.of(fixture.ticket)));
+                eq("A"), eq("B"), eq(fixture.request.getSeatType()), eq(List.of(fixture.ticket)));
     }
 
     /**
@@ -213,7 +151,6 @@ class TrainSeatTypeSelectorRedisHoldTests {
                 userRemoteService,
                 trainStationPriceMapper,
                 abstractStrategyChoose,
-                selectSeatExecutor,
                 distributedCache,
                 trainStationService,
                 null,
@@ -243,10 +180,10 @@ class TrainSeatTypeSelectorRedisHoldTests {
                 });
         when(trainStationService.listTakeoutTrainStationRoute(eq("1001"), eq("A"), eq("B"))).thenReturn(List.of());
         PassengerRespDTO firstPassenger = passenger("passenger-1");
-        PassengerRespDTO secondPassenger = passenger("passenger-2");
         PurchaseSeatContext purchaseContext = new PurchaseSeatContext(
-                Map.of("passenger-1", firstPassenger, "passenger-2", secondPassenger),
-                Map.of(1, 10000, 2, 20000));
+                Map.of("passenger-1", firstPassenger),
+                1,
+                10000);
         return new SelectorFixture(selector, request, ticket, purchaseContext, seatService, userRemoteService,
                 redisSeatBitmapService, abstractStrategyChoose, ticketPurchaseMetrics);
     }
@@ -277,12 +214,12 @@ class TrainSeatTypeSelectorRedisHoldTests {
     private PurchaseTicketReqDTO request() {
         PurchaseTicketPassengerDetailDTO passenger = new PurchaseTicketPassengerDetailDTO();
         passenger.setPassengerId("passenger-1");
-        passenger.setSeatType(1);
         PurchaseTicketReqDTO request = new PurchaseTicketReqDTO();
         request.setTrainId("1001");
         request.setServiceDate(new Date(1_723_494_400_000L));
         request.setDeparture("A");
         request.setArrival("B");
+        request.setSeatType(1);
         request.setPassengers(List.of(passenger));
         return request;
     }

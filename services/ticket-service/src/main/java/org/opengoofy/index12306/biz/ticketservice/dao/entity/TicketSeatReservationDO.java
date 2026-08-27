@@ -77,6 +77,12 @@ public class TicketSeatReservationDO extends BaseDO {
     /** 到达站。 */
     private String arrival;
 
+    /** 本次购票统一使用的座位类型。 */
+    private Integer seatType;
+
+    /** 本次占用的座位数量。 */
+    private Integer seatCount;
+
     /** 本次占用的座位明细 JSON。 */
     private String seatPayload;
 

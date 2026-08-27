@@ -84,7 +84,7 @@ public class SeatSelectionStrategySharedSelector {
      * 按共享冲突统计决定本次选座通道，Redis 统计异常时使用本机统计兼容回退。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @param candidateCarriages 当前候选车厢余票摘要
      * @return true 表示采用单通道，false 表示采用 Redis 乐观占位
      */
@@ -99,7 +99,7 @@ public class SeatSelectionStrategySharedSelector {
      * 评估共享状态机并返回本次请求固定的通道路由及统计样本类型。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @param candidateCarriages 当前候选车厢余票摘要
      * @param reservationId 当前购票的稳定 reservation 标识
      * @return 本次请求应使用的选座通道路由
@@ -142,7 +142,7 @@ public class SeatSelectionStrategySharedSelector {
      * 以 reservation 为粒度上报一次 Redis Lua 临时占位结果，避免单个请求的重试放大冲突率。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @param reservationId 当前选座 reservation 标识
      * @param conflict Redis Lua 是否因座位已被其它请求占用而返回冲突
      */
@@ -158,7 +158,7 @@ public class SeatSelectionStrategySharedSelector {
      * 按本次请求路由指定的样本类型上报一次 Redis Lua 临时占位结果。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @param reservationId 当前选座 reservation 标识
      * @param sampleType 本次乐观通道的常态或探测样本类型
      * @param conflict Redis Lua 是否因座位已被其它请求占用而返回冲突
@@ -263,7 +263,7 @@ public class SeatSelectionStrategySharedSelector {
      * 构造同一运行库存维度的共享策略键。
      *
      * @param requestParam 已校验的购票请求
-     * @param seatType 当前座位类型
+     * @param seatType 订单统一席别
      * @return 包含始发日期的共享策略键
      */
     private String buildStrategyKey(PurchaseTicketReqDTO requestParam, Integer seatType) {

@@ -111,6 +111,8 @@ CREATE TABLE `t_ticket_seat_reservation`
     `service_date`                date         DEFAULT NULL COMMENT '列车始发日期',
     `departure`                   varchar(64)  NOT NULL COMMENT '出发站',
     `arrival`                     varchar(64)  NOT NULL COMMENT '到达站',
+    `seat_type`                   int          NOT NULL COMMENT '本次购票统一使用的座位类型',
+    `seat_count`                  int          NOT NULL COMMENT '本次占用的座位数量',
     `seat_payload`                mediumtext   NOT NULL COMMENT '座位明细JSON快照',
     `db_seat_release_status`      tinyint(1)   NOT NULL DEFAULT 0 COMMENT '数据库座位释放状态：0待处理 1完成',
     `redis_bitmap_release_status` tinyint(1)   NOT NULL DEFAULT 0 COMMENT 'Redis位图释放状态：0待处理 1完成 2owner已变化',

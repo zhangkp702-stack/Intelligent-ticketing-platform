@@ -69,6 +69,28 @@
           >
         </div>
         <Divider></Divider>
+        <Space>
+          <span>席别：</span>
+          <Select
+            :style="styleWidth"
+            :value="state.seatType"
+            placeholder="请选择席别"
+            @select="handleChooseSeat"
+          >
+            <SelectOption
+              v-for="item in state.currentSeat"
+              :value="item.type"
+            >
+              {{
+                `${
+                  SEAT_CLASS_TYPE_LIST.find((seat) => seat.code === item.type)
+                    ?.label
+                }(￥${item.price})`
+              }}</SelectOption
+            >
+          </Select>
+        </Space>
+        <Divider></Divider>
         <Table
           :columns="columns"
           :data-source="
@@ -89,24 +111,6 @@
                 v-for="item in TICKET_TYPE_LIST"
                 :value="item.value"
                 >{{ item.label }}</SelectOption
-              >
-            </Select>
-          </template>
-          <template #seatType="{ text, record }">
-            <Select
-              :style="styleWidth"
-              @select="(value) => handleChooseSeat(record.id, value)"
-            >
-              <SelectOption
-                v-for="item in state.currentSeat"
-                :value="item.type"
-              >
-                {{
-                  `${
-                    SEAT_CLASS_TYPE_LIST.find((seat) => seat.code === item.type)
-                      ?.label
-                  }(￥${item.price})`
-                }}</SelectOption
               >
             </Select>
           </template>
@@ -238,18 +242,17 @@
             >（{{ state.currTrain?.duration }}到）</span
           >
         </div>
+        <div>
+          统一席别：<span class="important-text">{{
+            SEAT_CLASS_TYPE_LIST.find((seat) => seat.code === state.seatType)
+              ?.label
+          }}</span>
+        </div>
         <Table
           :columns="checkColumns"
           :data-source="state.dataSource"
           :pagination="false"
         >
-          <template #seatType="{ text, record }">
-            <span>
-              {{
-                SEAT_CLASS_TYPE_LIST.find((seat) => seat.code === text)?.label
-              }}
-            </span>
-          </template>
           <template #discountType="{ text }">
             {{ TICKET_TYPE_LIST.find((item) => item.value === text)?.label }}
           </template>
@@ -405,6 +408,7 @@ const state = reactive({
   dataSource: [],
   rawDataSource: [],
   currentSeat: [],
+  seatType: null,
   open: false,
   currentSeatCode: [],
   seatPosition: [],
@@ -445,9 +449,9 @@ onMounted(() => {
 })
 
 watch(
-  () => state.dataSource,
-  (newValue) => {
-    let seatType = newValue?.length && newValue[0]?.seatType
+  [() => state.seatType, () => state.dataSource.length],
+  ([seatType, passengerCount]) => {
+    // 订单级席别变化后统一重建座位布局，避免保留上一席别的选座结果。
     let seatPosition = ['A', 'B', 'C', 'D', 'E']
     let seatLeft = 3
     if (
@@ -471,10 +475,8 @@ watch(
       seatPosition = ['A', 'B', 'C', 'D', 'F']
       seatLeft = 3
     }
-    console.log('newValue.length:::', newValue?.length)
-    console.log('seatPosition?.length :::', seatPosition?.length)
     let seatList = new Array(
-      (newValue?.length ?? 1) * (seatPosition?.length ?? 1)
+      (passengerCount || 1) * (seatPosition?.length ?? 1)
     ).fill('')
 
     seatList = seatList?.map((item, index) => {
@@ -489,10 +491,11 @@ watch(
     state.seatPosition = seatList
     state.seatLeft = seatLeft
     state.seatNumber = seatPosition?.length
+    state.currentSeatCode = []
+    // 当前选座界面只支持商务座、一等座和二等座的座位布局。
+    state.isChooseSeat = [0, 1, 2].includes(seatType)
   },
-  {
-    deep: true
-  }
+  { immediate: true }
 )
 
 watch([() => currPassenger.value], (newValue) => {
@@ -503,22 +506,6 @@ watch([() => currPassenger.value], (newValue) => {
   state.dataSource = newDataSource
 })
 
-watch(
-  () => state.dataSource,
-  (newValue) => {
-    let isChooseSeat = true
-    let seatType = newValue?.length && newValue[0].seatType
-    newValue?.length &&
-      newValue.map((item) => {
-        if (item.seatType !== seatType) {
-          isChooseSeat = false
-        }
-      })
-    state.isChooseSeat = isChooseSeat
-  },
-  { deep: true }
-)
-
 const columns = [
   {
     title: '序号',
@@ -528,11 +515,6 @@ const columns = [
     title: '票种',
     dataIndex: 'discountType',
     slots: { customRender: 'ticketType' }
-  },
-  {
-    title: '席别',
-    dataIndex: '',
-    slots: { customRender: 'seatType' }
   },
   {
     title: '姓名',
@@ -565,15 +547,13 @@ const handleDelete = (id) => {
   })
 }
 
-const handleChooseSeat = (id, value) => {
-  let cIndex
-  state.dataSource.find((item, index) => {
-    if (item.id === id) {
-      cIndex = index
-      return true
-    }
-  })
-  state.dataSource[cIndex]['seatType'] = value
+/**
+ * 设置本次订单的统一席别，并由布局监听器清空旧的选座结果。
+ *
+ * @param {number} value 席别编码
+ */
+const handleChooseSeat = (value) => {
+  state.seatType = value
 }
 
 const handleChooseTicketType = (id, value) => {
@@ -587,11 +567,14 @@ const handleChooseTicketType = (id, value) => {
   state.dataSource[cIndex]['idType'] = value
 }
 
+/**
+ * 校验乘车人与订单级席别是否完整，校验通过后打开订单确认弹窗。
+ */
 const handleSubmit = () => {
-  const canNotSubmit = state.dataSource.some(
-    (item) => item.seatType === null || item.seatType === undefined
-  )
-  if (canNotSubmit || state.dataSource?.length === 0) {
+  // 席别只校验一次，乘车人明细不再逐行维护席别。
+  const seatTypeMissing =
+    state.seatType === null || state.seatType === undefined
+  if (seatTypeMissing || state.dataSource?.length === 0) {
     return message.error('请补全信息')
   }
   state.open = true
@@ -601,11 +584,6 @@ const checkColumns = [
   {
     title: '序号',
     dataIndex: 'keyNumber'
-  },
-  {
-    title: '席别',
-    dataIndex: 'seatType',
-    slots: { customRender: 'seatType' }
   },
   {
     title: '票种',
@@ -641,14 +619,17 @@ const handleSelectSeat = (code) => {
   }
 }
 
+/**
+ * 按订单级席别组装购票请求，乘车人明细只提交乘车人标识。
+ */
 const handleSubmitBuyTicket = () => {
   let params = { trainId: query?.trainId }
   const passengers = state.dataSource.map((item) => ({
-    passengerId: item.id,
-    seatType: item.seatType
+    passengerId: item.id
   }))
   params = {
     ...params,
+    seatType: state.seatType,
     passengers,
     chooseSeats: toRaw(state.currentSeatCode),
     departure: state.currTrain?.departure,

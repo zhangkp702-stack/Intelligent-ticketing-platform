@@ -21,6 +21,7 @@ import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
+import org.opengoofy.index12306.biz.ticketservice.common.enums.VehicleSeatTypeEnum;
 import org.opengoofy.index12306.biz.ticketservice.dto.domain.PurchaseTicketPassengerDetailDTO;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.PurchaseTicketReqDTO;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.dto.PurchaseExecutionContext;
@@ -64,13 +65,17 @@ public class TrainPurchaseTicketParamNotNullChainHandler implements TrainPurchas
             if (CollUtil.isEmpty(requestParam.getPassengers())) {
                 throw new ClientException("乘车人至少选择一位");
             }
-            // 每个乘车人都必须携带服务端选座所需的乘车人和席别标识。
+            // 一次购票只接受一个订单级席别，并拒绝未知席别编码进入库存链路。
+            if (Objects.isNull(requestParam.getSeatType())) {
+                throw new ClientException("座位类型不能为空");
+            }
+            if (Objects.isNull(VehicleSeatTypeEnum.findNameByCode(requestParam.getSeatType()))) {
+                throw new ClientException("座位类型不存在");
+            }
+            // 乘车人明细只负责标识购票人，不再承载独立席别。
             for (PurchaseTicketPassengerDetailDTO each : requestParam.getPassengers()) {
                 if (StrUtil.isBlank(each.getPassengerId())) {
                     throw new ClientException("乘车人不能为空");
-                }
-                if (Objects.isNull(each.getSeatType())) {
-                    throw new ClientException("座位类型不能为空");
                 }
             }
             validationResult = "success";

@@ -196,7 +196,7 @@ class TrainSeatTypeSelectorResourceLockTests {
      * @return 可调用区间锁私有方法的选择器
      */
     private TrainSeatTypeSelector selector(RedissonClient redissonClient, ConfigurableEnvironment environment) {
-        return new TrainSeatTypeSelector(null, null, null, null, null, null, null, redissonClient, environment,
+        return new TrainSeatTypeSelector(null, null, null, null, null, null, redissonClient, environment,
                 null, null, new SeatSelectionStrategySharedSelector(mock(SeatSelectionStrategyRedisStore.class),
                 mock(SeatSelectionStrategySelector.class), mock(TicketPurchaseMetrics.class)), null);
     }

@@ -60,15 +60,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.Future;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -95,7 +92,6 @@ public final class TrainSeatTypeSelector {
     private final UserRemoteService userRemoteService;
     private final TrainStationPriceMapper trainStationPriceMapper;
     private final AbstractStrategyChoose abstractStrategyChoose;
-    private final ThreadPoolExecutor selectSeatThreadPoolExecutor;
     private final DistributedCache distributedCache;
     private final TrainStationService trainStationService;
     private final RedissonClient redissonClient;
@@ -152,7 +148,7 @@ public final class TrainSeatTypeSelector {
 
         // 复用车票查询使用的区间价格缓存，缓存缺失时也只执行一次批量查询。
         Timer.Sample priceTimer = ticketPurchaseMetrics.startStageTimer();
-        Map<Integer, Integer> priceBySeatType;
+        Integer price;
         try {
             String priceCacheKey = String.format(TRAIN_STATION_PRICE, requestParam.getTrainId(),
                     requestParam.getDeparture(), requestParam.getArrival());
@@ -169,23 +165,18 @@ public final class TrainSeatTypeSelector {
                     ADVANCE_TICKET_DAY,
                     TimeUnit.DAYS);
             List<TrainStationPriceDO> prices = JSON.parseArray(priceJson, TrainStationPriceDO.class);
-            priceBySeatType = prices.stream().collect(Collectors.toMap(
-                    TrainStationPriceDO::getSeatType,
-                    TrainStationPriceDO::getPrice,
-                    (left, right) -> left,
-                    HashMap::new));
-            Set<Integer> requestedSeatTypes = requestParam.getPassengers().stream()
-                    .map(PurchaseTicketPassengerDetailDTO::getSeatType)
-                    .collect(Collectors.toSet());
-            if (requestedSeatTypes.stream().anyMatch(each -> !priceBySeatType.containsKey(each))) {
-                throw new ServiceException("当前区间缺少所选席别价格");
-            }
+            // 单次购票只提取订单统一席别对应的区间价格。
+            price = prices.stream()
+                    .filter(each -> Objects.equals(each.getSeatType(), requestParam.getSeatType()))
+                    .map(TrainStationPriceDO::getPrice)
+                    .findFirst()
+                    .orElseThrow(() -> new ServiceException("当前区间缺少所选席别价格"));
             ticketPurchaseMetrics.recordStage(priceTimer, "price_query", "success");
         } catch (Throwable ex) {
             ticketPurchaseMetrics.recordStage(priceTimer, "price_query", "failed");
             throw ex;
         }
-        return new PurchaseSeatContext(Map.copyOf(passengerById), Map.copyOf(priceBySeatType));
+        return new PurchaseSeatContext(Map.copyOf(passengerById), requestParam.getSeatType(), price);
     }
 
     /**
@@ -200,11 +191,8 @@ public final class TrainSeatTypeSelector {
     public List<TrainPurchaseTicketRespDTO> select(Integer trainType, PurchaseTicketReqDTO requestParam,
                                                     String reservationId, PurchaseSeatContext purchaseContext) {
         List<PurchaseTicketPassengerDetailDTO> passengerDetails = requestParam.getPassengers();
-        // 按照座位类型分组
-        Map<Integer, List<PurchaseTicketPassengerDetailDTO>> seatTypeMap = passengerDetails.stream()
-                .collect(Collectors.groupingBy(PurchaseTicketPassengerDetailDTO::getSeatType));
-        List<TrainPurchaseTicketRespDTO> actualResult = Collections.synchronizedList(new ArrayList<>(passengerDetails.size()));
-        List<TrainPurchaseTicketRespDTO> redisHeldTickets = Collections.synchronizedList(new ArrayList<>(passengerDetails.size()));
+        List<TrainPurchaseTicketRespDTO> actualResult = new ArrayList<>(passengerDetails.size());
+        List<TrainPurchaseTicketRespDTO> redisHeldTickets = new ArrayList<>(passengerDetails.size());
         try {
             Timer.Sample inventoryReadyTimer = ticketPurchaseMetrics.startStageTimer();
             try {
@@ -215,27 +203,9 @@ public final class TrainSeatTypeSelector {
                 ticketPurchaseMetrics.recordStage(inventoryReadyTimer, "inventory_ready", "failed");
                 throw ex;
             }
-            if (seatTypeMap.size() > 1) {
-                // 不同席别仍由专用线程池并行选择，但当前请求线程顺序汇总，避免额外占用 ForkJoin 公共线程池。
-                List<Future<List<TrainPurchaseTicketRespDTO>>> futureResults = new ArrayList<>(seatTypeMap.size());
-                seatTypeMap.forEach((seatType, passengerSeatDetails) -> futureResults.add(selectSeatThreadPoolExecutor
-                        .submit(() -> distributeSeats(trainType, seatType, requestParam, passengerSeatDetails, reservationId, redisHeldTickets))));
-                Exception selectionFailure = null;
-                for (Future<List<TrainPurchaseTicketRespDTO>> future : futureResults) {
-                    try {
-                        actualResult.addAll(future.get());
-                    } catch (Exception ex) {
-                        // 仍需等待其余席别任务结束，确保它们写入的 owner 全部进入统一补偿范围。
-                        selectionFailure = ex;
-                    }
-                }
-                if (selectionFailure != null) {
-                    throw new ServiceException("站点余票不足，请尝试更换座位类型或选择其它站点");
-                }
-            } else {
-                seatTypeMap.forEach((seatType, passengerSeatDetails) -> actualResult.addAll(
-                        distributeSeats(trainType, seatType, requestParam, passengerSeatDetails, reservationId, redisHeldTickets)));
-            }
+            // 一个订单只分配一次席别，全部乘车人进入同一个候选车厢与锁座任务。
+            actualResult.addAll(distributeSeats(
+                    trainType, requestParam.getSeatType(), requestParam, passengerDetails, reservationId, redisHeldTickets));
             // 校验选座结果是否完整
             if (CollUtil.isEmpty(actualResult) || !Objects.equals(actualResult.size(), passengerDetails.size())) {
                 throw new ServiceException("站点余票不足，请尝试更换座位类型或选择其它站点");
@@ -258,7 +228,7 @@ public final class TrainSeatTypeSelector {
      * @param trainType 列车类型
      * @param seatType 座位类型
      * @param requestParam 购票请求
-     * @param passengerSeatDetails 当前座位类型的乘客
+     * @param passengerSeatDetails 本次购票的全部乘车人
      * @param reservationId 当前购票的座位占用标识
      * @param redisHeldTickets 当前请求已经获得 Redis owner 的座位
      * @return 已锁定座位
@@ -307,20 +277,20 @@ public final class TrainSeatTypeSelector {
                 return selectedTickets;
             }
             if (Boolean.TRUE.equals(redisSeatBitmapEnabled)) {
-                List<TrainPurchaseTicketRespDTO> currentSeatTypeHeldTickets = new ArrayList<>();
+                List<TrainPurchaseTicketRespDTO> currentHeldTickets = new ArrayList<>();
                 try {
                     // 常态或探测路由均使用 Redis 原子临时占位，样本类型由当前路由显式传递。
                     ticketPurchaseMetrics.recordSelectionStrategy("optimistic");
                     List<TrainPurchaseTicketRespDTO> selectedTickets = distributeSeatsByRedisBitmap(
                             trainType, seatType, requestParam, passengerSeatDetails, reservationId,
-                            candidateCarriages, redisHeldTickets, currentSeatTypeHeldTickets, selectionRoute.sampleType(), true);
+                            candidateCarriages, redisHeldTickets, currentHeldTickets, selectionRoute.sampleType(), true);
                     seatAllocateResult = "success";
                     return selectedTickets;
                 } catch (ServiceException ex) {
                     // Redis Lua 的每次直接结果已在选座循环内记录，不能用最终业务异常重复计数。
                     throw ex;
                 } catch (Throwable ex) {
-                    if (CollUtil.isNotEmpty(currentSeatTypeHeldTickets)) {
+                    if (CollUtil.isNotEmpty(currentHeldTickets)) {
                         // Redis owner 已经写入时，后续数据库或指标异常不能伪装成 Redis 不可用后继续选座。
                         throw ex;
                     }
@@ -361,35 +331,32 @@ public final class TrainSeatTypeSelector {
         }
         // 库存日期检查只读预生成状态，不应占用后续数据库事务连接。
         seatService.validateServiceDateInventoryReady(requestParam.getTrainId(), requestParam.getServiceDate());
-        Map<Integer, List<PurchaseTicketPassengerDetailDTO>> seatTypeMap = requestParam.getPassengers().stream()
-                .collect(Collectors.groupingBy(PurchaseTicketPassengerDetailDTO::getSeatType));
-        List<TrainPurchaseTicketRespDTO> selectedTickets = new ArrayList<>(requestParam.getPassengers().size());
-        List<TrainPurchaseTicketRespDTO> redisHeldTickets = new ArrayList<>(requestParam.getPassengers().size());
+        // 订单根字段确定唯一席别，整单乘车人作为同一批次参与选座和临时占位。
+        Integer seatType = requestParam.getSeatType();
+        List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails = requestParam.getPassengers();
+        List<TrainPurchaseTicketRespDTO> selectedTickets = new ArrayList<>(passengerSeatDetails.size());
+        List<TrainPurchaseTicketRespDTO> redisHeldTickets = new ArrayList<>(passengerSeatDetails.size());
         try {
-            for (Map.Entry<Integer, List<PurchaseTicketPassengerDetailDTO>> entry : seatTypeMap.entrySet()) {
-                Integer seatType = entry.getKey();
-                List<PurchaseTicketPassengerDetailDTO> passengerSeatDetails = entry.getValue();
-                // 读取候选车厢摘要并决定本席别是否适合乐观 Redis 路径。
-                List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
-                        requestParam.getTrainId(), requestParam.getServiceDate(), seatType,
-                        requestParam.getDeparture(), requestParam.getArrival(), passengerSeatDetails.size());
-                if (CollUtil.isEmpty(candidateCarriages)) {
-                    throw new ServiceException("站点余票不足或座位资源冲突，请稍后重试");
-                }
-                SeatSelectionRoute selectionRoute = seatSelectionStrategySharedSelector.decide(
-                        requestParam, seatType, candidateCarriages, reservationId);
-                if (selectionRoute.useSingleChannel()) {
-                    // 已取得的 Redis owner 必须在回退前释放，防止事务内重选时与自身冲突。
-                    releaseRedisSeatHoldsAfterSelectionFailure(requestParam, redisHeldTickets, "transactional_fallback");
-                    return PreparedSeatSelection.fallbackToTransactionalSelection();
-                }
-                List<TrainPurchaseTicketRespDTO> currentSeatTypeHeldTickets = new ArrayList<>();
-                ticketPurchaseMetrics.recordSelectionStrategy("optimistic");
-                selectedTickets.addAll(distributeSeatsByRedisBitmap(
-                        trainType, seatType, requestParam, passengerSeatDetails, reservationId,
-                        candidateCarriages, redisHeldTickets, currentSeatTypeHeldTickets, selectionRoute.sampleType(), false));
+            // 候选车厢容量按整单人数计算，避免拆分乘客后破坏同席别订单约束。
+            List<CarriageAvailabilityDTO> candidateCarriages = seatService.listCandidateCarriages(
+                    requestParam.getTrainId(), requestParam.getServiceDate(), seatType,
+                    requestParam.getDeparture(), requestParam.getArrival(), passengerSeatDetails.size());
+            if (CollUtil.isEmpty(candidateCarriages)) {
+                throw new ServiceException("站点余票不足或座位资源冲突，请稍后重试");
             }
-            if (selectedTickets.size() != requestParam.getPassengers().size()) {
+            // 路由器在单通道时交还给事务内路径，尚未写入任何 Redis owner。
+            SeatSelectionRoute selectionRoute = seatSelectionStrategySharedSelector.decide(
+                    requestParam, seatType, candidateCarriages, reservationId);
+            if (selectionRoute.useSingleChannel()) {
+                releaseRedisSeatHoldsAfterSelectionFailure(requestParam, redisHeldTickets, "transactional_fallback");
+                return PreparedSeatSelection.fallbackToTransactionalSelection();
+            }
+            List<TrainPurchaseTicketRespDTO> currentHeldTickets = new ArrayList<>();
+            ticketPurchaseMetrics.recordSelectionStrategy("optimistic");
+            selectedTickets.addAll(distributeSeatsByRedisBitmap(
+                    trainType, seatType, requestParam, passengerSeatDetails, reservationId,
+                    candidateCarriages, redisHeldTickets, currentHeldTickets, selectionRoute.sampleType(), false));
+            if (selectedTickets.size() != passengerSeatDetails.size()) {
                 throw new ServiceException("站点余票不足，请尝试更换座位类型或选择其它站点");
             }
             // 事务外仅补齐不可变快照中的字段，不会写入任何数据库业务状态。
@@ -417,16 +384,12 @@ public final class TrainSeatTypeSelector {
                     requestParam.getDeparture(), requestParam.getArrival(), selectedTickets)) {
                 throw new ServiceException("座位资源冲突，请稍后重试");
             }
-            // 数据库确认成功后只更新车厢维度摘要；区间总余票摘要由 Canal 统一失效并按位图重建。
-            Map<Integer, List<TrainPurchaseTicketRespDTO>> ticketsBySeatType = selectedTickets.stream()
-                    .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getSeatType));
-            ticketsBySeatType.forEach((seatType, sameTypeTickets) -> {
-                sameTypeTickets.stream()
-                        .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getCarriageNumber))
-                        .forEach((carriageNumber, sameCarriageTickets) -> seatService.adjustCarriageRemainingSummary(
-                                requestParam.getTrainId(), requestParam.getServiceDate(), requestParam.getDeparture(),
-                                requestParam.getArrival(), seatType, carriageNumber, -sameCarriageTickets.size()));
-            });
+            // 整单席别由根字段确定，仅按车厢聚合更新对应席别的余票摘要。
+            selectedTickets.stream()
+                    .collect(Collectors.groupingBy(TrainPurchaseTicketRespDTO::getCarriageNumber))
+                    .forEach((carriageNumber, sameCarriageTickets) -> seatService.adjustCarriageRemainingSummary(
+                            requestParam.getTrainId(), requestParam.getServiceDate(), requestParam.getDeparture(),
+                            requestParam.getArrival(), requestParam.getSeatType(), carriageNumber, -sameCarriageTickets.size()));
             ticketPurchaseMetrics.recordStage(databaseConfirmTimer, "database_confirm", "success");
         } catch (Throwable ex) {
             ticketPurchaseMetrics.recordStage(databaseConfirmTimer, "database_confirm", "failed");
@@ -445,7 +408,7 @@ public final class TrainSeatTypeSelector {
      * @param trainType 列车类型
      * @param seatType 座位类型
      * @param requestParam 购票请求
-     * @param passengerSeatDetails 当前座位类型的乘客
+     * @param passengerSeatDetails 本次购票的全部乘车人
      * @param reservationId 当前购票的稳定座位占用标识
      * @param candidateCarriages 当前候选车厢余票摘要
      * @return 已锁定座位
@@ -484,16 +447,13 @@ public final class TrainSeatTypeSelector {
         if (CollUtil.isEmpty(redisHeldTickets)) {
             return;
         }
-        List<TrainPurchaseTicketRespDTO> heldTickets;
-        synchronized (redisHeldTickets) {
-            // 复制当前快照，避免多席别任务仍在结束时并发修改集合导致释放范围不完整。
-            heldTickets = new ArrayList<>(redisHeldTickets);
-        }
+        // 单次选座任务在当前线程累积 owner，复制快照以固定本次补偿范围。
+        List<TrainPurchaseTicketRespDTO> heldTickets = new ArrayList<>(redisHeldTickets);
         Timer.Sample compensationTimer = startRedisCompensationTimer();
         try {
             // 座位明细携带 reservationId，释放 Lua 会校验 owner，重复补偿不会误释放新 owner。
             redisSeatBitmapService.releaseHeld(requestParam.getTrainId(), requestParam.getServiceDate(),
-                    requestParam.getDeparture(), requestParam.getArrival(), heldTickets);
+                    requestParam.getDeparture(), requestParam.getArrival(), requestParam.getSeatType(), heldTickets);
             recordRedisCompensationMetrics(compensationTimer, "success", sourceStage);
         } catch (Throwable releaseEx) {
             // 补偿失败不能覆盖原始选座异常，记录后交由后续对账与恢复处理。
@@ -549,7 +509,7 @@ public final class TrainSeatTypeSelector {
      * @param trainType 列车类型
      * @param seatType 座位类型
      * @param requestParam 购票请求
-     * @param passengerSeatDetails 当前座位类型的乘客
+     * @param passengerSeatDetails 本次购票的全部乘车人
      * @param reservationId 当前购票的座位占用标识
      * @param candidateCarriages 已按余票摘要排序的候选车厢
      * @param sampleType 当前乐观占位结果应写入的常态或探测样本类型
@@ -563,7 +523,7 @@ public final class TrainSeatTypeSelector {
                                                                            String reservationId,
                                                                            List<CarriageAvailabilityDTO> candidateCarriages,
                                                                           List<TrainPurchaseTicketRespDTO> redisHeldTickets,
-                                                                          List<TrainPurchaseTicketRespDTO> currentSeatTypeHeldTickets,
+                                                                           List<TrainPurchaseTicketRespDTO> currentHeldTickets,
                                                                           SeatSelectionSampleType sampleType,
                                                                           boolean confirmDatabaseImmediately) {
         String strategyKey = VehicleTypeEnum.findNameByCode(trainType) + VehicleSeatTypeEnum.findNameByCode(seatType);
@@ -611,7 +571,7 @@ public final class TrainSeatTypeSelector {
                     if (StrUtil.isNotBlank(holdId)) {
                         // 先登记 owner，再记录指标或访问数据库，保证之后任意异常都具备精确释放凭证。
                         redisHeldTickets.addAll(selectedSeats);
-                        currentSeatTypeHeldTickets.addAll(selectedSeats);
+                        currentHeldTickets.addAll(selectedSeats);
                     }
                     ticketPurchaseMetrics.recordStage(redisHoldTimer, "redis_hold", StrUtil.isBlank(holdId) ? "conflict" : "success");
                     // 策略统计只以 Lua 临时占位结果为样本，不混入后续数据库确认或订单落库失败。
@@ -683,7 +643,7 @@ public final class TrainSeatTypeSelector {
      * @param trainType 列车类型
      * @param seatType 座位类型
      * @param requestParam 购票请求
-     * @param passengerSeatDetails 当前座位类型的乘客
+     * @param passengerSeatDetails 本次购票的全部乘车人
      * @param reservationId 当前购票的稳定座位占用标识
      * @param candidateCarriages 已按余票摘要排序的候选车厢
      * @return 已锁定座位
@@ -921,11 +881,10 @@ public final class TrainSeatTypeSelector {
      */
     private void enrichFromPreparedContext(List<TrainPurchaseTicketRespDTO> actualResult,
                                            PurchaseSeatContext purchaseContext) {
-        // 每个座位必须匹配当前用户的权威乘车人快照和所选席别价格。
+        // 每个座位必须匹配当前用户的权威乘车人快照和订单级席别。
         actualResult.forEach(each -> {
             PassengerRespDTO passenger = purchaseContext.passengerById().get(each.getPassengerId());
-            Integer price = purchaseContext.priceBySeatType().get(each.getSeatType());
-            if (passenger == null || price == null) {
+            if (passenger == null || !Objects.equals(each.getSeatType(), purchaseContext.seatType())) {
                 throw new ServiceException("购票上下文与选座结果不一致");
             }
             each.setIdCard(passenger.getIdCard());
@@ -933,7 +892,7 @@ public final class TrainSeatTypeSelector {
             each.setUserType(passenger.getDiscountType());
             each.setIdType(passenger.getIdType());
             each.setRealName(passenger.getRealName());
-            each.setAmount(price);
+            each.setAmount(purchaseContext.price());
         });
     }
 }

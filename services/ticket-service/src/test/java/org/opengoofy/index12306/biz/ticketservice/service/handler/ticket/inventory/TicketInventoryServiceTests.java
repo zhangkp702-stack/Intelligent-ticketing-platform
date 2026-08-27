@@ -17,18 +17,28 @@
 
 package org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.inventory;
 
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.opengoofy.index12306.biz.ticketservice.dto.domain.RouteDTO;
 import org.opengoofy.index12306.framework.starter.cache.DistributedCache;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.Date;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -84,5 +94,34 @@ class TicketInventoryServiceTests {
         // 统一库存服务直接返回 Hash 中的数量，调用方可据此进行购票预校验。
         assertEquals(36, service.query("1001", serviceDate, "北京南", "济南西", 1).orElseThrow());
         verify(hashOperations).get(inventoryKey, "北京南_济南西_1");
+    }
+
+    /**
+     * 单席别扣减必须为每个受影响区间生成同一席别和同一乘车人数的库存变化量。
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void deductsSingleSeatTypeAcrossAffectedRoutes() {
+        DistributedCache distributedCache = mock(DistributedCache.class);
+        StringRedisTemplate stringRedisTemplate = mock(StringRedisTemplate.class);
+        when(distributedCache.getInstance()).thenReturn(stringRedisTemplate);
+        when(stringRedisTemplate.execute(any(RedisScript.class), anyList(), any(), any())).thenReturn(0L);
+        Date serviceDate = Date.from(LocalDate.of(2026, 8, 20)
+                .atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant());
+        TicketInventoryService service = new TicketInventoryService(distributedCache, new SimpleMeterRegistry());
+
+        // 两个区间都应只生成一等座字段，并使用全部两名乘车人的统一扣减量。
+        boolean deducted = service.deductInUnified(
+                "1001", serviceDate, List.of(new RouteDTO("北京南", "济南西"),
+                        new RouteDTO("济南西", "南京南")), 1, 2, "reservation-a");
+
+        ArgumentCaptor<Object> inventoryJsonCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(stringRedisTemplate).execute(
+                any(RedisScript.class), anyList(), inventoryJsonCaptor.capture(), eq("reservation-a"));
+        JSONObject inventoryDeltas = JSON.parseObject(inventoryJsonCaptor.getValue().toString());
+        assertTrue(deducted);
+        assertEquals(2, inventoryDeltas.size());
+        assertEquals(2L, inventoryDeltas.getLongValue("北京南_济南西_1"));
+        assertEquals(2L, inventoryDeltas.getLongValue("济南西_南京南_1"));
     }
 }

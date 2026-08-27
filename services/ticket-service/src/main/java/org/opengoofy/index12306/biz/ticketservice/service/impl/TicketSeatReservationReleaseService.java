@@ -23,8 +23,6 @@ import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservati
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketSeatReservationMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseStatusRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderDetailRespDTO;
-import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderPassengerDetailRespDTO;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateRequest;
@@ -87,12 +85,14 @@ public class TicketSeatReservationReleaseService {
      * @param arrival 到达站
      * @param ridingDate 乘车日期
      * @param serviceDate 列车始发日期
+     * @param seatType 本次购票统一使用的座位类型
      * @param tickets 已锁定的座位明细
      * @param orderCreateRequest 可独立重放的完整建单请求
      */
     public void prepareReservation(String reservationId, String actionId, String commandId,
                                    String userId, String username, Long trainId, String departure,
                                    String arrival, java.util.Date ridingDate, java.util.Date serviceDate,
+                                   Integer seatType,
                                    List<TrainPurchaseTicketRespDTO> tickets,
                                    TicketOrderCreateRemoteReqDTO orderCreateRequest) {
         // PREPARED 记录与数据库锁座、车票写入同事务提交，使 MQ 投递前已经具备恢复依据。
@@ -108,6 +108,8 @@ public class TicketSeatReservationReleaseService {
                 .serviceDate(serviceDate)
                 .departure(departure)
                 .arrival(arrival)
+                .seatType(seatType)
+                .seatCount(tickets.size())
                 .seatPayload(JSON.toJSONString(tickets))
                 .dbSeatReleaseStatus(STEP_PENDING)
                 .redisBitmapReleaseStatus(STEP_PENDING)
@@ -430,7 +432,7 @@ public class TicketSeatReservationReleaseService {
         }
         RedisSeatBitmapReleaseResult result = redisSeatBitmapService.releaseByReservationId(
                 String.valueOf(reservation.getTrainId()), reservation.getServiceDate(), reservation.getDeparture(), reservation.getArrival(),
-                tickets, reservation.getReservationId());
+                reservation.getSeatType(), tickets, reservation.getReservationId());
 
         // owner 已变更不是可重试的异常；旧 reservation 无权继续清理当前位图。
         reservation.setRedisBitmapReleaseStatus(result == RedisSeatBitmapReleaseResult.OWNER_CHANGED
@@ -453,7 +455,8 @@ public class TicketSeatReservationReleaseService {
         }
         // 统一库存和车厢摘要使用 reservationId 作为幂等键，覆盖关闭消息重复投递与进程重启。
         ticketInventoryRollbackService.rollbackIfNecessary(
-                buildInventoryRollbackOrder(reservation, tickets), reservation.getServiceDate(), reservation.getReservationId());
+                String.valueOf(reservation.getTrainId()), reservation.getServiceDate(), reservation.getDeparture(), reservation.getArrival(),
+                reservation.getSeatType(), reservation.getSeatCount(), tickets, reservation.getReservationId());
         reservation.setTokenRollbackStatus(STEP_DONE);
         if (ticketSeatReservationMapper.updateById(reservation) != 1) {
             throw new ServiceException("更新统一库存回滚状态失败");
@@ -475,26 +478,4 @@ public class TicketSeatReservationReleaseService {
         return tickets;
     }
 
-    /**
-     * 将 reservation 快照转换为统一库存回滚接口所需的订单明细。
-     *
-     * @param reservation 当前座位占用记录
-     * @param tickets 当前 reservation 持有的座位明细
-     * @return 仅包含库存回滚所需字段的订单明细
-     */
-    private TicketOrderDetailRespDTO buildInventoryRollbackOrder(TicketSeatReservationDO reservation,
-                                                                  List<TrainPurchaseTicketRespDTO> tickets) {
-        // 统一库存回滚只依赖车次、区间、座位类型和车厢，因此从持久化快照重建最小明细。
-        TicketOrderDetailRespDTO order = new TicketOrderDetailRespDTO();
-        order.setTrainId(reservation.getTrainId());
-        order.setDeparture(reservation.getDeparture());
-        order.setArrival(reservation.getArrival());
-        order.setPassengerDetails(tickets.stream()
-                .map(each -> TicketOrderPassengerDetailRespDTO.builder()
-                        .seatType(each.getSeatType())
-                        .carriageNumber(each.getCarriageNumber())
-                        .build())
-                .toList());
-        return order;
-    }
 }

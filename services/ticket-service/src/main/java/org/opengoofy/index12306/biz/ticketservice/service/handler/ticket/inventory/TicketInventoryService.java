@@ -97,21 +97,16 @@ public class TicketInventoryService {
      * @param trainId 车次标识
      * @param serviceDate 列车始发日期
      * @param affectedRoutes 本次购票影响的全部区间
-     * @param seatTypeCountMap 各席别购买数量
+     * @param seatType 本次购票统一席别
+     * @param passengerCount 本次购票乘车人数
      * @param reservationId 本次购票预订标识
      * @return 库存足够或同一预订已扣减时返回 true，库存不足返回 false
      */
     public boolean deductInUnified(String trainId, Date serviceDate, List<RouteDTO> affectedRoutes,
-                                   Map<Integer, Long> seatTypeCountMap, String reservationId) {
-        // 将“受影响区间 × 席别数量”展开成 Lua 所需的 field -> count 参数；这里只组装数据，不修改 Redis。
-        // 例如两段区间、两个席别会生成四个库存 field，保证一次脚本覆盖本次车票涉及的全部库存维度。
-        // {
-        //  "北京_廊坊_2": 2,
-        //  "北京_廊坊_1": 1,
-        //  "廊坊_天津_2": 2,
-        //  "廊坊_天津_1": 1
-        //}
-        Map<String, Long> inventoryDeltas = buildInventoryDeltas(affectedRoutes, seatTypeCountMap);
+                                   Integer seatType, long passengerCount, String reservationId) {
+        // 将全部受影响区间和订单统一席别展开成 Lua 所需的 field -> count 参数。
+        Map<String, Long> inventoryDeltas = buildSingleSeatInventoryDeltas(
+                affectedRoutes, seatType, passengerCount);
         if (inventoryDeltas.isEmpty()) {
             // 没有任何有效库存 field 时不能执行脚本，否则无法判断请求对应的真实库存范围。
             recordOperation("deduct", "missing");
@@ -158,13 +153,14 @@ public class TicketInventoryService {
      * @param trainId 车次标识
      * @param serviceDate 列车始发日期
      * @param affectedRoutes 本次订单影响的全部区间
-     * @param seatTypeCountMap 各席别回补数量
+     * @param seatType 已关闭订单统一使用的席别
+     * @param passengerCount 已关闭订单的乘车人数
      * @param rollbackId reservationId 等稳定幂等标识
      */
     public void rollbackInUnified(String trainId, Date serviceDate, List<RouteDTO> affectedRoutes,
-                                  Map<Integer, Long> seatTypeCountMap, String rollbackId) {
+                                  Integer seatType, long passengerCount, String rollbackId) {
         // 回补必须使用与扣减完全相同的区间和席别数量，才能把此前扣除的每一个库存 field 对称地加回。
-        Map<String, Long> inventoryDeltas = buildInventoryDeltas(affectedRoutes, seatTypeCountMap);
+        Map<String, Long> inventoryDeltas = buildSingleSeatInventoryDeltas(affectedRoutes, seatType, passengerCount);
         if (inventoryDeltas.isEmpty()) {
             // 缺少库存明细时拒绝回补，避免在无法定位原始库存的情况下继续处理。
             recordOperation("rollback", "missing");
@@ -202,22 +198,26 @@ public class TicketInventoryService {
     }
 
     /**
-     * 将受影响区间和席别数量展开为统一库存字段增量。
+     * 将购票区间、订单级席别和乘车人数展开为统一库存字段增量。
      *
-     * @param affectedRoutes 本次操作影响的区间
-     * @param seatTypeCountMap 各席别变化数量
-     * @return field 到正整数变化量的映射
+     * @param affectedRoutes 本次购票影响的区间
+     * @param seatType 本次购票统一席别
+     * @param passengerCount 本次购票乘车人数
+     * @return field 到正整数扣减量的映射
      */
-    private Map<String, Long> buildInventoryDeltas(List<RouteDTO> affectedRoutes,
-                                                   Map<Integer, Long> seatTypeCountMap) {
-        // 每个受影响区间都必须按席别应用同一购买或回补数量；购票和回补共用该方法，保证两条路径使用完全相同的 field。
+    private Map<String, Long> buildSingleSeatInventoryDeltas(List<RouteDTO> affectedRoutes,
+                                                             Integer seatType,
+                                                             long passengerCount) {
+        // 每个受影响区间都扣减同一订单级席别和相同乘车人数。
         Map<String, Long> result = new LinkedHashMap<>();
-        // 外层遍历区间，内层遍历席别，形成“区间 × 席别”的库存字段集合。
-        affectedRoutes.forEach(route -> seatTypeCountMap.forEach((seatType, count) -> result.put(
+        if (seatType == null || passengerCount <= 0) {
+            return result;
+        }
+        affectedRoutes.forEach(route -> result.put(
                 TicketInventoryKeyUtil.buildInventoryField(
                         route.getStartStation(), route.getEndStation(), seatType),
-                count)));
-        // 返回值只描述变化量；扣减脚本使用 -count，回补脚本使用 +count，方法本身不直接修改库存。
+                passengerCount));
+        // 返回值只描述变化量；扣减脚本负责校验和原子执行 -passengerCount。
         return result;
     }
 
