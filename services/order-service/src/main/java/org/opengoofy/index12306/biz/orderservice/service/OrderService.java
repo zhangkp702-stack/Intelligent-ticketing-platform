@@ -20,14 +20,13 @@ package org.opengoofy.index12306.biz.orderservice.service;
 import org.opengoofy.index12306.biz.orderservice.dto.domain.OrderStatusReversalDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.BalancePaymentConfirmReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.CancelTicketOrderReqDTO;
-import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderCreateReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderPageQueryReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQueryReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
+import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderCommandDO;
 import org.opengoofy.index12306.biz.orderservice.mq.event.PayResultCallbackOrderEvent;
-import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
 
 /**
@@ -68,17 +67,18 @@ public interface OrderService {
     PageResponse<TicketOrderDetailRespDTO> pageTicketOrder(TicketOrderPageQueryReqDTO requestParam);
 
     /**
-     * 消费票务创建命令并在订单本地事务内登记回传结果 Outbox。
+     * 执行已经持有有效租约的订单创建 Command。
      *
-     * @param requestParam 已转换的订单创建请求
-     * @param sourceMessageId 票务服务 Outbox 事件标识
-     * @param reservationId 票务预留座位标识
-     * @return 已持久化的成功或明确失败结果
+     * @param command 包含完整恢复载荷和 fencing token 的 Command
      */
-    TicketOrderCreateResultMessage createTicketOrderFromMessage(
-            TicketOrderCreateReqDTO requestParam,
-            String sourceMessageId,
-            String reservationId);
+    void executeClaimedOrderCommand(OrderCommandDO command);
+
+    /**
+     * 对账 UNKNOWN Command；只在订单事实存在时补齐成功终态和结果 Outbox。
+     *
+     * @param command 不含敏感载荷的 UNKNOWN Command 快照
+     */
+    void reconcileUnknownOrderCommand(OrderCommandDO command);
 
     /**
      * 查询当前用户稳定订单命令的权威结果。

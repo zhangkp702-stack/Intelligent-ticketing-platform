@@ -17,6 +17,7 @@
 
 package org.opengoofy.index12306.biz.orderservice.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -24,24 +25,30 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import java.util.concurrent.ThreadPoolExecutor;
 
 /**
- * 订单可靠消息后台投递线程池配置。
+ * 订单创建 Command 的有界执行器配置。
  */
 @Configuration
-public class OrderMessageDispatchConfiguration {
+public class OrderCommandExecutorConfiguration {
 
     /**
-     * 创建延迟关单消息投递线程池，隔离 RocketMQ 网络等待与订单请求线程。
+     * 创建与 MQ 消费线程、定时恢复线程隔离的订单任务执行器。
      *
-     * @return 有界的延迟关单消息执行器
-    */
-    @Bean("delayCloseMessageExecutor")
-    public ThreadPoolTaskExecutor delayCloseMessageExecutor() {
-        // 有界队列保护进程内存；队列满时拒绝即时任务，持久化 Outbox 会由恢复扫描重新投递。
+     * @param corePoolSize 常驻线程数
+     * @param maxPoolSize 最大线程数
+     * @param queueCapacity 有界等待队列容量
+     * @return 已初始化的订单任务执行器
+     */
+    @Bean("orderCommandExecutor")
+    public ThreadPoolTaskExecutor orderCommandExecutor(
+            @Value("${index12306.order.command.executor.core-pool-size:16}") int corePoolSize,
+            @Value("${index12306.order.command.executor.max-pool-size:64}") int maxPoolSize,
+            @Value("${index12306.order.command.executor.queue-capacity:2048}") int queueCapacity) {
+        // 有界队列提供进程内背压；队列满时拒绝即时调度，由数据库恢复扫描稍后重新提交。
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(8);
-        executor.setMaxPoolSize(32);
-        executor.setQueueCapacity(5000);
-        executor.setThreadNamePrefix("delay-close-message-");
+        executor.setCorePoolSize(Math.max(1, corePoolSize));
+        executor.setMaxPoolSize(Math.max(Math.max(1, corePoolSize), maxPoolSize));
+        executor.setQueueCapacity(Math.max(1, queueCapacity));
+        executor.setThreadNamePrefix("order-command-");
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
         return executor;
     }

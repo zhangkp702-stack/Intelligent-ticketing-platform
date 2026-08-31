@@ -18,7 +18,10 @@
 package org.opengoofy.index12306.biz.orderservice.service;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.alibaba.fastjson2.JSON;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -26,31 +29,29 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.opengoofy.index12306.biz.orderservice.common.enums.DelayCloseMessageStatusEnum;
 import org.opengoofy.index12306.biz.orderservice.common.enums.OrderStatusEnum;
 import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderCommandDO;
+import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderCdcOutboxEventDO;
 import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderDO;
 import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderItemDO;
+import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderCdcOutboxEventMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderCommandMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderItemMapper;
 import org.opengoofy.index12306.biz.orderservice.dao.mapper.OrderMapper;
-import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderCreateReqDTO;
-import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderItemCreateReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.req.TicketOrderSelfPageQueryReqDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.OrderCommandStatusRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailRespDTO;
 import org.opengoofy.index12306.biz.orderservice.dto.resp.TicketOrderDetailSelfRespDTO;
 import org.opengoofy.index12306.biz.orderservice.service.impl.OrderServiceImpl;
 import org.opengoofy.index12306.biz.orderservice.service.monitor.OrderCreateMetrics;
-import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateRequest;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.opengoofy.index12306.framework.starter.convention.page.PageResponse;
-import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
 import org.redisson.api.RedissonClient;
-import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionStatus;
@@ -65,9 +66,11 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -84,6 +87,9 @@ class OrderServiceImplTests {
     private OrderCommandMapper orderCommandMapper;
 
     @Mock
+    private OrderCdcOutboxEventMapper orderCdcOutboxEventMapper;
+
+    @Mock
     private OrderItemMapper orderItemMapper;
 
     @Mock
@@ -96,19 +102,22 @@ class OrderServiceImplTests {
     private RedissonClient redissonClient;
 
     @Mock
-    private OrderDelayCloseMessageDispatchService orderDelayCloseMessageDispatchService;
-
-    @Mock
     private OrderCreateMetrics orderCreateMetrics;
 
     @Mock
     private PlatformTransactionManager transactionManager;
 
-    @Mock
-    private ReliableEventStore reliableEventStore;
-
     @InjectMocks
     private OrderServiceImpl orderService;
+
+    /**
+     * 默认模拟 CDC Outbox 追加成功，个别重复写入用例可覆盖该返回值。
+     */
+    @BeforeEach
+    void appendCdcOutboxByDefault() {
+        // 普通订单终态应首次追加事件，避免非 CDC 用例被默认零返回干扰。
+        lenient().when(orderCdcOutboxEventMapper.insertIgnore(any())).thenReturn(1);
+    }
 
     /**
      * 清理测试线程中的用户上下文，避免影响后续用例。
@@ -238,104 +247,113 @@ class OrderServiceImplTests {
     }
 
     /**
-     * 验证订单创建入口只是事务编排器，防止重新添加外层事务造成连接嵌套申请。
+     * 验证 Command 执行入口只是事务编排器，防止重新添加外层事务造成连接嵌套申请。
      */
     @Test
     void createOrderOrchestratorHasNoOuterTransaction() throws NoSuchMethodException {
         // 事务只能由内部 TransactionTemplate 顺序开启，入口方法本身不能持有数据库连接。
         Transactional annotation = OrderServiceImpl.class
-                .getMethod("createTicketOrderFromMessage", TicketOrderCreateReqDTO.class, String.class, String.class)
+                .getMethod("executeClaimedOrderCommand", OrderCommandDO.class)
                 .getAnnotation(Transactional.class);
         assertThat(annotation).isNull();
     }
 
     /**
-     * 验证稳定命令登记和订单落库使用两个顺序提交的独立事务，不再嵌套占用连接。
+     * 验证订单、Command 成功状态、延迟关单和结果 CDC Outbox 使用同一独立事务。
      */
     @Test
-    void createOrderUsesSequentialRequiresNewTransactions() {
-        TicketOrderCreateReqDTO request = createOrderRequest();
-        String requestFingerprint = ReflectionTestUtils.invokeMethod(
-                orderService, "createRequestFingerprint", request);
+    void claimedCommandUsesOneOrderTransaction() {
+        OrderCommandDO command = claimedCommand();
         OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
-        existing.setActionId(request.getActionId());
-        existing.setCommandId(request.getCommandId());
-        existing.setRequestFingerprint(requestFingerprint);
-        TransactionStatus commandTransaction = mock(TransactionStatus.class);
+        existing.setActionId(command.getActionId());
+        existing.setCommandId(command.getCommandId());
+        existing.setRequestFingerprint(command.getRequestFingerprint());
         TransactionStatus orderTransaction = mock(TransactionStatus.class);
 
-        // 第一笔事务登记 PROCESSING，第二笔事务复用已落库订单并推进命令成功。
+        // Command 已在 MQ 消费阶段提交，这里只需一笔订单事务完成全部本地事实。
         when(transactionManager.getTransaction(any(TransactionDefinition.class)))
-                .thenReturn(commandTransaction, orderTransaction);
-        when(orderCommandMapper.selectOne(any())).thenReturn(null);
-        when(orderCommandMapper.insert(any())).thenReturn(1);
+                .thenReturn(orderTransaction);
         when(orderMapper.selectOne(any())).thenReturn(existing);
-        when(orderCommandMapper.update(any(), any())).thenReturn(1);
+        when(orderCommandMapper.update(isNull(), any())).thenReturn(1);
 
-        TicketOrderCreateResultMessage result = orderService.createTicketOrderFromMessage(
-                request, "source-message-a", "reservation-a");
+        orderService.executeClaimedOrderCommand(command);
 
-        assertThat(result.getStatus()).isEqualTo(TicketOrderMessageConstants.RESULT_SUCCEEDED);
-        assertThat(result.getOrderSn()).isEqualTo("order-1");
         ArgumentCaptor<TransactionDefinition> definitions = ArgumentCaptor.forClass(TransactionDefinition.class);
-        verify(transactionManager, times(2)).getTransaction(definitions.capture());
+        verify(transactionManager).getTransaction(definitions.capture());
         assertThat(definitions.getAllValues())
                 .allSatisfy(definition -> assertThat(definition.getPropagationBehavior())
                         .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW));
-        InOrder transactionOrder = inOrder(transactionManager);
-        transactionOrder.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
-        transactionOrder.verify(transactionManager).commit(commandTransaction);
-        transactionOrder.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
-        transactionOrder.verify(transactionManager).commit(orderTransaction);
-        ArgumentCaptor<OrderCommandDO> commandUpdate = ArgumentCaptor.forClass(OrderCommandDO.class);
-        verify(orderCommandMapper).update(commandUpdate.capture(), any());
-        assertThat(commandUpdate.getValue().getDelayCloseStatus())
-                .isEqualTo(DelayCloseMessageStatusEnum.PENDING.getStatus());
-        assertThat(commandUpdate.getValue().getDelayCloseNextRetryTime()).isNotNull();
-        // MQ 网络发送只允许在订单事务提交后进入后台投递器。
-        InOrder completionOrder = inOrder(transactionManager, orderDelayCloseMessageDispatchService);
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Wrapper> commandUpdateCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(orderCommandMapper).update(isNull(), commandUpdateCaptor.capture());
+        assertThat(commandUpdateCaptor.getValue().getSqlSegment())
+                .contains("status", "lease_owner", "lease_token", "command_id", "user_id");
+        // 两类 CDC 事件先与订单事实落库，只有本地事务提交后 Canal 才能读取对应 Binlog。
+        ArgumentCaptor<OrderCdcOutboxEventDO> outboxCaptor = ArgumentCaptor.forClass(OrderCdcOutboxEventDO.class);
+        verify(orderCdcOutboxEventMapper, org.mockito.Mockito.times(2)).insertIgnore(outboxCaptor.capture());
+        assertThat(outboxCaptor.getAllValues()).extracting(OrderCdcOutboxEventDO::getNamespace)
+                .containsExactlyInAnyOrder(
+                        TicketOrderMessageConstants.DELAY_CLOSE_ORDER_NAMESPACE,
+                        TicketOrderMessageConstants.CREATE_ORDER_RESULT_NAMESPACE);
+        assertThat(outboxCaptor.getAllValues()).filteredOn(each ->
+                        TicketOrderMessageConstants.DELAY_CLOSE_ORDER_NAMESPACE.equals(each.getNamespace()))
+                .singleElement()
+                .satisfies(event -> {
+                    assertThat(event.getAggregateId()).isEqualTo("order-1");
+                    assertThat(event.getDelayLevel())
+                            .isEqualTo(TicketOrderMessageConstants.DELAY_CLOSE_ORDER_DELAY_LEVEL);
+                });
+        InOrder completionOrder = inOrder(orderCdcOutboxEventMapper, transactionManager);
+        completionOrder.verify(orderCdcOutboxEventMapper, org.mockito.Mockito.times(2)).insertIgnore(any());
         completionOrder.verify(transactionManager).commit(orderTransaction);
-        completionOrder.verify(orderDelayCloseMessageDispatchService)
-                .dispatchAsync("1001", "action-1:create-order", "order-1");
     }
 
     /**
-     * 验证订单事务失败回滚后，失败命令使用第三笔独立事务提交为可恢复终态。
+     * 验证请求载荷摘要损坏时不会创建订单，并在独立事务内形成明确 FAILED 结果。
      */
     @Test
-    void createOrderPersistsFailureAfterOrderTransactionRollback() {
-        TicketOrderCreateReqDTO request = createOrderRequest();
-        OrderDO conflictingOrder = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
-        conflictingOrder.setActionId(request.getActionId());
-        conflictingOrder.setCommandId(request.getCommandId());
-        conflictingOrder.setRequestFingerprint("different-fingerprint");
-        TransactionStatus commandTransaction = mock(TransactionStatus.class);
-        TransactionStatus orderTransaction = mock(TransactionStatus.class);
+    void invalidPayloadPersistsConfirmedFailureWithoutCreatingOrder() {
+        OrderCommandDO command = claimedCommand();
+        command.setRequestFingerprint("corrupted-fingerprint");
         TransactionStatus failureTransaction = mock(TransactionStatus.class);
 
-        // 主订单事务校验失败后先回滚，再单独提交 FAILED，不能把失败事实一起回滚。
+        // 摘要校验发生在订单事务前，随后单独提交 FAILED 和失败结果 Outbox。
         when(transactionManager.getTransaction(any(TransactionDefinition.class)))
-                .thenReturn(commandTransaction, orderTransaction, failureTransaction);
-        when(orderCommandMapper.selectOne(any())).thenReturn(null);
-        when(orderCommandMapper.insert(any())).thenReturn(1);
-        when(orderMapper.selectOne(any())).thenReturn(conflictingOrder);
+                .thenReturn(failureTransaction);
+        when(orderMapper.selectOne(any())).thenReturn(null);
+        when(orderCommandMapper.update(isNull(), any())).thenReturn(1);
 
-        assertThatThrownBy(() -> orderService.createTicketOrderFromMessage(
-                request, "source-message-a", "reservation-a"))
-                .hasMessageContaining("订单命令标识与原请求不一致");
+        orderService.executeClaimedOrderCommand(command);
 
-        InOrder transactionOrder = inOrder(transactionManager);
-        transactionOrder.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
-        transactionOrder.verify(transactionManager).commit(commandTransaction);
-        transactionOrder.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
-        transactionOrder.verify(transactionManager).rollback(orderTransaction);
-        transactionOrder.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
-        transactionOrder.verify(transactionManager).commit(failureTransaction);
-        ArgumentCaptor<TransactionDefinition> definitions = ArgumentCaptor.forClass(TransactionDefinition.class);
-        verify(transactionManager, times(3)).getTransaction(definitions.capture());
-        assertThat(definitions.getAllValues())
-                .allSatisfy(definition -> assertThat(definition.getPropagationBehavior())
-                        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW));
+        verify(orderMapper, never()).insert(any());
+        verify(transactionManager).commit(failureTransaction);
+        verify(orderCdcOutboxEventMapper).insertIgnore(any());
+    }
+
+    /**
+     * 验证旧 fencing token 更新零行时订单事务整体回滚，迟到线程不能提交成功结果。
+     */
+    @Test
+    void staleFencingTokenRollsBackOrderTransaction() {
+        OrderCommandDO command = claimedCommand();
+        OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
+        existing.setActionId(command.getActionId());
+        existing.setCommandId(command.getCommandId());
+        existing.setRequestFingerprint(command.getRequestFingerprint());
+        TransactionStatus orderTransaction = mock(TransactionStatus.class);
+        TransactionStatus reconciliationTransaction = mock(TransactionStatus.class);
+
+        // 两次围栏更新都返回零行，模拟租约已经由更高 token 的工作线程接管。
+        when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenReturn(orderTransaction, reconciliationTransaction);
+        when(orderMapper.selectOne(any())).thenReturn(existing);
+        when(orderCommandMapper.update(isNull(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> orderService.executeClaimedOrderCommand(command))
+                .hasMessageContaining("执行围栏已失效");
+
+        verify(transactionManager).rollback(orderTransaction);
+        verify(transactionManager).rollback(reconciliationTransaction);
     }
 
     /**
@@ -343,37 +361,51 @@ class OrderServiceImplTests {
      *
      * @return 字段固定且可计算请求指纹的订单创建参数
      */
-    private TicketOrderCreateReqDTO createOrderRequest() {
+    private OrderCommandDO claimedCommand() {
         Date orderTime = new Date(1_700_000_000_000L);
-        TicketOrderItemCreateReqDTO item = new TicketOrderItemCreateReqDTO();
-        item.setPassengerId("passenger-1");
-        item.setCarriageNumber("01");
-        item.setSeatNumber("01A");
-        item.setSeatType(2);
-        item.setRealName("Test User");
-        item.setIdType(0);
-        item.setIdCard("110101199001010000");
-        item.setPhone("13800000000");
-        item.setAmount(10000);
-        item.setTicketType(0);
-
-        // 固定全部指纹字段，确保重复订单校验只受测试指定的摘要影响。
-        TicketOrderCreateReqDTO request = new TicketOrderCreateReqDTO();
-        request.setActionId("action-1");
-        request.setCommandId("action-1:create-order");
-        request.setUserId(1001L);
-        request.setUsername("alice");
-        request.setTrainId(1001L);
-        request.setDeparture("北京南");
-        request.setArrival("上海虹桥");
-        request.setSource(0);
-        request.setOrderTime(orderTime);
-        request.setRidingDate(orderTime);
-        request.setTrainNumber("G1001");
-        request.setDepartureTime(orderTime);
-        request.setArrivalTime(orderTime);
-        request.setTicketOrderItems(List.of(item));
-        return request;
+        TicketOrderCreateItem item = TicketOrderCreateItem.builder()
+                .carriageNumber("01")
+                .seatNumber("01A")
+                .seatType(2)
+                .realName("Test User")
+                .idType(0)
+                .idCard("110101199001010000")
+                .phone("13800000000")
+                .amount(10000)
+                .ticketType(0)
+                .build();
+        TicketOrderCreateRequest request = TicketOrderCreateRequest.builder()
+                .userId("1001")
+                .username("alice")
+                .trainId(1001L)
+                .departure("北京南")
+                .arrival("上海虹桥")
+                .source(0)
+                .orderTime(orderTime)
+                .ridingDate(orderTime)
+                .trainNumber("G1001")
+                .departureTime(orderTime)
+                .arrivalTime(orderTime)
+                .ticketOrderItems(List.of(item))
+                .build();
+        String requestPayload = JSON.toJSONString(request);
+        // 指纹值在测试中调用与生产一致的 SHA-256 工具计算，保证载荷恢复路径完整执行。
+        String fingerprint = org.apache.commons.codec.digest.DigestUtils.sha256Hex(requestPayload);
+        return OrderCommandDO.builder()
+                .commandId("action-1:create-order")
+                .actionId("action-1")
+                .userId("1001")
+                .recoveryShard(9)
+                .sourceMessageId("source-message-a")
+                .reservationId("reservation-a")
+                .requestFingerprint(fingerprint)
+                .requestPayload(requestPayload)
+                .status("PROCESSING")
+                .attemptCount(1)
+                .maxAttempts(16)
+                .leaseOwner("worker-a")
+                .leaseToken(1L)
+                .build();
     }
 
     /**

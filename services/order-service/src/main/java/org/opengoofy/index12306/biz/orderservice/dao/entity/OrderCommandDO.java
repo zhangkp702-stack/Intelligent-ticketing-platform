@@ -27,9 +27,10 @@ import org.opengoofy.index12306.framework.starter.database.base.BaseDO;
 import java.util.Date;
 
 /**
- * 订单创建稳定命令的持久化终态。
+ * 订单创建 Command 的持久化任务记录。
  *
- * <p>订单表只能证明订单已经创建；本表额外保存已失败和处理中状态，供上游对远程超时做安全对账。</p>
+ * <p>记录包含独立恢复订单创建所需的加密请求快照、执行租约和重试进度；
+ * 订单表仍然是已创建订单的业务事实，Command 负责描述任务是否已经被可靠接管和执行完成。</p>
  */
 @Data
 @NoArgsConstructor
@@ -50,11 +51,47 @@ public class OrderCommandDO extends BaseDO {
     /** 发起命令的用户标识，同时作为订单分片键。 */
     private String userId;
 
+    /** 与 userId 路由结果一致的物理恢复分片编号。 */
+    private Integer recoveryShard;
+
     /** 不可变订单参数的摘要。 */
     private String requestFingerprint;
 
-    /** 命令终态：PROCESSING、SUCCEEDED 或 FAILED。 */
+    /** 票务服务 Outbox 生成的源消息标识。 */
+    private String sourceMessageId;
+
+    /** 票务服务持有座位的预留标识。 */
+    private String reservationId;
+
+    /** 订单创建消息协议版本。 */
+    private Long messageVersion;
+
+    /** 经 ShardingSphere 整列加密的可恢复订单创建请求 JSON。 */
+    private String requestPayload;
+
+    /** 加密密钥版本，用于后续轮换时选择解密配置。 */
+    private Integer payloadKeyVersion;
+
+    /** 命令状态：RECEIVED、PROCESSING、RETRY_WAIT、UNKNOWN、SUCCEEDED 或 FAILED。 */
     private String status;
+
+    /** 已经开始执行的次数。 */
+    private Integer attemptCount;
+
+    /** 允许执行的最大次数。 */
+    private Integer maxAttempts;
+
+    /** RECEIVED 或 RETRY_WAIT 状态下一次允许认领的时间。 */
+    private Date nextRetryTime;
+
+    /** 当前执行租约所有者。 */
+    private String leaseOwner;
+
+    /** 单调递增的租约围栏令牌。 */
+    private Long leaseToken;
+
+    /** 当前执行租约到期时间。 */
+    private Date leaseExpireTime;
 
     /** 成功创建订单时写入的订单号。 */
     private String orderSn;
@@ -62,15 +99,10 @@ public class OrderCommandDO extends BaseDO {
     /** 失败时保存的安全摘要，不暴露底层异常正文。 */
     private String failureReason;
 
-    /** 延迟关单消息状态：0待发送、1发送中、2已发送。 */
-    private Integer delayCloseStatus;
+    /** 成功或最终失败的完成时间。 */
+    private Date finishTime;
 
-    /** 延迟关单消息已失败的次数。 */
-    private Integer delayCloseRetryCount;
+    /** 终态请求载荷允许清理的时间。 */
+    private Date payloadExpireTime;
 
-    /** 下次允许认领或发送中租约到期时间。 */
-    private Date delayCloseNextRetryTime;
-
-    /** 最近一次延迟关单消息失败摘要。 */
-    private String delayCloseFailureReason;
 }

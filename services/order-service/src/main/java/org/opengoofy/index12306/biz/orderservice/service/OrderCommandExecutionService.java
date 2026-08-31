@@ -15,26 +15,18 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.orderservice.common.enums;
-
-import lombok.Getter;
-import lombok.RequiredArgsConstructor;
+package org.opengoofy.index12306.biz.orderservice.service;
 
 /**
- * 延迟关单可靠消息状态。
+ * 订单创建 Command 的租约执行与分片恢复入口。
  */
-@Getter
-@RequiredArgsConstructor
-public enum DelayCloseMessageStatusEnum {
+public interface OrderCommandExecutionService {
 
-    /** 等待后台投递。 */
-    PENDING(0),
-
-    /** 已被一个订单服务实例认领。 */
-    SENDING(1),
-
-    /** RocketMQ 已确认接收。 */
-    SENT(2);
-
-    private final int status;
+    /**
+     * 异步唤醒一个已经持久化的订单创建任务。
+     *
+     * @param userId 用户分片键
+     * @param commandId 稳定订单创建命令标识
+     */
+    void dispatchAsync(String userId, String commandId);
 }

@@ -15,24 +15,23 @@
  * limitations under the License.
  */
 
-package org.opengoofy.index12306.biz.orderservice.mq.event;
+package org.opengoofy.index12306.biz.orderservice.service;
 
-import lombok.AllArgsConstructor;
-import lombok.Builder;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import org.opengoofy.index12306.biz.orderservice.dao.entity.OrderCommandDO;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 
 /**
- * 延迟关闭订单事件。
+ * 订单创建 Command 的可靠接收持久化服务。
  */
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-public class DelayCloseOrderEvent {
+public interface OrderCommandPersistenceService {
 
     /**
-     * 订单号。
+     * 在本地事务中持久化可独立恢复的订单创建任务。
+     *
+     * <p>相同命令和相同请求幂等返回原记录；相同命令绑定不同请求时拒绝覆盖。</p>
+     *
+     * @param message 票务服务发布的完整订单创建消息
+     * @return 新建或幂等复用的 Command 记录
      */
-    private String orderSn;
+    OrderCommandDO persistReceivedCommand(TicketOrderCreateCommandMessage message);
 }
