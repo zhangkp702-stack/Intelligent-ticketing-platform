@@ -81,4 +81,10 @@ public class CanalRelayProperties {
 
     /** 单条消息快速重试等待时间的上限。 */
     private long initialSendRetryMaxBackoffMillis = 2000L;
+
+    /** Relay 重试载荷的 AES 密钥，必须通过外部密钥配置注入，禁止写入代码仓库。 */
+    private String payloadEncryptionKey = "";
+
+    /** Relay 重试载荷当前使用的密钥版本。 */
+    private int payloadKeyVersion = 1;
 }

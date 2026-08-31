@@ -4,6 +4,16 @@ server:
 spring:
   application:
     name: index12306-canal-relay${unique-name:}-service
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${CANAL_RELAY_DB_USERNAME:root}
+    password: ${CANAL_RELAY_DB_PASSWORD:root}
+    url: jdbc:mysql://${CANAL_RELAY_DB_HOST:192.168.126.100}:${CANAL_RELAY_DB_PORT:3306}/${CANAL_RELAY_DB_NAME:12306_canal_relay}?useUnicode=true&characterEncoding=UTF-8&rewriteBatchedStatements=true&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    hikari:
+      connection-test-query: select 1
+      connection-timeout: 3000
+      maximum-pool-size: 16
+      minimum-idle: 2
 
 rocketmq:
   name-server: 192.168.126.100:9876
@@ -44,3 +54,5 @@ index12306:
     initial-send-max-attempts: 3
     initial-send-retry-backoff-millis: 200
     initial-send-retry-max-backoff-millis: 2000
+    payload-encryption-key: ${CANAL_RELAY_PAYLOAD_ENCRYPTION_KEY:}
+    payload-key-version: 1

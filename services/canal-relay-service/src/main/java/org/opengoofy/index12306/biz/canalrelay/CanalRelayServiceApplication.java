@@ -17,6 +17,7 @@
 
 package org.opengoofy.index12306.biz.canalrelay;
 
+import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
@@ -26,6 +27,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * <p>该进程独立订阅票务 Outbox 的 Binlog，并在 RocketMQ 确认后推进 Canal 位点。</p>
  */
 @SpringBootApplication
+@MapperScan("org.opengoofy.index12306.biz.canalrelay.retry.dao.mapper")
 public class CanalRelayServiceApplication {
 
     /**

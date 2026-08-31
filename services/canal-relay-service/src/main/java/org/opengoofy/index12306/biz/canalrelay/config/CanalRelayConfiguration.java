@@ -19,6 +19,8 @@ package org.opengoofy.index12306.biz.canalrelay.config;
 
 import com.alibaba.otter.canal.client.CanalConnectors;
 import org.opengoofy.index12306.biz.canalrelay.relay.CanalConnectorFactory;
+import org.opengoofy.index12306.biz.canalrelay.retry.security.AesGcmCanalRelayPayloadProtector;
+import org.opengoofy.index12306.biz.canalrelay.retry.security.CanalRelayPayloadProtector;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -50,6 +52,18 @@ public class CanalRelayConfiguration {
                 properties.getDestination(),
                 properties.getUsername(),
                 properties.getPassword());
+    }
+
+    /**
+     * 创建重试载荷保护器，使用外部注入的 AES 密钥保护乘客敏感信息。
+     *
+     * @param properties Relay 密钥配置
+     * @return 重试载荷保护器
+     */
+    @Bean
+    public CanalRelayPayloadProtector canalRelayPayloadProtector(CanalRelayProperties properties) {
+        return new AesGcmCanalRelayPayloadProtector(
+                properties.getPayloadEncryptionKey(), properties.getPayloadKeyVersion());
     }
 
     /**
