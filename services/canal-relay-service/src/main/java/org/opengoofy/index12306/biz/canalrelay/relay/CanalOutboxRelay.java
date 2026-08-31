@@ -232,15 +232,72 @@ public class CanalOutboxRelay implements SmartLifecycle {
      * @param commands 当前 Canal 批次中的目标命令
      */
     private void publishAll(List<RelayCommand> commands) {
-        List<CompletableFuture<Void>> futures = new ArrayList<>(commands.size());
+        List<CompletableFuture<PublishOutcome>> futures = new ArrayList<>(commands.size());
         for (RelayCommand command : commands) {
-            futures.add(CompletableFuture.runAsync(() -> publishOne(command), publisherExecutor));
+            // 每条消息独立记录最终结果，避免一条失败时丢失同批其他消息已经成功的事实。
+            futures.add(CompletableFuture.supplyAsync(() -> publishWithRetry(command), publisherExecutor));
         }
         try {
             CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
         } catch (CompletionException exception) {
             throw new IllegalStateException("RocketMQ 未确认完整 Canal 批次", exception.getCause());
         }
+        List<PublishOutcome> failures = futures.stream()
+                .map(CompletableFuture::join)
+                .filter(each -> !each.succeeded())
+                .toList();
+        if (!failures.isEmpty()) {
+            // 第一阶段尚未引入持久化失败表，快速重试耗尽后仍须回滚整批保证消息不丢失。
+            throw new IllegalStateException("RocketMQ 未确认完整 Canal 批次", failures.get(0).failure());
+        }
+    }
+
+    /**
+     * 在当前批次内独立快速重试一条消息，成功的消息不会因其他消息失败而再次尝试。
+     *
+     * @param command 已通过 Outbox 主键一致性校验的命令
+     * @return 成功或已耗尽快速重试次数的发送结果
+     */
+    private PublishOutcome publishWithRetry(RelayCommand command) {
+        int maxAttempts = Math.max(1, properties.getInitialSendMaxAttempts());
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                publishOne(command);
+                return PublishOutcome.success(command);
+            } catch (RuntimeException exception) {
+                lastFailure = exception;
+                if (attempt < maxAttempts) {
+                    // 仅当前消息等待，其他发送线程继续处理同批剩余消息。
+                    sleepBeforePublishRetry(command, attempt);
+                }
+            }
+        }
+        log.warn("canal_relay_command_publish_exhausted eventId={}, commandId={}, attempts={}, exceptionType={}",
+                command.eventId(), command.commandId(), maxAttempts,
+                lastFailure == null ? null : lastFailure.getClass().getSimpleName());
+        return PublishOutcome.failure(command, lastFailure);
+    }
+
+    /**
+     * 按尝试次数计算当前消息的快速重试等待时间，并处理中断信号。
+     *
+     * @param command 当前重试的命令
+     * @param attempt 已失败的尝试次数
+     */
+    private void sleepBeforePublishRetry(RelayCommand command, int attempt) {
+        long initial = Math.max(1L, properties.getInitialSendRetryBackoffMillis());
+        long maximum = Math.max(initial, properties.getInitialSendRetryMaxBackoffMillis());
+        long backoff = Math.min(maximum, initial * (1L << Math.min(attempt - 1, 10)));
+        try {
+            Thread.sleep(backoff);
+        } catch (InterruptedException exception) {
+            // 中断表示当前发送任务无法继续，保留中断标志并让批次按失败路径回滚。
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("RocketMQ 单条快速重试被中断", exception);
+        }
+        log.debug("canal_relay_command_retry_scheduled eventId={}, commandId={}, attempt={}, backoffMillis={}",
+                command.eventId(), command.commandId(), attempt + 1, backoff);
     }
 
     /**
@@ -257,6 +314,45 @@ public class CanalOutboxRelay implements SmartLifecycle {
         // 日志只保留稳定业务标识，不输出身份证号、手机号或完整订单载荷。
         log.info("canal_relay_command_published eventId={}, aggregateId={}, commandId={}",
                 command.eventId(), command.aggregateId(), command.commandId());
+    }
+
+    /**
+     * 表示单条消息在当前 Canal 批次中的最终发送结果。
+     *
+     * @param command 当前发送命令
+     * @param failure 最终失败异常，成功时为空
+     */
+    private record PublishOutcome(RelayCommand command, RuntimeException failure) {
+
+        /**
+         * 创建成功结果。
+         *
+         * @param command 已发送命令
+         * @return 成功结果
+         */
+        private static PublishOutcome success(RelayCommand command) {
+            return new PublishOutcome(command, null);
+        }
+
+        /**
+         * 创建失败结果。
+         *
+         * @param command 未确认的命令
+         * @param failure 最终失败异常
+         * @return 失败结果
+         */
+        private static PublishOutcome failure(RelayCommand command, RuntimeException failure) {
+            return new PublishOutcome(command, failure);
+        }
+
+        /**
+         * 判断当前消息是否已获得 Broker 确认。
+         *
+         * @return 没有最终失败异常时返回 true
+         */
+        private boolean succeeded() {
+            return failure == null;
+        }
     }
 
     /**

@@ -41,3 +41,6 @@ index12306:
     reconnect-max-backoff-millis: 10000
     send-concurrency: 16
     send-queue-capacity: 64
+    initial-send-max-attempts: 3
+    initial-send-retry-backoff-millis: 200
+    initial-send-retry-max-backoff-millis: 2000

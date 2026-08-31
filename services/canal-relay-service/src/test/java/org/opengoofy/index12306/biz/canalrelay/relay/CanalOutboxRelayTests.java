@@ -37,6 +37,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -68,6 +69,28 @@ class CanalOutboxRelayTests {
     }
 
     /**
+     * 单条消息首次发送失败后恢复时，只重试该消息并最终 ACK 批次。
+     */
+    @Test
+    void retriesOneMessageWithinBatchBeforeAcknowledging() {
+        CanalOutboxMessageRouter router = mock(CanalOutboxMessageRouter.class);
+        RocketMQTemplate rocketMQTemplate = mock(RocketMQTemplate.class);
+        CanalConnector connector = mock(CanalConnector.class);
+        when(router.route(any())).thenReturn(List.of(command()));
+        when(rocketMQTemplate.syncSend(anyString(), any(TicketOrderCreateCommandMessage.class)))
+                .thenThrow(new IllegalStateException("temporary timeout"))
+                .thenReturn(sendResult("broker-recovered"));
+        CanalOutboxRelay relay = relay(router, rocketMQTemplate);
+
+        relay.processBatch(connector, message(9L));
+
+        verify(rocketMQTemplate, times(2))
+                .syncSend(anyString(), any(TicketOrderCreateCommandMessage.class));
+        verify(connector).ack(9L);
+        verify(connector, never()).rollback(9L);
+    }
+
+    /**
      * Broker 发送异常或确认不确定时必须回滚，而不能 ACK 已部分投递的批次。
      */
     @Test
@@ -89,6 +112,31 @@ class CanalOutboxRelayTests {
     }
 
     /**
+     * 同批另一条消息已经成功时，后续失败消息的快速重试不应重新发送成功消息。
+     */
+    @Test
+    void doesNotRetrySuccessfulMessageWhenAnotherMessageIsExhausted() {
+        CanalOutboxMessageRouter router = mock(CanalOutboxMessageRouter.class);
+        RocketMQTemplate rocketMQTemplate = mock(RocketMQTemplate.class);
+        CanalConnector connector = mock(CanalConnector.class);
+        when(router.route(any())).thenReturn(List.of(command(), command()));
+        when(rocketMQTemplate.syncSend(anyString(), any(TicketOrderCreateCommandMessage.class)))
+                .thenReturn(sendResult("broker-success"))
+                .thenThrow(new IllegalStateException("permanent timeout"));
+        CanalOutboxRelay relay = relay(router, rocketMQTemplate);
+
+        assertThatThrownBy(() -> relay.processBatch(connector, message(10L)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("RocketMQ 未确认完整 Canal 批次");
+
+        // 第一条只发送一次，第二条执行三次快速重试，最终整批仍按安全边界回滚。
+        verify(rocketMQTemplate, times(4))
+                .syncSend(anyString(), any(TicketOrderCreateCommandMessage.class));
+        verify(connector).rollback(10L);
+        verify(connector, never()).ack(10L);
+    }
+
+    /**
      * 创建使用同步执行器的 Relay，使单元测试直接验证 ACK 先后顺序。
      *
      * @param router Outbox 行路由器
@@ -96,9 +144,13 @@ class CanalOutboxRelayTests {
      * @return 不连接真实 Canal 的 Relay 实例
      */
     private CanalOutboxRelay relay(CanalOutboxMessageRouter router, RocketMQTemplate rocketMQTemplate) {
+        CanalRelayProperties properties = new CanalRelayProperties();
+        // 测试不等待生产环境退避时长，只验证重试次数和 ACK/回滚顺序。
+        properties.setInitialSendRetryBackoffMillis(1L);
+        properties.setInitialSendRetryMaxBackoffMillis(1L);
         return new CanalOutboxRelay(
-                new CanalRelayProperties(),
-                properties -> mock(CanalConnector.class),
+                properties,
+                ignoredProperties -> mock(CanalConnector.class),
                 router,
                 rocketMQTemplate,
                 Runnable::run);

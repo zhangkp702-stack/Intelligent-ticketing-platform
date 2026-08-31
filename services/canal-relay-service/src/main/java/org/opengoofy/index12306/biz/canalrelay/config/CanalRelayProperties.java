@@ -72,4 +72,13 @@ public class CanalRelayProperties {
 
     /** 有界发送队列容量，满时回滚 Canal 批次形成反压。 */
     private int sendQueueCapacity = 64;
+
+    /** 单条消息在当前批次内允许的应用层发送次数，耗尽后才回滚整个批次。 */
+    private int initialSendMaxAttempts = 3;
+
+    /** 单条消息首次快速重试前的等待时间。 */
+    private long initialSendRetryBackoffMillis = 200L;
+
+    /** 单条消息快速重试等待时间的上限。 */
+    private long initialSendRetryMaxBackoffMillis = 2000L;
 }
