@@ -13,6 +13,7 @@
 
     <modules>
         <module>ticket-order-contract</module>
+        <module>canal-relay-service</module>
         <module>aggregation-service</module>
         <module>gateway-service</module>
         <module>order-service</module>

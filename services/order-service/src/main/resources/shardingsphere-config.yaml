@@ -30,11 +30,21 @@ rules:
         actualDataNodes: ds_${0..1}.t_order_command_${0..31}
         databaseStrategy:
           complex:
-            shardingColumns: user_id,command_id
+            shardingColumns: user_id,command_id,recovery_shard
             shardingAlgorithmName: order_database_complex_mod
         tableStrategy:
           complex:
-            shardingColumns: user_id,command_id
+            shardingColumns: user_id,command_id,recovery_shard
+            shardingAlgorithmName: order_table_complex_mod
+      t_cdc_outbox_event:
+        actualDataNodes: ds_${0..1}.t_cdc_outbox_event_${0..31}
+        databaseStrategy:
+          complex:
+            shardingColumns: user_id,command_id,recovery_shard
+            shardingAlgorithmName: order_database_complex_mod
+        tableStrategy:
+          complex:
+            shardingColumns: user_id,command_id,recovery_shard
             shardingAlgorithmName: order_table_complex_mod
       t_order_item:
         actualDataNodes: ds_${0..1}.t_order_item_${0..31}
@@ -103,6 +113,12 @@ rules:
             encryptorName: common_encryptor
           phone:
             cipherColumn: phone
+            encryptorName: common_encryptor
+        queryWithCipherColumn: true
+      t_order_command:
+        columns:
+          request_payload:
+            cipherColumn: request_payload
             encryptorName: common_encryptor
         queryWithCipherColumn: true
     encryptors:

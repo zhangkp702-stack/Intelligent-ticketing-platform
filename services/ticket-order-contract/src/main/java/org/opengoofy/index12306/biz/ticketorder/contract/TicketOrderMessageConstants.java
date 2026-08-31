@@ -54,6 +54,24 @@ public final class TicketOrderMessageConstants {
     /** 订单创建结果 Outbox 事件类型。 */
     public static final String CREATE_ORDER_RESULT_EVENT_TYPE = "TICKET_ORDER_CREATE_RESULT";
 
+    /** 延迟关闭订单的目标 Topic 前缀。 */
+    public static final String DELAY_CLOSE_ORDER_TOPIC = "index12306_order-service_delay-close-order_topic";
+
+    /** 延迟关闭订单的目标 Tag 前缀。 */
+    public static final String DELAY_CLOSE_ORDER_TAG = "index12306_order-service_delay-close-order_tag";
+
+    /** 延迟关闭订单的 CDC Outbox 命名空间。 */
+    public static final String DELAY_CLOSE_ORDER_NAMESPACE = "ticket-order-delay-close";
+
+    /** 延迟关闭订单的 CDC Outbox 事件类型。 */
+    public static final String DELAY_CLOSE_ORDER_EVENT_TYPE = "DELAY_CLOSE_TICKET_ORDER";
+
+    /** 延迟关闭订单的跨服务协议版本。 */
+    public static final long DELAY_CLOSE_ORDER_VERSION = 1L;
+
+    /** RocketMQ 十分钟延迟投递等级。 */
+    public static final int DELAY_CLOSE_ORDER_DELAY_LEVEL = 14;
+
     /** 成功结果状态。 */
     public static final String RESULT_SUCCEEDED = "SUCCEEDED";
 

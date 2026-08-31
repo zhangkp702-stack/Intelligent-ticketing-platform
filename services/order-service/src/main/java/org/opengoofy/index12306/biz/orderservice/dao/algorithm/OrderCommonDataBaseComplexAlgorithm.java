@@ -43,6 +43,13 @@ public class OrderCommonDataBaseComplexAlgorithm implements ComplexKeysShardingA
     private static final String SHARDING_COUNT_KEY = "sharding-count";
     private static final String TABLE_SHARDING_COUNT_KEY = "table-sharding-count";
 
+    /**
+     * 根据 user_id、recovery_shard 或 order_sn 将查询路由到唯一订单数据库。
+     *
+     * @param availableTargetNames 可用数据源名称
+     * @param shardingValue 逻辑表和分片条件
+     * @return 命中的数据源名称
+     */
     @Override
     public Collection<String> doSharding(Collection availableTargetNames, ComplexKeysShardingValue shardingValue) {
         Map<String, Collection<Comparable<?>>> columnNameAndShardingValuesMap = shardingValue.getColumnNameAndShardingValuesMap();
@@ -60,6 +67,13 @@ public class OrderCommonDataBaseComplexAlgorithm implements ComplexKeysShardingA
                     dbSuffix = String.valueOf(hashShardingValue((Long) comparable % 1000000) % shardingCount / tableShardingCount);
                 }
                 result.add("ds_" + dbSuffix);
+            } else if (CollUtil.isNotEmpty(columnNameAndShardingValuesMap.get("recovery_shard"))) {
+                // 恢复扫描携带预计算分片号，直接路由一个数据源，避免无 userId 查询广播全部订单库。
+                Comparable<?> recoveryShard = columnNameAndShardingValuesMap.get("recovery_shard").stream().findFirst().get();
+                int shard = Integer.parseInt(recoveryShard.toString());
+                ShardingSpherePreconditions.checkState(shard >= 0 && shard < shardingCount,
+                        () -> new IllegalArgumentException("Recovery shard is out of range."));
+                result.add("ds_" + shard / tableShardingCount);
             } else {
                 String orderSn = "order_sn";
                 String dbSuffix;
