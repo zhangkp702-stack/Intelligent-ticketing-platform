@@ -1,0 +1,43 @@
+server:
+  port: 9007
+
+spring:
+  application:
+    name: index12306-canal-relay${unique-name:}-service
+
+rocketmq:
+  name-server: 192.168.126.100:9876
+  producer:
+    group: index12306_canal-relay${unique-name:}-service_order-create_pg
+    send-message-timeout: 2000
+    retry-times-when-send-failed: 1
+    retry-times-when-send-async-failed: 1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+index12306:
+  canal-relay:
+    enabled: true
+    address: 192.168.126.100:11111
+    # Canal TCP 认证未启用时留空；这不是 MySQL 的 canal_relay 复制账号。
+    username: ''
+    password: ''
+    destination: example
+    subscription: '12306_ticket\.t_cdc_outbox_event,12306_order_0\.t_cdc_outbox_event_.*,12306_order_1\.t_cdc_outbox_event_.*'
+    source-table-patterns:
+      - '12306_ticket\.t_cdc_outbox_event'
+      - '12306_order_0\.t_cdc_outbox_event_[0-9]+'
+      - '12306_order_1\.t_cdc_outbox_event_[0-9]+'
+    batch-size: 64
+    idle-backoff-millis: 50
+    reconnect-initial-backoff-millis: 1000
+    reconnect-max-backoff-millis: 10000
+    send-concurrency: 16
+    send-queue-capacity: 64
