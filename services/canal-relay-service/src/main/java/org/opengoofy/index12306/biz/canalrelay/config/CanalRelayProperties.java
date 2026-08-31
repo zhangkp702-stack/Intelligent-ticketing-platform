@@ -85,6 +85,27 @@ public class CanalRelayProperties {
     /** 失败任务进入持久化重试后允许自动发送的最大次数。 */
     private int retryMaxAttempts = 16;
 
+    /** 是否启动失败任务后台扫描。 */
+    private boolean retryEnabled = true;
+
+    /** 失败任务扫描固定间隔。 */
+    private long retryScanIntervalMillis = 1000L;
+
+    /** 单次扫描最多抢占的任务数。 */
+    private int retryBatchSize = 32;
+
+    /** 单条失败任务租约有效时长。 */
+    private long retryLeaseMillis = 120000L;
+
+    /** 后台重试首次退避时间。 */
+    private long retryInitialBackoffMillis = 1000L;
+
+    /** 后台重试退避时间上限。 */
+    private long retryMaxBackoffMillis = 60000L;
+
+    /** 后台重试发送超时时间。 */
+    private long retrySendTimeoutMillis = 2000L;
+
     /** Relay 重试载荷的 AES 密钥，必须通过外部密钥配置注入，禁止写入代码仓库。 */
     private String payloadEncryptionKey = "";
 

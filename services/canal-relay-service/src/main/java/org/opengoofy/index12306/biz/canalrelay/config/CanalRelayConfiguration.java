@@ -24,6 +24,7 @@ import org.opengoofy.index12306.biz.canalrelay.retry.security.CanalRelayPayloadP
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -38,6 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @Configuration
 @EnableConfigurationProperties(CanalRelayProperties.class)
+@EnableScheduling
 public class CanalRelayConfiguration {
 
     /**

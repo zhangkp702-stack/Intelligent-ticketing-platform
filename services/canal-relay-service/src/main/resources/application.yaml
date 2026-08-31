@@ -55,5 +55,12 @@ index12306:
     initial-send-retry-backoff-millis: 200
     initial-send-retry-max-backoff-millis: 2000
     retry-max-attempts: 16
+    retry-enabled: true
+    retry-scan-interval-millis: 1000
+    retry-batch-size: 32
+    retry-lease-millis: 120000
+    retry-initial-backoff-millis: 1000
+    retry-max-backoff-millis: 60000
+    retry-send-timeout-millis: 2000
     payload-encryption-key: ${CANAL_RELAY_PAYLOAD_ENCRYPTION_KEY:}
     payload-key-version: 1

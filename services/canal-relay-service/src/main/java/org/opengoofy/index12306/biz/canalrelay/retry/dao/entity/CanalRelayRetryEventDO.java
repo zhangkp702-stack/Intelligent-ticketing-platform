@@ -90,6 +90,12 @@ public class CanalRelayRetryEventDO {
     /** 限长且脱敏的最近失败摘要。 */
     private String lastError;
 
+    /** 当前处理实例的租约持有者标识。 */
+    private String leaseOwner;
+
+    /** 租约过期时间；到期后其他实例可重新抢占。 */
+    private Date leaseUntil;
+
     /** 首次登记时间。 */
     private Date createdAt;
 
