@@ -37,11 +37,6 @@ spring:
         port: 8719
 rocketmq:
   name-server: 192.168.126.100:9876
-  producer:
-    group: index12306_ticket${unique-name:}-service_common-message-execute_pg
-    send-message-timeout: 2000
-    retry-times-when-send-failed: 1
-    retry-times-when-send-async-failed: 1
 
 mybatis-plus:
   global-config:
@@ -89,13 +84,6 @@ index12306:
       loadtest-orphan-release:
         enabled: false
       backlog-refresh-interval-millis: 15000
-    async-order:
-      # 小队列促使线程池在一批 32 条事件中扩展到 max-pool-size；长时间积压由持久化 Outbox 承接。
-      core-pool-size: 8
-      max-pool-size: 16
-      queue-capacity: 16
-      batch-size: 32
-      backlog-refresh-interval-millis: 5000
   ratelimiter:
     # 是否信任 X-Forwarded-For，仅当前面有可信反向代理会清洗重写该头时才能开启，否则可被伪造绕过限流
     trust-forwarded-header: false

@@ -19,7 +19,9 @@ package org.opengoofy.index12306.biz.ticketservice.service.impl;
 
 import com.alibaba.fastjson2.JSON;
 import lombok.RequiredArgsConstructor;
+import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketCdcOutboxEventDO;
 import org.opengoofy.index12306.biz.ticketservice.dao.entity.TicketSeatReservationDO;
+import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketCdcOutboxEventMapper;
 import org.opengoofy.index12306.biz.ticketservice.dao.mapper.TicketSeatReservationMapper;
 import org.opengoofy.index12306.biz.ticketservice.dto.resp.TicketPurchaseStatusRespDTO;
 import org.opengoofy.index12306.biz.ticketservice.remote.dto.TicketOrderCreateRemoteReqDTO;
@@ -33,14 +35,13 @@ import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.R
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.redis.RedisSeatBitmapService;
 import org.opengoofy.index12306.biz.ticketservice.service.handler.ticket.inventory.TicketInventoryRollbackService;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
-import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventDefinition;
-import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventKey;
-import org.opengoofy.index12306.framework.starter.reliablecommand.event.ReliableEventStore;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
+import java.util.Date;
+import java.util.Objects;
 
 /**
  * 以 reservationId 串行释放订单持有的座位、Redis 位图和统一库存。
@@ -66,11 +67,11 @@ public class TicketSeatReservationReleaseService {
     private static final int RESERVATION_RELEASED = 3;
 
     private final TicketSeatReservationMapper ticketSeatReservationMapper;
+    private final TicketCdcOutboxEventMapper ticketCdcOutboxEventMapper;
     private final SeatService seatService;
     private final RedisSeatBitmapService redisSeatBitmapService;
     private final TicketInventoryRollbackService ticketInventoryRollbackService;
     private final TransactionTemplate transactionTemplate;
-    private final ReliableEventStore reliableEventStore;
 
     /**
      * 在发送订单创建命令前保存座位占用快照和稳定订单命令。
@@ -118,18 +119,69 @@ public class TicketSeatReservationReleaseService {
         if (ticketSeatReservationMapper.insert(reservation) != 1) {
             throw new ServiceException("创建待绑定订单座位占用记录失败");
         }
-        // 在同一本地事务中写入共享建单命令，确保座位提交后一定存在可恢复的 MQ 投递任务。
+        // 在同一本地事务中追加共享建单命令，确保座位提交后 Canal 一定能够读取到该业务事实。
         TicketOrderCreateCommandMessage commandMessage = buildOrderCreateCommand(
                 reservationId, actionId, commandId, orderCreateRequest);
-        reliableEventStore.enqueue(
-                new ReliableEventDefinition(
-                        new ReliableEventKey(ORDER_CREATION_EVENT_NAMESPACE, reservationId),
-                        commandId,
-                        ORDER_CREATION_EVENT_TYPE,
-                        reservationId,
-                        JSON.toJSONString(commandMessage),
-                        TicketOrderMessageConstants.CREATE_ORDER_VERSION),
-                java.time.Instant.now());
+        appendOrderCreationEvent(reservationId, commandId, commandMessage);
+    }
+
+    /**
+     * 追加锁座对应的建单 CDC 事件，并校验重复写入没有绑定不同业务载荷。
+     *
+     * @param reservationId 当前锁座记录标识
+     * @param commandId 稳定订单创建命令标识
+     * @param commandMessage 已固定的完整订单创建请求
+     */
+    private void appendOrderCreationEvent(
+            String reservationId,
+            String commandId,
+            TicketOrderCreateCommandMessage commandMessage) {
+        // 事件字段和消息主键共同来自本次 reservation，禁止在 Canal 重放时重新查询座位或票价。
+        TicketCdcOutboxEventDO event = TicketCdcOutboxEventDO.builder()
+                .namespace(ORDER_CREATION_EVENT_NAMESPACE)
+                .eventId(reservationId)
+                .eventType(ORDER_CREATION_EVENT_TYPE)
+                .aggregateId(reservationId)
+                .deduplicationKey(commandId)
+                .messageKey(commandId)
+                .destinationTopic(TicketOrderMessageConstants.CREATE_ORDER_TOPIC)
+                .destinationTag(TicketOrderMessageConstants.CREATE_ORDER_TAG)
+                .delayLevel(0)
+                .payload(JSON.toJSONString(commandMessage))
+                .eventVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
+                .createdAt(new Date())
+                .build();
+        // 唯一键解决跨实例重复请求；零行插入必须继续核对已有记录，不能把不同载荷误判为同一命令。
+        if (ticketCdcOutboxEventMapper.insertIgnore(event) == 0) {
+            TicketCdcOutboxEventDO existing = ticketCdcOutboxEventMapper
+                    .selectByNamespaceAndDeduplicationKey(event.getNamespace(), event.getDeduplicationKey());
+            if (!sameOrderCreationEvent(existing, event)) {
+                throw new ServiceException("订单创建 CDC Outbox 幂等键绑定了不同事件");
+            }
+        }
+    }
+
+    /**
+     * 判断同一建单幂等键是否仍指向完全相同的不可变事件。
+     *
+     * @param existing 数据库中已提交的事件
+     * @param expected 本次事务希望提交的事件
+     * @return 所有影响投递和业务语义的字段一致时返回 true
+     */
+    private boolean sameOrderCreationEvent(TicketCdcOutboxEventDO existing, TicketCdcOutboxEventDO expected) {
+        // 只比较 CDC 和消息路由依赖的不可变字段，创建时间和数据库主键不参与幂等判断。
+        return existing != null
+                && Objects.equals(existing.getNamespace(), expected.getNamespace())
+                && Objects.equals(existing.getEventId(), expected.getEventId())
+                && Objects.equals(existing.getEventType(), expected.getEventType())
+                && Objects.equals(existing.getAggregateId(), expected.getAggregateId())
+                && Objects.equals(existing.getDeduplicationKey(), expected.getDeduplicationKey())
+                && Objects.equals(existing.getMessageKey(), expected.getMessageKey())
+                && Objects.equals(existing.getDestinationTopic(), expected.getDestinationTopic())
+                && Objects.equals(existing.getDestinationTag(), expected.getDestinationTag())
+                && Objects.equals(existing.getDelayLevel(), expected.getDelayLevel())
+                && Objects.equals(existing.getPayload(), expected.getPayload())
+                && Objects.equals(existing.getEventVersion(), expected.getEventVersion());
     }
 
     /**

@@ -24,9 +24,9 @@ import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.opengoofy.index12306.biz.ticketservice.common.constant.TicketRocketMQConstant;
 import org.opengoofy.index12306.biz.ticketservice.dto.req.CancelTicketOrderReqDTO;
-import org.opengoofy.index12306.biz.ticketservice.mq.domain.MessageWrapper;
-import org.opengoofy.index12306.biz.ticketservice.mq.event.DelayCloseOrderEvent;
 import org.opengoofy.index12306.biz.ticketservice.remote.TicketOrderRemoteService;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderDelayCloseEvent;
+import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderDelayCloseMessage;
 import org.opengoofy.index12306.framework.starter.convention.result.Result;
 import org.opengoofy.index12306.framework.starter.idempotent.annotation.Idempotent;
 import org.opengoofy.index12306.framework.starter.idempotent.enums.IdempotentSceneEnum;
@@ -44,21 +44,27 @@ import org.springframework.stereotype.Component;
         selectorExpression = TicketRocketMQConstant.ORDER_DELAY_CLOSE_TAG_KEY,
         consumerGroup = TicketRocketMQConstant.TICKET_DELAY_CLOSE_CG_KEY
 )
-public class DelayCloseOrderConsumer implements RocketMQListener<MessageWrapper<DelayCloseOrderEvent>> {
+public class DelayCloseOrderConsumer implements RocketMQListener<TicketOrderDelayCloseMessage> {
 
     private final TicketOrderRemoteService ticketOrderRemoteService;
 
     @Idempotent(
             uniqueKeyPrefix = "index12306-ticket:delay_close_order:",
-            key = "#delayCloseOrderEventMessageWrapper.getKeys()+'_'+#delayCloseOrderEventMessageWrapper.hashCode()",
+            key = "#delayCloseOrderMessage.getKeys()+'_'+#delayCloseOrderMessage.hashCode()",
             type = IdempotentTypeEnum.SPEL,
             scene = IdempotentSceneEnum.MQ,
             keyTimeout = 7200L
     )
+    /**
+     * 消费已到期的延迟关单消息，并请求订单服务原子关闭待支付订单。
+     *
+     * @param delayCloseOrderMessage 同时兼容历史包装字段和 CDC Relay 新协议的消息快照
+     */
     @Override
-    public void onMessage(MessageWrapper<DelayCloseOrderEvent> delayCloseOrderEventMessageWrapper) {
-        log.info("[延迟关闭订单] 开始消费：{}", JSON.toJSONString(delayCloseOrderEventMessageWrapper));
-        DelayCloseOrderEvent event = delayCloseOrderEventMessageWrapper.getMessage();
+    public void onMessage(TicketOrderDelayCloseMessage delayCloseOrderMessage) {
+        log.info("[延迟关闭订单] 开始消费：{}", JSON.toJSONString(delayCloseOrderMessage));
+        // 消息协议保留 keys/message/uuid/timestamp 字段，兼容切换前已经投递到 Broker 的延迟消息。
+        TicketOrderDelayCloseEvent event = delayCloseOrderMessage.getMessage();
         String orderSn = event.getOrderSn();
         Result<Boolean> closedTickOrder;
         try {

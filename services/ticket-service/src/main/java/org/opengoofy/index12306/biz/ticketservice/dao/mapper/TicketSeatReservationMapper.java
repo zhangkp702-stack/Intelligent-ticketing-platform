@@ -104,7 +104,7 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
             + "AND r.username LIKE 'loadtest%' AND r.update_time <= #{deadline} "
             + "AND r.db_seat_release_status = 0 AND r.redis_bitmap_release_status = 0 "
             + "AND r.token_rollback_status = 0 "
-            + "AND NOT EXISTS (SELECT 1 FROM t_reliable_outbox_event e "
+            + "AND NOT EXISTS (SELECT 1 FROM t_cdc_outbox_event e "
             + "WHERE e.namespace = 'ticket-order-creation' AND e.event_id = r.reservation_id) "
             + "ORDER BY r.update_time ASC, r.id ASC LIMIT #{limit}")
     List<TicketSeatReservationDO> selectStaleLoadTestPreparedReservationsWithoutOutbox(
