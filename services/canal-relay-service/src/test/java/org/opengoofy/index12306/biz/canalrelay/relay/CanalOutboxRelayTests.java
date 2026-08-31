@@ -24,16 +24,24 @@ import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.biz.canalrelay.config.CanalRelayProperties;
 import org.opengoofy.index12306.biz.canalrelay.relay.CanalOutboxMessageRouter.RelayCommand;
+import org.opengoofy.index12306.biz.canalrelay.relay.CanalOutboxMessageRouter.RouteResult;
+import org.opengoofy.index12306.biz.canalrelay.retry.model.CanalRelayRetryEvent;
+import org.opengoofy.index12306.biz.canalrelay.retry.model.CanalRelayRetryStatus;
+import org.opengoofy.index12306.biz.canalrelay.retry.service.CanalRelayRetryEventStore;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateRequest;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConstants;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -55,7 +63,7 @@ class CanalOutboxRelayTests {
         RocketMQTemplate rocketMQTemplate = mock(RocketMQTemplate.class);
         CanalConnector connector = mock(CanalConnector.class);
         RelayCommand command = command();
-        when(router.route(any())).thenReturn(List.of(command));
+        when(router.routeIndividually(any())).thenReturn(List.of(RouteResult.success(command)));
         when(rocketMQTemplate.syncSend(anyString(), any(TicketOrderCreateCommandMessage.class)))
                 .thenReturn(sendResult("broker-1"));
         CanalOutboxRelay relay = relay(router, rocketMQTemplate);
@@ -76,7 +84,7 @@ class CanalOutboxRelayTests {
         CanalOutboxMessageRouter router = mock(CanalOutboxMessageRouter.class);
         RocketMQTemplate rocketMQTemplate = mock(RocketMQTemplate.class);
         CanalConnector connector = mock(CanalConnector.class);
-        when(router.route(any())).thenReturn(List.of(command()));
+        when(router.routeIndividually(any())).thenReturn(List.of(RouteResult.success(command())));
         when(rocketMQTemplate.syncSend(anyString(), any(TicketOrderCreateCommandMessage.class)))
                 .thenThrow(new IllegalStateException("temporary timeout"))
                 .thenReturn(sendResult("broker-recovered"));
@@ -91,24 +99,32 @@ class CanalOutboxRelayTests {
     }
 
     /**
-     * Broker 发送异常或确认不确定时必须回滚，而不能 ACK 已部分投递的批次。
+     * 单条快速重试耗尽后应先持久化 RETRY 任务，再 ACK 当前 Canal 批次。
      */
     @Test
-    void rollsBackBatchWhenBrokerSendFails() {
+    void persistsExhaustedMessageBeforeAcknowledgingBatch() {
         CanalOutboxMessageRouter router = mock(CanalOutboxMessageRouter.class);
         RocketMQTemplate rocketMQTemplate = mock(RocketMQTemplate.class);
         CanalConnector connector = mock(CanalConnector.class);
-        when(router.route(any())).thenReturn(List.of(command()));
+        CanalRelayRetryEventStore retryEventStore = mock(CanalRelayRetryEventStore.class);
+        when(router.routeIndividually(any())).thenReturn(List.of(RouteResult.success(command())));
         when(rocketMQTemplate.syncSend(anyString(), any(TicketOrderCreateCommandMessage.class)))
                 .thenThrow(new IllegalStateException("timeout"));
-        CanalOutboxRelay relay = relay(router, rocketMQTemplate);
+        CanalOutboxRelay relay = relay(router, rocketMQTemplate, retryEventStore);
 
-        assertThatThrownBy(() -> relay.processBatch(connector, message(8L)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("RocketMQ 未确认完整 Canal 批次");
+        relay.processBatch(connector, message(8L));
 
-        verify(connector).rollback(8L);
-        verify(connector, never()).ack(8L);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<CanalRelayRetryEvent>> captor =
+                (ArgumentCaptor<java.util.Collection<CanalRelayRetryEvent>>) (ArgumentCaptor<?>)
+                        ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(retryEventStore).saveAll(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(event -> {
+            assertThat(event.getStatus()).isEqualTo(CanalRelayRetryStatus.RETRY);
+            assertThat(event.getAttemptCount()).isEqualTo(3);
+        });
+        verify(connector).ack(8L);
+        verify(connector, never()).rollback(8L);
     }
 
     /**
@@ -119,21 +135,46 @@ class CanalOutboxRelayTests {
         CanalOutboxMessageRouter router = mock(CanalOutboxMessageRouter.class);
         RocketMQTemplate rocketMQTemplate = mock(RocketMQTemplate.class);
         CanalConnector connector = mock(CanalConnector.class);
-        when(router.route(any())).thenReturn(List.of(command(), command()));
+        when(router.routeIndividually(any())).thenReturn(List.of(
+                RouteResult.success(command()), RouteResult.success(command())));
         when(rocketMQTemplate.syncSend(anyString(), any(TicketOrderCreateCommandMessage.class)))
                 .thenReturn(sendResult("broker-success"))
                 .thenThrow(new IllegalStateException("permanent timeout"));
-        CanalOutboxRelay relay = relay(router, rocketMQTemplate);
+        CanalRelayRetryEventStore retryEventStore = mock(CanalRelayRetryEventStore.class);
+        CanalOutboxRelay relay = relay(router, rocketMQTemplate, retryEventStore);
 
-        assertThatThrownBy(() -> relay.processBatch(connector, message(10L)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("RocketMQ 未确认完整 Canal 批次");
+        relay.processBatch(connector, message(10L));
 
-        // 第一条只发送一次，第二条执行三次快速重试，最终整批仍按安全边界回滚。
+        // 第一条只发送一次，第二条执行三次快速重试，失败任务被隔离后仍可推进位点。
         verify(rocketMQTemplate, times(4))
                 .syncSend(anyString(), any(TicketOrderCreateCommandMessage.class));
-        verify(connector).rollback(10L);
-        verify(connector, never()).ack(10L);
+        verify(retryEventStore).saveAll(anyCollection());
+        verify(connector).ack(10L);
+        verify(connector, never()).rollback(10L);
+    }
+
+    /**
+     * 失败任务无法落库时不能推进 Canal 位点，确保后续仍可重新拉取。
+     */
+    @Test
+    void rollsBackBatchWhenRetryEventPersistenceFails() {
+        CanalOutboxMessageRouter router = mock(CanalOutboxMessageRouter.class);
+        RocketMQTemplate rocketMQTemplate = mock(RocketMQTemplate.class);
+        CanalConnector connector = mock(CanalConnector.class);
+        CanalRelayRetryEventStore retryEventStore = mock(CanalRelayRetryEventStore.class);
+        when(router.routeIndividually(any())).thenReturn(List.of(RouteResult.success(command())));
+        when(rocketMQTemplate.syncSend(anyString(), any(TicketOrderCreateCommandMessage.class)))
+                .thenThrow(new IllegalStateException("timeout"));
+        doThrow(new IllegalStateException("retry store unavailable"))
+                .when(retryEventStore).saveAll(anyCollection());
+        CanalOutboxRelay relay = relay(router, rocketMQTemplate, retryEventStore);
+
+        assertThatThrownBy(() -> relay.processBatch(connector, message(11L)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("retry store unavailable");
+
+        verify(connector).rollback(11L);
+        verify(connector, never()).ack(11L);
     }
 
     /**
@@ -144,6 +185,21 @@ class CanalOutboxRelayTests {
      * @return 不连接真实 Canal 的 Relay 实例
      */
     private CanalOutboxRelay relay(CanalOutboxMessageRouter router, RocketMQTemplate rocketMQTemplate) {
+        return relay(router, rocketMQTemplate, mock(CanalRelayRetryEventStore.class));
+    }
+
+    /**
+     * 创建可注入失败任务存储器的测试 Relay。
+     *
+     * @param router Outbox 行路由器
+     * @param rocketMQTemplate RocketMQ 发送器
+     * @param retryEventStore 失败任务持久化器
+     * @return 不连接真实 Canal 的 Relay 实例
+     */
+    private CanalOutboxRelay relay(
+            CanalOutboxMessageRouter router,
+            RocketMQTemplate rocketMQTemplate,
+            CanalRelayRetryEventStore retryEventStore) {
         CanalRelayProperties properties = new CanalRelayProperties();
         // 测试不等待生产环境退避时长，只验证重试次数和 ACK/回滚顺序。
         properties.setInitialSendRetryBackoffMillis(1L);
@@ -153,7 +209,8 @@ class CanalOutboxRelayTests {
                 ignoredProperties -> mock(CanalConnector.class),
                 router,
                 rocketMQTemplate,
-                Runnable::run);
+                Runnable::run,
+                retryEventStore);
     }
 
     /**

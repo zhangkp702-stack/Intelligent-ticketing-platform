@@ -22,6 +22,8 @@ import com.alibaba.otter.canal.protocol.CanalEntry;
 import org.junit.jupiter.api.Test;
 import org.opengoofy.index12306.biz.canalrelay.config.CanalRelayProperties;
 import org.opengoofy.index12306.biz.canalrelay.relay.CanalOutboxMessageRouter.RelayCommand;
+import org.opengoofy.index12306.biz.canalrelay.relay.CanalOutboxMessageRouter.RouteResult;
+import org.opengoofy.index12306.biz.canalrelay.retry.model.CanalRelayRetryStatus;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateItem;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
@@ -147,6 +149,27 @@ class CanalOutboxMessageRouterTests {
         assertThatThrownBy(() -> router.route(List.of(insertEntry(columns))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("主键或命令字段不一致");
+    }
+
+    /**
+     * 逐条路由遇到坏事件时应生成 DEAD 任务，不阻断同批其他行的处理。
+     */
+    @Test
+    void isolatesInvalidEventAsDeadResult() {
+        TicketOrderCreateCommandMessage message = command("reservation-a", "purchase-a:create-order", 1L);
+        Map<String, String> columns = columns(message, 1L);
+        columns.put("event_id", "different-event-id");
+        CanalOutboxMessageRouter router = new CanalOutboxMessageRouter(properties());
+
+        List<RouteResult> results = router.routeIndividually(List.of(insertEntry(columns)));
+
+        assertThat(results).singleElement().satisfies(result -> {
+            assertThat(result.command()).isNull();
+            assertThat(result.retryEvent()).isNotNull();
+            assertThat(result.retryEvent().getStatus()).isEqualTo(CanalRelayRetryStatus.DEAD);
+            assertThat(result.retryEvent().getPayload()).isNotBlank();
+            assertThat(result.failure()).isInstanceOf(IllegalStateException.class);
+        });
     }
 
     /**

@@ -17,6 +17,7 @@
 
 package org.opengoofy.index12306.biz.canalrelay.relay;
 
+import com.alibaba.fastjson2.JSON;
 import com.alibaba.otter.canal.client.CanalConnector;
 import com.alibaba.otter.canal.protocol.Message;
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +25,10 @@ import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.opengoofy.index12306.biz.canalrelay.config.CanalRelayProperties;
 import org.opengoofy.index12306.biz.canalrelay.relay.CanalOutboxMessageRouter.RelayCommand;
+import org.opengoofy.index12306.biz.canalrelay.relay.CanalOutboxMessageRouter.RouteResult;
+import org.opengoofy.index12306.biz.canalrelay.retry.model.CanalRelayRetryEvent;
+import org.opengoofy.index12306.biz.canalrelay.retry.model.CanalRelayRetryStatus;
+import org.opengoofy.index12306.biz.canalrelay.retry.service.CanalRelayRetryEventStore;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
@@ -38,7 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 独立执行 Canal 到 RocketMQ 的可靠转发。
  *
- * <p>每个 Binlog 批次只有所有目标消息都被 RocketMQ 确认后才 ACK；发送失败、解析失败或本地背压都会回滚批次。</p>
+ * <p>每个 Binlog 批次只有所有目标消息已确认或其失败任务已经持久化后才 ACK；失败记录写入异常仍回滚批次。</p>
  */
 @Slf4j
 @Component
@@ -49,6 +54,7 @@ public class CanalOutboxRelay implements SmartLifecycle {
     private final CanalOutboxMessageRouter messageRouter;
     private final RocketMQTemplate rocketMQTemplate;
     private final Executor publisherExecutor;
+    private final CanalRelayRetryEventStore retryEventStore;
     private final AtomicBoolean running = new AtomicBoolean();
 
     private volatile CanalConnector currentConnector;
@@ -62,18 +68,21 @@ public class CanalOutboxRelay implements SmartLifecycle {
      * @param messageRouter Outbox INSERT 路由器
      * @param rocketMQTemplate RocketMQ 命令发送器
      * @param publisherExecutor 有界 Broker 发送执行器
+     * @param retryEventStore 单条失败任务持久化边界
      */
     public CanalOutboxRelay(
             CanalRelayProperties properties,
             CanalConnectorFactory connectorFactory,
             CanalOutboxMessageRouter messageRouter,
             RocketMQTemplate rocketMQTemplate,
-            @Qualifier("canalRelayPublisherExecutor") Executor publisherExecutor) {
+            @Qualifier("canalRelayPublisherExecutor") Executor publisherExecutor,
+            CanalRelayRetryEventStore retryEventStore) {
         this.properties = properties;
         this.connectorFactory = connectorFactory;
         this.messageRouter = messageRouter;
         this.rocketMQTemplate = rocketMQTemplate;
         this.publisherExecutor = publisherExecutor;
+        this.retryEventStore = retryEventStore;
     }
 
     /**
@@ -204,7 +213,7 @@ public class CanalOutboxRelay implements SmartLifecycle {
     }
 
     /**
-     * 投递单个 Canal 批次，所有目标消息确认后才推进该批次位点。
+     * 投递单个 Canal 批次，确认成功消息或持久化失败任务后推进该批次位点。
      *
      * @param connector 当前 Canal 客户端
      * @param message 已领取、尚未 ACK 的 Canal 批次
@@ -212,26 +221,35 @@ public class CanalOutboxRelay implements SmartLifecycle {
     void processBatch(CanalConnector connector, Message message) {
         long batchId = message.getId();
         try {
-            List<RelayCommand> commands = messageRouter.route(message.getEntries());
-            // 同一批次并行发送，但在全部 Future 成功前不会 ACK Binlog 位点。
-            publishAll(commands);
+            List<RouteResult> routeResults = messageRouter.routeIndividually(message.getEntries());
+            List<RelayCommand> commands = routeResults.stream()
+                    .map(RouteResult::command)
+                    .filter(command -> command != null)
+                    .toList();
+            // 同一批次并行发送；失败结果保留到内存，稍后与解析失败一起原子落库。
+            List<PublishOutcome> publishOutcomes = publishAll(commands);
+            List<CanalRelayRetryEvent> retryEvents = collectRetryEvents(routeResults, publishOutcomes);
+            // 只有失败任务已可靠持久化，Canal 位点推进后才不会丢失单条事件。
+            retryEventStore.saveAll(retryEvents);
             connector.ack(batchId);
-            if (!commands.isEmpty()) {
-                log.info("canal_relay_batch_acked batchId={}, commandCount={}", batchId, commands.size());
+            if (!commands.isEmpty() || !retryEvents.isEmpty()) {
+                log.info("canal_relay_batch_acked batchId={}, commandCount={}, retryCount={}",
+                        batchId, commands.size(), retryEvents.size());
             }
         } catch (RuntimeException exception) {
-            // ACK 前的任何不确定结果都必须回滚整批，依靠 commandId 吸收重放产生的重复消息。
+            // ACK 前的路由、发送器异常或失败任务落库异常都必须回滚整批。
             rollbackQuietly(connector, batchId);
             throw exception;
         }
     }
 
     /**
-     * 通过有界线程池并行发送一批已经校验的订单创建命令。
+     * 通过有界线程池并行发送一批已经校验的订单创建命令，返回每条最终结果。
      *
      * @param commands 当前 Canal 批次中的目标命令
+     * @return 每条命令的发送结果
      */
-    private void publishAll(List<RelayCommand> commands) {
+    private List<PublishOutcome> publishAll(List<RelayCommand> commands) {
         List<CompletableFuture<PublishOutcome>> futures = new ArrayList<>(commands.size());
         for (RelayCommand command : commands) {
             // 每条消息独立记录最终结果，避免一条失败时丢失同批其他消息已经成功的事实。
@@ -242,14 +260,80 @@ public class CanalOutboxRelay implements SmartLifecycle {
         } catch (CompletionException exception) {
             throw new IllegalStateException("RocketMQ 未确认完整 Canal 批次", exception.getCause());
         }
-        List<PublishOutcome> failures = futures.stream()
+        return futures.stream()
                 .map(CompletableFuture::join)
-                .filter(each -> !each.succeeded())
                 .toList();
-        if (!failures.isEmpty()) {
-            // 第一阶段尚未引入持久化失败表，快速重试耗尽后仍须回滚整批保证消息不丢失。
-            throw new IllegalStateException("RocketMQ 未确认完整 Canal 批次", failures.get(0).failure());
+    }
+
+    /**
+     * 将解析失败和发送耗尽的单条事件转换为统一持久化任务。
+     *
+     * @param routeResults 路由阶段的逐条结果
+     * @param publishOutcomes MQ 发送阶段的逐条结果
+     * @return 需要写入失败任务表的事件集合
+     */
+    private List<CanalRelayRetryEvent> collectRetryEvents(
+            List<RouteResult> routeResults,
+            List<PublishOutcome> publishOutcomes) {
+        List<CanalRelayRetryEvent> retryEvents = new ArrayList<>();
+        // 解析或字段校验失败的事件已经由 Router 构造了 DEAD 快照。
+        routeResults.stream()
+                .map(RouteResult::retryEvent)
+                .filter(retryEvent -> retryEvent != null)
+                .forEach(retryEvents::add);
+        // 快速重试耗尽的命令进入 RETRY 状态，后台阶段再按租约继续发送。
+        publishOutcomes.stream()
+                .filter(outcome -> !outcome.succeeded())
+                .map(this::toRetryEvent)
+                .forEach(retryEvents::add);
+        return retryEvents;
+    }
+
+    /**
+     * 将一次发送耗尽结果转换为可恢复的 RETRY 任务。
+     *
+     * @param outcome 当前命令的最终发送结果
+     * @return 待持久化的重试任务
+     */
+    private CanalRelayRetryEvent toRetryEvent(PublishOutcome outcome) {
+        RelayCommand command = outcome.command();
+        int initialAttempts = Math.max(1, outcome.attempts());
+        int maxAttempts = Math.max(initialAttempts, properties.getRetryMaxAttempts());
+        return CanalRelayRetryEvent.builder()
+                .retryKey(command.namespace() + ":" + command.eventId())
+                .namespace(command.namespace())
+                .eventId(command.eventId())
+                .commandId(command.commandId())
+                .aggregateId(command.aggregateId())
+                .destinationTopic(command.destinationTopic())
+                .destinationTag(command.destinationTag())
+                .delayLevel(command.delayLevel())
+                .payload(JSON.toJSONString(command.payload()))
+                .status(CanalRelayRetryStatus.RETRY)
+                .attemptCount(initialAttempts)
+                .maxAttempts(maxAttempts)
+                .nextRetryTime(new java.util.Date())
+                .lastError(errorSummary(outcome.failure()))
+                .build();
+    }
+
+    /**
+     * 生成不包含订单消息载荷的发送异常摘要。
+     *
+     * @param exception 最终发送异常
+     * @return 异常类型和受限消息文本
+     */
+    private String errorSummary(RuntimeException exception) {
+        if (exception == null) {
+            return "unknown";
         }
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return exception.getClass().getSimpleName();
+        }
+        return (exception.getClass().getSimpleName() + ": " + message)
+                .replace('\n', ' ')
+                .replace('\r', ' ');
     }
 
     /**
@@ -264,7 +348,7 @@ public class CanalOutboxRelay implements SmartLifecycle {
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 publishOne(command);
-                return PublishOutcome.success(command);
+                return PublishOutcome.success(command, attempt);
             } catch (RuntimeException exception) {
                 lastFailure = exception;
                 if (attempt < maxAttempts) {
@@ -276,7 +360,7 @@ public class CanalOutboxRelay implements SmartLifecycle {
         log.warn("canal_relay_command_publish_exhausted eventId={}, commandId={}, attempts={}, exceptionType={}",
                 command.eventId(), command.commandId(), maxAttempts,
                 lastFailure == null ? null : lastFailure.getClass().getSimpleName());
-        return PublishOutcome.failure(command, lastFailure);
+        return PublishOutcome.failure(command, lastFailure, maxAttempts);
     }
 
     /**
@@ -321,17 +405,19 @@ public class CanalOutboxRelay implements SmartLifecycle {
      *
      * @param command 当前发送命令
      * @param failure 最终失败异常，成功时为空
+     * @param attempts 当前消息实际执行的发送次数
      */
-    private record PublishOutcome(RelayCommand command, RuntimeException failure) {
+    private record PublishOutcome(RelayCommand command, RuntimeException failure, int attempts) {
 
         /**
          * 创建成功结果。
          *
          * @param command 已发送命令
+         * @param attempts 实际发送次数
          * @return 成功结果
          */
-        private static PublishOutcome success(RelayCommand command) {
-            return new PublishOutcome(command, null);
+        private static PublishOutcome success(RelayCommand command, int attempts) {
+            return new PublishOutcome(command, null, attempts);
         }
 
         /**
@@ -339,10 +425,11 @@ public class CanalOutboxRelay implements SmartLifecycle {
          *
          * @param command 未确认的命令
          * @param failure 最终失败异常
+         * @param attempts 实际发送次数
          * @return 失败结果
          */
-        private static PublishOutcome failure(RelayCommand command, RuntimeException failure) {
-            return new PublishOutcome(command, failure);
+        private static PublishOutcome failure(RelayCommand command, RuntimeException failure, int attempts) {
+            return new PublishOutcome(command, failure, attempts);
         }
 
         /**

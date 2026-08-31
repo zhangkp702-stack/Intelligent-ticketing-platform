@@ -21,6 +21,8 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.otter.canal.protocol.CanalEntry;
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.opengoofy.index12306.biz.canalrelay.config.CanalRelayProperties;
+import org.opengoofy.index12306.biz.canalrelay.retry.model.CanalRelayRetryEvent;
+import org.opengoofy.index12306.biz.canalrelay.retry.model.CanalRelayRetryStatus;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateCommandMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderCreateResultMessage;
 import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderDelayCloseMessage;
@@ -28,14 +30,20 @@ import org.opengoofy.index12306.biz.ticketorder.contract.TicketOrderMessageConst
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Date;
+import java.util.HexFormat;
 
 /**
  * 将目标 Outbox 的 INSERT Binlog 记录还原为可投递的订单事件。
  *
- * <p>路由器不修改来源数据库；字段校验失败会阻止当前 Canal 批次 ACK，避免损坏事件被静默跳过。</p>
+ * <p>路由器不修改来源数据库；生产逐条路由会把字段校验失败转换为 DEAD 任务，避免坏事件阻塞同批合法消息。</p>
  */
 @Component
 public class CanalOutboxMessageRouter {
@@ -79,6 +87,47 @@ public class CanalOutboxMessageRouter {
     }
 
     /**
+     * 按单条行事件还原 Outbox 消息，并将解析或校验失败隔离为 DEAD 任务。
+     *
+     * @param entries Canal 返回的原始 Binlog 条目
+     * @return 每条可处理行的成功命令或待持久化失败结果
+     */
+    public List<RouteResult> routeIndividually(List<CanalEntry.Entry> entries) {
+        List<RouteResult> results = new ArrayList<>();
+        if (entries == null || entries.isEmpty()) {
+            return results;
+        }
+        // 单条解析失败只记录当前条目，避免同批其他合法事件被迫回滚重放。
+        for (int entryIndex = 0; entryIndex < entries.size(); entryIndex++) {
+            CanalEntry.Entry entry = entries.get(entryIndex);
+            if (!isTargetRowData(entry)) {
+                continue;
+            }
+            CanalEntry.RowChange rowChange;
+            try {
+                rowChange = parseRowChange(entry);
+            } catch (RuntimeException exception) {
+                results.add(RouteResult.dead(buildDeadEvent(entry, entryIndex, 0, Map.of(), exception), exception));
+                continue;
+            }
+            if (rowChange.getEventType() != CanalEntry.EventType.INSERT) {
+                continue;
+            }
+            List<CanalEntry.RowData> rowDatas = rowChange.getRowDatasList();
+            for (int rowIndex = 0; rowIndex < rowDatas.size(); rowIndex++) {
+                Map<String, String> columns = toColumns(rowDatas.get(rowIndex));
+                try {
+                    results.add(RouteResult.success(routeInsertRow(columns)));
+                } catch (RuntimeException exception) {
+                    // 只把当前坏行放入 DEAD 队列，其余行仍可继续投递。
+                    results.add(RouteResult.dead(buildDeadEvent(entry, entryIndex, rowIndex, columns, exception), exception));
+                }
+            }
+        }
+        return List.copyOf(results);
+    }
+
+    /**
      * 判断条目是否来自 Relay 负责的 Outbox 表。
      *
      * @param entry Canal 原始条目
@@ -113,11 +162,17 @@ public class CanalOutboxMessageRouter {
      * @return 与 Outbox 主键强绑定的可投递订单事件
      */
     private RelayCommand routeInsertRow(CanalEntry.RowData rowData) {
-        Map<String, String> columns = new HashMap<>();
+        return routeInsertRow(toColumns(rowData));
+    }
+
+    /**
+     * 从 INSERT 后镜像列还原并校验一条订单事件。
+     *
+     * @param columns INSERT 后镜像列集合
+     * @return 与 Outbox 主键绑定的统一 Relay 命令
+     */
+    private RelayCommand routeInsertRow(Map<String, String> columns) {
         // 订单命令必须使用 INSERT 后镜像，不能从 beforeColumns 读取旧版本或租约状态。
-        for (CanalEntry.Column column : rowData.getAfterColumnsList()) {
-            columns.put(column.getName(), column.getValue());
-        }
         String namespace = requireColumn(columns, "namespace");
         String eventType = requireColumn(columns, "event_type");
         String eventId = requireColumn(columns, "event_id");
@@ -132,17 +187,17 @@ public class CanalOutboxMessageRouter {
         if (TicketOrderMessageConstants.CREATE_ORDER_NAMESPACE.equals(namespace)
                 && TicketOrderMessageConstants.CREATE_ORDER_EVENT_TYPE.equals(eventType)) {
             return routeOrderCreateCommand(eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
-                    destinationTopic, destinationTag, delayLevel, payload);
+                    namespace, destinationTopic, destinationTag, delayLevel, payload);
         }
         if (TicketOrderMessageConstants.CREATE_ORDER_RESULT_NAMESPACE.equals(namespace)
                 && TicketOrderMessageConstants.CREATE_ORDER_RESULT_EVENT_TYPE.equals(eventType)) {
             return routeOrderCreateResult(eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
-                    destinationTopic, destinationTag, delayLevel, payload);
+                    namespace, destinationTopic, destinationTag, delayLevel, payload);
         }
         if (TicketOrderMessageConstants.DELAY_CLOSE_ORDER_NAMESPACE.equals(namespace)
                 && TicketOrderMessageConstants.DELAY_CLOSE_ORDER_EVENT_TYPE.equals(eventType)) {
             return routeDelayCloseOrder(eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
-                    destinationTopic, destinationTag, delayLevel, payload);
+                    namespace, destinationTopic, destinationTag, delayLevel, payload);
         }
         throw new IllegalStateException("目标 CDC Outbox INSERT 不属于已注册事件类型");
     }
@@ -155,6 +210,7 @@ public class CanalOutboxMessageRouter {
      * @param aggregateId 锁座预留标识
      * @param messageKey RocketMQ 业务键
      * @param eventVersion 事件版本
+     * @param namespace 事件业务域
      * @param destinationTopic 目标 Topic
      * @param destinationTag 目标 Tag
      * @param delayLevel 延迟级别
@@ -167,6 +223,7 @@ public class CanalOutboxMessageRouter {
             String aggregateId,
             String messageKey,
             long eventVersion,
+            String namespace,
             String destinationTopic,
             String destinationTag,
             int delayLevel,
@@ -176,7 +233,7 @@ public class CanalOutboxMessageRouter {
                 payload, TicketOrderCreateCommandMessage.class, "订单创建 Outbox");
         validateCommand(message, eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
                 destinationTopic, destinationTag, delayLevel);
-        return new RelayCommand(eventId, aggregateId, message.getCommandId(),
+        return new RelayCommand(namespace, eventId, aggregateId, message.getCommandId(),
                 destinationTopic, destinationTag, delayLevel, message);
     }
 
@@ -188,6 +245,7 @@ public class CanalOutboxMessageRouter {
      * @param aggregateId 锁座预留标识
      * @param messageKey RocketMQ 业务键
      * @param eventVersion 事件版本
+     * @param namespace 事件业务域
      * @param destinationTopic 目标 Topic
      * @param destinationTag 目标 Tag
      * @param delayLevel 延迟级别
@@ -200,6 +258,7 @@ public class CanalOutboxMessageRouter {
             String aggregateId,
             String messageKey,
             long eventVersion,
+            String namespace,
             String destinationTopic,
             String destinationTag,
             int delayLevel,
@@ -209,7 +268,7 @@ public class CanalOutboxMessageRouter {
                 payload, TicketOrderCreateResultMessage.class, "订单创建结果 Outbox");
         validateResult(message, eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
                 destinationTopic, destinationTag, delayLevel);
-        return new RelayCommand(eventId, aggregateId, message.getCommandId(),
+        return new RelayCommand(namespace, eventId, aggregateId, message.getCommandId(),
                 destinationTopic, destinationTag, delayLevel, message);
     }
 
@@ -221,6 +280,7 @@ public class CanalOutboxMessageRouter {
      * @param aggregateId 待关闭订单号
      * @param messageKey RocketMQ 业务键
      * @param eventVersion 事件版本
+     * @param namespace 事件业务域
      * @param destinationTopic 目标 Topic
      * @param destinationTag 目标 Tag
      * @param delayLevel 延迟级别
@@ -233,6 +293,7 @@ public class CanalOutboxMessageRouter {
             String aggregateId,
             String messageKey,
             long eventVersion,
+            String namespace,
             String destinationTopic,
             String destinationTag,
             int delayLevel,
@@ -242,7 +303,7 @@ public class CanalOutboxMessageRouter {
                 payload, TicketOrderDelayCloseMessage.class, "延迟关单 Outbox");
         validateDelayClose(message, eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
                 destinationTopic, destinationTag, delayLevel);
-        return new RelayCommand(eventId, aggregateId, deduplicationKey,
+        return new RelayCommand(namespace, eventId, aggregateId, deduplicationKey,
                 destinationTopic, destinationTag, delayLevel, message);
     }
 
@@ -404,6 +465,129 @@ public class CanalOutboxMessageRouter {
     }
 
     /**
+     * 将 Canal 行的 afterColumns 转为便于校验和失败快照构造的列映射。
+     *
+     * @param rowData Canal 行数据
+     * @return INSERT 后镜像列映射
+     */
+    private Map<String, String> toColumns(CanalEntry.RowData rowData) {
+        Map<String, String> columns = new HashMap<>();
+        if (rowData == null) {
+            return columns;
+        }
+        // 只读取 INSERT 后镜像，避免将 beforeColumns 中的旧值带入重试任务。
+        for (CanalEntry.Column column : rowData.getAfterColumnsList()) {
+            columns.put(column.getName(), column.getValue());
+        }
+        return columns;
+    }
+
+    /**
+     * 根据稳定 Binlog 位置信息构造坏事件的确定性标识。
+     *
+     * @param entry Canal 原始条目
+     * @param entryIndex 条目在当前批次中的位置
+     * @param rowIndex 行在条目中的位置
+     * @return 限长的稳定事件标识
+     */
+    private String fallbackEventId(CanalEntry.Entry entry, int entryIndex, int rowIndex) {
+        String logfileName = "";
+        long logfileOffset = 0L;
+        if (entry != null && entry.hasHeader()) {
+            logfileName = entry.getHeader().getLogfileName();
+            logfileOffset = entry.getHeader().getLogfileOffset();
+        }
+        String material = logfileName + ":" + logfileOffset + ":" + entryIndex + ":" + rowIndex;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return "invalid:" + HexFormat.of().formatHex(digest.digest(material.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前运行环境不支持 SHA-256", exception);
+        }
+    }
+
+    /**
+     * 将解析或校验异常转换为可持久化的 DEAD 任务快照。
+     *
+     * @param entry 产生异常的 Canal 条目
+     * @param entryIndex 条目在当前批次中的位置
+     * @param rowIndex 行在条目中的位置
+     * @param columns 已提取的 INSERT 列
+     * @param exception 当前条目异常
+     * @return 带稳定兜底元数据的失败任务
+     */
+    private CanalRelayRetryEvent buildDeadEvent(
+            CanalEntry.Entry entry,
+            int entryIndex,
+            int rowIndex,
+            Map<String, String> columns,
+            RuntimeException exception) {
+        String fallbackEventId = fallbackEventId(entry, entryIndex, rowIndex);
+        String namespace = bounded(columns.get("namespace"), 64, "canal-relay-invalid");
+        String eventId = bounded(columns.get("event_id"), 128, fallbackEventId);
+        String aggregateId = bounded(columns.get("aggregate_id"), 128, "unknown");
+        String commandId = bounded(columns.get("deduplication_key"), 160, null);
+        String destinationTopic = bounded(
+                columns.get("destination_topic"), 128, TicketOrderMessageConstants.CREATE_ORDER_TOPIC);
+        String destinationTag = bounded(
+                columns.get("destination_tag"), 64, TicketOrderMessageConstants.CREATE_ORDER_TAG);
+        String payload = columns.get("payload");
+        if (!hasText(payload)) {
+            byte[] rawValue = entry == null ? new byte[0] : entry.getStoreValue().toByteArray();
+            payload = rawValue.length == 0 ? "{}" : Base64.getEncoder().encodeToString(rawValue);
+        }
+        // retryKey 必须由同一条 Binlog 行稳定生成，重复拉取时 INSERT IGNORE 才能幂等。
+        String retryKey = bounded(namespace + ":" + eventId, 191, "canal-relay-invalid:" + fallbackEventId);
+        return CanalRelayRetryEvent.builder()
+                .retryKey(retryKey)
+                .namespace(namespace)
+                .eventId(eventId)
+                .commandId(commandId)
+                .aggregateId(aggregateId)
+                .destinationTopic(destinationTopic)
+                .destinationTag(destinationTag)
+                .delayLevel(0)
+                .payload(payload)
+                .status(CanalRelayRetryStatus.DEAD)
+                .attemptCount(0)
+                .maxAttempts(1)
+                .nextRetryTime(new Date())
+                .lastError(errorSummary(exception))
+                .build();
+    }
+
+    /**
+     * 读取长度合法的列值；异常事件不得因为坏字段本身无法落库。
+     *
+     * @param value 原始列值
+     * @param maxLength 允许的最大长度
+     * @param fallback 缺失或越界时的兜底值
+     * @return 可持久化的字段值
+     */
+    private String bounded(String value, int maxLength, String fallback) {
+        return hasText(value) && value.length() <= maxLength ? value : fallback;
+    }
+
+    /**
+     * 生成不携带消息载荷的异常摘要。
+     *
+     * @param exception 当前异常
+     * @return 异常类型和受限消息文本
+     */
+    private String errorSummary(RuntimeException exception) {
+        if (exception == null) {
+            return "unknown";
+        }
+        String message = exception.getMessage();
+        if (!hasText(message)) {
+            return exception.getClass().getSimpleName();
+        }
+        return (exception.getClass().getSimpleName() + ": " + message)
+                .replace('\n', ' ')
+                .replace('\r', ' ');
+    }
+
+    /**
      * 解析非负延迟级别，普通建单命令只能使用零延迟。
      *
      * @param value Binlog 列值
@@ -467,8 +651,40 @@ public class CanalOutboxMessageRouter {
     }
 
     /**
+     * 表示单条 CDC 行的路由结果；失败时仅携带待持久化任务，不向下游投递。
+     *
+     * @param command 已校验的可投递命令
+     * @param retryEvent 解析或校验失败的 DEAD 任务
+     * @param failure 触发隔离的异常
+     */
+    public record RouteResult(RelayCommand command, CanalRelayRetryEvent retryEvent, RuntimeException failure) {
+
+        /**
+         * 创建成功路由结果。
+         *
+         * @param command 已校验的命令
+         * @return 成功结果
+         */
+        public static RouteResult success(RelayCommand command) {
+            return new RouteResult(command, null, null);
+        }
+
+        /**
+         * 创建待持久化的坏事件结果。
+         *
+         * @param retryEvent DEAD 任务
+         * @param failure 原始异常
+         * @return 隔离结果
+         */
+        public static RouteResult dead(CanalRelayRetryEvent retryEvent, RuntimeException failure) {
+            return new RouteResult(null, retryEvent, failure);
+        }
+    }
+
+    /**
      * Relay 已校验、可投递的订单 CDC 事件。
      *
+     * @param namespace 事件业务域，用于构造稳定重试键
      * @param eventId Outbox 稳定事件标识
      * @param aggregateId Outbox 聚合标识，例如座位预留标识或订单号
      * @param commandId 订单侧幂等命令标识
@@ -478,6 +694,7 @@ public class CanalOutboxMessageRouter {
      * @param payload 已校验的共享 MQ 消息快照
      */
     public record RelayCommand(
+            String namespace,
             String eventId,
             String aggregateId,
             String commandId,
@@ -485,5 +702,28 @@ public class CanalOutboxMessageRouter {
             String destinationTag,
             int delayLevel,
             Object payload) {
+
+        /**
+         * 兼容测试和旧调用方构造没有显式业务域的 Relay 命令。
+         *
+         * @param eventId Outbox 稳定事件标识
+         * @param aggregateId Outbox 聚合标识
+         * @param commandId 订单侧幂等命令标识
+         * @param destinationTopic 目标 Topic
+         * @param destinationTag 目标 Tag
+         * @param delayLevel RocketMQ 延迟级别
+         * @param payload 共享消息载荷
+         */
+        public RelayCommand(
+                String eventId,
+                String aggregateId,
+                String commandId,
+                String destinationTopic,
+                String destinationTag,
+                int delayLevel,
+                Object payload) {
+            this("canal-relay", eventId, aggregateId, commandId,
+                    destinationTopic, destinationTag, delayLevel, payload);
+        }
     }
 }
