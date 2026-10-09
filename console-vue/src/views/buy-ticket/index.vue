@@ -387,7 +387,8 @@ import { useRoute } from 'vue-router'
 import {
   fetchTicketSearch,
   fetchPassengerList,
-  fetchBuyTicket
+  fetchBuyTicket,
+  fetchPurchaseStatus
 } from '@/service'
 import { onMounted, reactive, toRaw, watch, ref } from 'vue'
 import { getWeekNumber } from '@/utils'
@@ -605,6 +606,39 @@ const checkColumns = [
   }
 ]
 
+/**
+ * 等待异步建单完成并取得真实订单号，避免用空订单号请求订单服务。
+ *
+ * @param {string} reservationId 购票受理标识
+ * @returns {Promise<string>} 订单服务创建的订单号
+ */
+const waitForOrderCreation = async (reservationId) => {
+  if (!reservationId) {
+    throw new Error('缺少购票受理标识，无法查询订单状态')
+  }
+  const maxAttempts = 60
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    // 查询 ticket-service 的权威 reservation 状态，由其返回已绑定的 orderSn。
+    const res = await fetchPurchaseStatus({ reservationId })
+    if (!res?.success) {
+      throw new Error(res?.message || '订单状态查询失败')
+    }
+    const status = res?.data?.status
+    const orderSn = res?.data?.orderSn
+    if (status === 'SUCCEEDED' && orderSn) {
+      return orderSn
+    }
+    if (status === 'FAILED') {
+      throw new Error('订单创建失败，请重新购票')
+    }
+    // 建单仍在处理中时短暂等待，避免向订单服务发送空订单号。
+    if (attempt < maxAttempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
+  throw new Error('订单创建超时，请稍后到订单中心查询')
+}
+
 const handleSelectSeat = (code) => {
   if (state.currentSeatCode?.indexOf(code) !== -1) {
     state.currentSeatCode = state.currentSeatCode?.filter(
@@ -638,20 +672,24 @@ const handleSubmitBuyTicket = () => {
   }
   state.loading = true
   fetchBuyTicket(params)
-    .then((res) => {
-      if (res.success) {
-        message.success('下单成功，正在跳转至订单')
-        setTimeout(() => {
-          router.push(`/order?sn=${res.data.orderSn}`)
-        }, 500)
-      } else {
-        message.error(res.message)
+    .then(async (res) => {
+      if (!res.success) {
+        throw new Error(res.message || '购票受理失败')
       }
-      state.loading = false
+      const directOrderSn = res.data?.orderSn
+      const reservationId = res.data?.reservationId
+      // 兼容同步建单响应；异步链路必须等待状态接口返回真实订单号。
+      const orderSn = directOrderSn || (await waitForOrderCreation(reservationId))
+      message.success('订单创建成功，正在跳转至订单')
+      await router.push(`/order?sn=${orderSn}`)
     })
     .catch((error) => {
+      message.error(
+        error?.response?.data?.message || error.message || '订单创建失败'
+      )
+    })
+    .finally(() => {
       state.loading = false
-      console.log(error)
     })
 }
 </script>

@@ -91,6 +91,21 @@ const fetchBuyTicket = async (body) => {
   return data
 }
 
+/**
+ * 查询异步购票的建单状态，成功时返回订单服务生成的真实订单号。
+ *
+ * @param {{reservationId: string}} params 购票受理标识
+ * @returns {Promise<object>} 购票状态接口响应
+ */
+const fetchPurchaseStatus = async (params) => {
+  const { data } = await http({
+    method: 'GET',
+    url: '/api/ticket-service/ticket/purchase/status',
+    params
+  })
+  return data
+}
+
 const fetchOrderBySn = async (params) => {
   const { data } = await http({
     method: 'GET',
@@ -219,6 +234,7 @@ export {
   fetchEditPassenger,
   fetchLogout,
   fetchBuyTicket,
+  fetchPurchaseStatus,
   fetchOrderBySn,
   fetchPay,
   fetchUserBalance,
