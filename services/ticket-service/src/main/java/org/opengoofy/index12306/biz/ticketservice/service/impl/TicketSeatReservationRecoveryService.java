@@ -38,7 +38,7 @@ import java.util.Date;
 import java.util.List;
 
 /**
- * 扫描已绑定订单的释放缺口与 PREPARED 建单结果，并按订单权威事实推进恢复。
+ * 扫描预备阶段、已绑定订单的释放缺口与 PREPARED 建单结果，并按各阶段权威事实推进恢复。
  *
  * <p>已绑定订单只根据关闭状态重放可靠回滚；PREPARED 记录只接受稳定命令的 SUCCEEDED 或 FAILED 终态，
  * 以避免根据本地超时猜测远程建单结果。</p>
@@ -69,15 +69,40 @@ public class TicketSeatReservationRecoveryService {
     private boolean loadTestOrphanReleaseEnabled;
 
     /**
-     * 定时扫描已绑定订单的释放缺口及 PREPARED 订单创建结果，分别推进关闭回滚和命令对账。
+     * 定时扫描购票各持久化阶段，分别推进预备失败回收、关闭回滚和建单命令对账。
      */
     @Scheduled(fixedDelayString = "${index12306.ticket.reservation-recovery.interval-millis:5000}")
     public void recoverStaleReservations() {
+        // PREPARED 之前没有建单命令，先通过本地 fencing 状态回收超时的 INIT 与历史 REDIS_HELD。
+        recoverStaleUnpreparedReservations();
         // 已绑定订单与待绑定订单使用不同的权威事实，必须分两条恢复链路处理。
         recoverStaleClosedReservations();
         // 仅在隔离压测环境显式开启时回收没有 Outbox 的历史测试孤儿记录。
         recoverStaleLoadTestPreparedReservationsWithoutOutbox();
         recoverStalePreparedReservations();
+    }
+
+    /**
+     * 扫描超时的 INIT、历史 REDIS_HELD 或 ABORTING，并通过状态领取后幂等释放本地资源。
+     */
+    public void recoverStaleUnpreparedReservations() {
+        // 宽限期保证正常请求有足够时间把预备状态推进到 PREPARED，领取后原请求将被 fencing 拒绝。
+        Date deadline = new Date(System.currentTimeMillis() - Math.max(1L, reservationRecoveryTimeoutMillis));
+        int batchSize = Math.max(1, reservationRecoveryBatchSize);
+        List<TicketSeatReservationDO> reservations = ticketSeatReservationMapper
+                .selectStaleUnpreparedReservations(deadline, batchSize);
+        if (reservations == null || reservations.isEmpty()) {
+            return;
+        }
+        // 每条记录独立推进，单条 Redis 或库存异常只保留 ABORTING 等待下一轮重试。
+        reservations.forEach(reservation -> {
+            try {
+                ticketSeatReservationReleaseService.releaseUnpreparedReservation(reservation.getReservationId());
+            } catch (RuntimeException ex) {
+                log.error("ticket_unprepared_reservation_recovery_failed reservationId={}, status={}",
+                        reservation.getReservationId(), reservation.getReservationStatus(), ex);
+            }
+        });
     }
 
     /**
@@ -157,13 +182,16 @@ public class TicketSeatReservationRecoveryService {
         long startedNanos = System.nanoTime();
         RecoveryOutcome outcome = RecoveryOutcome.EXECUTION_FAILED;
         try {
+            // 新记录的订单号等于 reservationId；仅灰度期历史记录仍需使用旧的 order_sn 查询。
+            String orderSn = reservation.getOrderSn() == null || reservation.getOrderSn().isBlank()
+                    ? reservation.getReservationId() : reservation.getOrderSn();
             // 订单服务是是否可以归还真实库存的权威来源，不能仅依赖本地超时判断。
             Result<TicketOrderDetailRespDTO> result = ticketOrderRemoteService
-                    .queryTicketOrderByOrderSn(reservation.getOrderSn());
+                    .queryTicketOrderByOrderSn(orderSn);
             if (!result.isSuccess() || result.getData() == null) {
                 outcome = RecoveryOutcome.ORDER_QUERY_FAILED;
-                log.warn("ticket_reservation_recovery_order_query_failed reservationId={}, orderSn={}",
-                        reservation.getReservationId(), reservation.getOrderSn());
+                log.warn("ticket_reservation_recovery_order_query_failed reservationId={}",
+                        reservation.getReservationId());
                 return;
             }
             // 待支付、已支付等状态仍然持有真实库存，扫描器不得提前释放。
@@ -172,12 +200,12 @@ public class TicketSeatReservationRecoveryService {
                 return;
             }
             // 重用关闭回滚可靠命令，由其按 reservation 的分步骤状态幂等推进释放。
-            orderCloseRollbackService.rollback(reservation.getOrderSn());
+            orderCloseRollbackService.rollback(orderSn);
             outcome = RecoveryOutcome.ORDER_CLOSED;
         } catch (RuntimeException ex) {
             // 保留未完成状态供下一轮重试；日志携带人工排查所需的各资源步骤状态。
-            log.error("ticket_reservation_recovery_failed reservationId={}, orderSn={}, dbStatus={}, redisStatus={}, inventoryStatus={}",
-                    reservation.getReservationId(), reservation.getOrderSn(), reservation.getDbSeatReleaseStatus(),
+            log.error("ticket_reservation_recovery_failed reservationId={}, dbStatus={}, redisStatus={}, inventoryStatus={}",
+                    reservation.getReservationId(), reservation.getDbSeatReleaseStatus(),
                     reservation.getRedisBitmapReleaseStatus(), reservation.getTokenRollbackStatus(), ex);
         } finally {
             // 指标记录失败不能影响恢复正确性，只能作为监控采集故障单独告警。
@@ -193,11 +221,11 @@ public class TicketSeatReservationRecoveryService {
     private void recoverPreparedReservation(TicketSeatReservationDO reservation) {
         long startedNanos = System.nanoTime();
         RecoveryOutcome outcome = RecoveryOutcome.EXECUTION_FAILED;
-        if (reservation.getCommandId() == null || reservation.getCommandId().isBlank()
+        if (reservation.getReservationId() == null || reservation.getReservationId().isBlank()
                 || reservation.getUserId() == null || reservation.getUserId().isBlank()) {
             // 缺少命令或用户分片键无法进行有归属校验的远程查询，只能保留记录等待人工处理。
-            log.error("ticket_prepared_reservation_missing_reconcile_key reservationId={}, commandId={}, userId={}",
-                    reservation.getReservationId(), reservation.getCommandId(), reservation.getUserId());
+            log.error("ticket_prepared_reservation_missing_reconcile_key reservationId={}, userId={}",
+                    reservation.getReservationId(), reservation.getUserId());
             recordRecoverySafely(RecoveryFlow.PREPARED_COMMAND, RecoveryOutcome.MISSING_RECONCILE_KEY, startedNanos);
             return;
         }
@@ -209,31 +237,24 @@ public class TicketSeatReservationRecoveryService {
                     .username(reservation.getUsername())
                     .build());
             Result<OrderCommandStatusRespDTO> result = ticketOrderRemoteService
-                    .queryCommandStatus(reservation.getCommandId());
+                    .queryReservationOrderStatus(reservation.getReservationId());
             if (!result.isSuccess() || result.getData() == null) {
                 outcome = RecoveryOutcome.COMMAND_QUERY_FAILED;
-                log.warn("ticket_prepared_reservation_command_query_failed reservationId={}, commandId={}",
-                        reservation.getReservationId(), reservation.getCommandId());
+                log.warn("ticket_prepared_reservation_command_query_failed reservationId={}",
+                        reservation.getReservationId());
                 return;
             }
             OrderCommandStatusRespDTO command = result.getData();
             if (ORDER_COMMAND_SUCCEEDED.equals(command.getStatus())) {
-                if (command.getOrderSn() == null || command.getOrderSn().isBlank()) {
-                    // SUCCEEDED 不带订单号无法完成绑定，属于远程终态数据不完整而非可释放证据。
-                    outcome = RecoveryOutcome.COMMAND_INVALID_SUCCEEDED;
-                    log.error("ticket_prepared_reservation_succeeded_command_missing_order reservationId={}, commandId={}",
-                            reservation.getReservationId(), reservation.getCommandId());
-                    return;
-                }
                 if (Integer.valueOf(RESERVATION_RELEASING).equals(reservation.getReservationStatus())) {
                     // 失败释放已领取后再观察到成功命令属于跨服务数据矛盾，不能自行猜测哪边为准。
                     outcome = RecoveryOutcome.TERMINAL_CONFLICT;
-                    log.error("ticket_prepared_reservation_terminal_conflict reservationId={}, commandId={}, orderSn={}",
-                            reservation.getReservationId(), reservation.getCommandId(), command.getOrderSn());
+                    log.error("ticket_prepared_reservation_terminal_conflict reservationId={}",
+                            reservation.getReservationId());
                     return;
                 }
                 // 订单已成功创建但同步响应或本地绑定中断时，使用行锁方法幂等补回订单关联。
-                ticketSeatReservationReleaseService.bindOrder(reservation.getReservationId(), command.getOrderSn());
+                ticketSeatReservationReleaseService.bindOrder(reservation.getReservationId());
                 outcome = RecoveryOutcome.COMMAND_SUCCEEDED;
                 return;
             }
@@ -245,12 +266,12 @@ public class TicketSeatReservationRecoveryService {
             }
             // PROCESSING 和 NOT_FOUND 都不能证明原请求没有继续执行，必须保留 PREPARED 资源。
             outcome = RecoveryOutcome.COMMAND_PENDING;
-            log.info("ticket_prepared_reservation_pending reservationId={}, commandId={}, commandStatus={}",
-                    reservation.getReservationId(), reservation.getCommandId(), command.getStatus());
+            log.info("ticket_prepared_reservation_pending reservationId={}, commandStatus={}",
+                    reservation.getReservationId(), command.getStatus());
         } catch (RuntimeException ex) {
-            // 远程查询、绑定或释放异常均保留当前状态，由下一轮以同一 commandId 幂等重试。
-            log.error("ticket_prepared_reservation_recovery_failed reservationId={}, commandId={}",
-                    reservation.getReservationId(), reservation.getCommandId(), ex);
+            // 远程查询、绑定或释放异常均保留当前状态，由下一轮以同一 reservationId 幂等重试。
+            log.error("ticket_prepared_reservation_recovery_failed reservationId={}",
+                    reservation.getReservationId(), ex);
         } finally {
             // 后台扫描线程必须恢复原有上下文，避免后续任务意外沿用前一位用户身份。
             restoreUser(previousUser);

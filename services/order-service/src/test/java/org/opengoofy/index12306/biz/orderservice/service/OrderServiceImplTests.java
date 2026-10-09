@@ -198,15 +198,14 @@ class OrderServiceImplTests {
     void commandStatusIsBoundToCurrentUser() {
         UserContext.setUser(UserInfoDTO.builder().userId("1001").username("alice").build());
         OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
-        existing.setActionId("action-1");
-        existing.setCommandId("action-1:create-order");
+        existing.setOrderSn("reservation-a");
         when(orderMapper.selectOne(any())).thenReturn(existing);
 
-        // 权威查询只返回命令、action 和订单号，不返回乘车人证件等订单正文。
-        OrderCommandStatusRespDTO result = orderService.queryCommandStatus("action-1:create-order");
+        // 权威查询只返回受理标识和订单号，不返回乘车人证件等订单正文。
+        OrderCommandStatusRespDTO result = orderService.queryReservationOrderStatus("reservation-a");
         assertThat(result.getStatus()).isEqualTo("SUCCEEDED");
-        assertThat(result.getOrderSn()).isEqualTo("order-1");
-        assertThat(result.getActionId()).isEqualTo("action-1");
+        assertThat(result.getOrderSn()).isEqualTo("reservation-a");
+        assertThat(result.getReservationId()).isEqualTo("reservation-a");
     }
 
     /**
@@ -216,11 +215,11 @@ class OrderServiceImplTests {
     void otherUserCannotQueryCommandResult() {
         UserContext.setUser(UserInfoDTO.builder().userId("2002").username("mallory").build());
         OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
-        existing.setCommandId("action-1:create-order");
+        existing.setOrderSn("reservation-a");
         when(orderMapper.selectOne(any())).thenReturn(existing);
 
         // 即使底层查询意外返回其他分片记录，服务层仍执行最终归属校验。
-        assertThatThrownBy(() -> orderService.queryCommandStatus("action-1:create-order"))
+        assertThatThrownBy(() -> orderService.queryReservationOrderStatus("reservation-a"))
                 .isInstanceOf(ClientException.class)
                 .hasMessageContaining("无权访问");
     }
@@ -233,13 +232,12 @@ class OrderServiceImplTests {
         UserContext.setUser(UserInfoDTO.builder().userId("1001").username("alice").build());
         when(orderMapper.selectOne(any())).thenReturn(null);
         when(orderCommandMapper.selectOne(any())).thenReturn(OrderCommandDO.builder()
-                .commandId("action-1:create-order")
-                .actionId("action-1")
                 .userId("1001")
+                .reservationId("reservation-a")
                 .status("FAILED")
                 .build());
 
-        OrderCommandStatusRespDTO result = orderService.queryCommandStatus("action-1:create-order");
+        OrderCommandStatusRespDTO result = orderService.queryReservationOrderStatus("reservation-a");
 
         // 上游恢复器仅依据该持久化失败终态释放 PREPARED 座位。
         assertThat(result.getStatus()).isEqualTo("FAILED");
@@ -265,8 +263,7 @@ class OrderServiceImplTests {
     void claimedCommandUsesOneOrderTransaction() {
         OrderCommandDO command = claimedCommand();
         OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
-        existing.setActionId(command.getActionId());
-        existing.setCommandId(command.getCommandId());
+        existing.setOrderSn(command.getReservationId());
         existing.setRequestFingerprint(command.getRequestFingerprint());
         TransactionStatus orderTransaction = mock(TransactionStatus.class);
 
@@ -287,7 +284,7 @@ class OrderServiceImplTests {
         ArgumentCaptor<Wrapper> commandUpdateCaptor = ArgumentCaptor.forClass(Wrapper.class);
         verify(orderCommandMapper).update(isNull(), commandUpdateCaptor.capture());
         assertThat(commandUpdateCaptor.getValue().getSqlSegment())
-                .contains("status", "lease_owner", "lease_token", "command_id", "user_id");
+                .contains("status", "lease_owner", "lease_token", "reservation_id", "user_id");
         // 两类 CDC 事件先与订单事实落库，只有本地事务提交后 Canal 才能读取对应 Binlog。
         ArgumentCaptor<OrderCdcOutboxEventDO> outboxCaptor = ArgumentCaptor.forClass(OrderCdcOutboxEventDO.class);
         verify(orderCdcOutboxEventMapper, org.mockito.Mockito.times(2)).insertIgnore(outboxCaptor.capture());
@@ -337,8 +334,7 @@ class OrderServiceImplTests {
     void staleFencingTokenRollsBackOrderTransaction() {
         OrderCommandDO command = claimedCommand();
         OrderDO existing = order("1001", OrderStatusEnum.PENDING_PAYMENT.getStatus());
-        existing.setActionId(command.getActionId());
-        existing.setCommandId(command.getCommandId());
+        existing.setOrderSn(command.getReservationId());
         existing.setRequestFingerprint(command.getRequestFingerprint());
         TransactionStatus orderTransaction = mock(TransactionStatus.class);
         TransactionStatus reconciliationTransaction = mock(TransactionStatus.class);
@@ -392,11 +388,8 @@ class OrderServiceImplTests {
         // 指纹值在测试中调用与生产一致的 SHA-256 工具计算，保证载荷恢复路径完整执行。
         String fingerprint = org.apache.commons.codec.digest.DigestUtils.sha256Hex(requestPayload);
         return OrderCommandDO.builder()
-                .commandId("action-1:create-order")
-                .actionId("action-1")
                 .userId("1001")
                 .recoveryShard(9)
-                .sourceMessageId("source-message-a")
                 .reservationId("reservation-a")
                 .requestFingerprint(fingerprint)
                 .requestPayload(requestPayload)

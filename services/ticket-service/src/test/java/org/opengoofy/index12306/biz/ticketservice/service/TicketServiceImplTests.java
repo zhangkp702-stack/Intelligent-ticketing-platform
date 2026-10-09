@@ -61,6 +61,8 @@ import org.opengoofy.index12306.framework.starter.convention.exception.ServiceEx
 import org.opengoofy.index12306.framework.starter.designpattern.chain.AbstractChainHandler;
 import org.opengoofy.index12306.framework.starter.designpattern.chain.AbstractChainContext;
 import org.opengoofy.index12306.framework.starter.designpattern.strategy.AbstractStrategyChoose;
+import org.opengoofy.index12306.framework.starter.distributedid.core.snowflake.Snowflake;
+import org.opengoofy.index12306.framework.starter.distributedid.toolkit.SnowflakeIdUtil;
 import org.opengoofy.index12306.framework.starter.web.Results;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserContext;
 import org.opengoofy.index12306.frameworks.starter.user.core.UserInfoDTO;
@@ -106,6 +108,8 @@ class TicketServiceImplTests {
     @BeforeEach
     @SuppressWarnings("unchecked")
     void setUp() {
+        // 购票流程需要生成预占标识，单元测试中显式初始化未启动 Spring 的雪花算法实例。
+        SnowflakeIdUtil.initSnowflake(new Snowflake(1L, 1L));
         // 预览流程只依赖订单远程服务和退款参数责任链，其余依赖不参与本用例。
         ticketOrderRemoteService = mock(TicketOrderRemoteService.class);
         PayRemoteService payRemoteService = mock(PayRemoteService.class);
@@ -289,19 +293,17 @@ class TicketServiceImplTests {
                 .containsExactly("01", "01A");
         ArgumentCaptor<TicketOrderCreateRemoteReqDTO> orderRequestCaptor =
                 ArgumentCaptor.forClass(TicketOrderCreateRemoteReqDTO.class);
-        verify(reservationService).prepareReservation(eq(response.getReservationId()), anyString(), anyString(),
-                eq("1001"), eq("alice"), eq(1L), eq("北京南"), eq("上海虹桥"),
+        verify(reservationService).prepareReservation(eq(response.getReservationId()), eq("1001"), eq("alice"),
+                eq(1L), eq("北京南"), eq("上海虹桥"),
                 eq(ridingDate), eq(ridingDate), eq(1), anyList(), orderRequestCaptor.capture());
-        String actionId = orderRequestCaptor.getValue().getActionId();
-        String commandId = orderRequestCaptor.getValue().getCommandId();
-        assertThat(actionId).startsWith("purchase-");
-        assertThat(commandId).isEqualTo(actionId + ":create-order");
         assertThat(orderRequestCaptor.getValue().getTicketOrderItems()).singleElement()
                 .extracting("carriageNumber", "seatNumber")
                 .containsExactly("01", "01A");
-        verify(reservationService, never()).bindOrder(anyString(), anyString());
+        verify(reservationService, never()).bindOrder(anyString());
         verify(redisSeatBitmapService, never()).releaseHeld(eq("1"), eq(ridingDate),
                 eq("北京南"), eq("上海虹桥"), eq(1), anyList());
+        verify(redisSeatBitmapService).confirmLease(eq("1"), eq(ridingDate), eq("北京南"), eq("上海虹桥"),
+                eq(1), anyList(), eq(response.getReservationId()));
 
         // Redis 已占位但数据库 CAS 冲突时，外层必须按当前 reservation 回收临时 owner。
         rejectDatabaseConfirm.set(true);

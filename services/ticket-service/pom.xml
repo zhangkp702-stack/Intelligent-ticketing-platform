@@ -102,6 +102,12 @@
 
         <dependency>
             <groupId>org.opengoofy.index12306</groupId>
+            <artifactId>index12306-distributedid-spring-boot-starter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.opengoofy.index12306</groupId>
             <artifactId>index12306-reliable-command-spring-boot-starter</artifactId>
             <version>${project.version}</version>
         </dependency>

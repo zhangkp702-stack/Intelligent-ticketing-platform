@@ -56,7 +56,6 @@ import org.opengoofy.index12306.biz.orderservice.service.OrderItemService;
 import org.opengoofy.index12306.biz.orderservice.service.OrderPassengerRelationService;
 import org.opengoofy.index12306.biz.orderservice.service.OrderService;
 import org.opengoofy.index12306.biz.orderservice.service.monitor.OrderCreateMetrics;
-import org.opengoofy.index12306.biz.orderservice.service.orderid.OrderIdGeneratorManager;
 import org.opengoofy.index12306.framework.starter.common.toolkit.BeanUtil;
 import org.opengoofy.index12306.framework.starter.convention.exception.ClientException;
 import org.opengoofy.index12306.framework.starter.convention.exception.ServiceException;
@@ -268,7 +267,7 @@ public class OrderServiceImpl implements OrderService {
     private String doCreateTicketOrder(
             OrderCommandDO command,
             TicketOrderCreateReqDTO requestParam) {
-        String commandId = command.getCommandId();
+        String reservationId = command.getReservationId();
         String requestFingerprint = command.getRequestFingerprint();
         String userId = command.getUserId();
         OrderCreateResultContext resultContext = resultContext(command);
@@ -278,15 +277,13 @@ public class OrderServiceImpl implements OrderService {
             // Command 已由 MQ 消费事务持久化；这里只开启订单本地事务，不嵌套占用第二个连接。
             createdOrderSn = executeInNewTransaction(() -> {
             // 网络重试优先读取同一用户分片内的原订单，避免再次生成订单号和子订单。
-            OrderDO existing = commandId == null ? null : findByCommandId(commandId, userId);
+            OrderDO existing = reservationId == null ? null : findByOrderSn(reservationId, userId);
             boolean reusedExistingOrder = existing != null;
             if (existing == null) {
-                // 通过基因法将用户 ID 融入到订单号。
-                String orderSn = OrderIdGeneratorManager.generateId(requestParam.getUserId());
+                // reservationId 在锁座时已经生成，订单服务只负责将它确认为最终订单号。
+                String orderSn = reservationId;
                 // 创建汇总订单，存储整个账单的公共情况。
                 OrderDO orderDO = OrderDO.builder()
-                        .actionId(requestParam.getActionId())
-                        .commandId(commandId)
                         .requestFingerprint(requestFingerprint)
                         .orderSn(orderSn)
                         .orderTime(requestParam.getOrderTime())
@@ -309,7 +306,7 @@ public class OrderServiceImpl implements OrderService {
                     orderCreateMetrics.recordStage(orderInsertTimer, "order_insert", "success");
                 } catch (DuplicateKeyException exception) {
                     orderCreateMetrics.recordStage(orderInsertTimer, "order_insert", "duplicate");
-                    existing = findByCommandId(commandId, userId);
+                    existing = findByOrderSn(reservationId, userId);
                     if (existing == null) {
                         throw exception;
                     }
@@ -329,7 +326,7 @@ public class OrderServiceImpl implements OrderService {
                 completeOrderCommand(command, existingOrderSn);
                 // 订单、命令状态和结果事件共享当前本地事务。
                 enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_SUCCEEDED,
-                        existingOrderSn, null);
+                        null);
                 return existingOrderSn;
             }
             String orderSn = existing.getOrderSn();
@@ -373,7 +370,7 @@ public class OrderServiceImpl implements OrderService {
             // Command 与延迟关单 CDC Outbox 在同一订单事务提交，避免建单成功后丢失关单任务。
             completeOrderCommand(command, orderSn);
             // 订单主记录、命令成功状态和回传结果事件必须原子提交。
-            enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_SUCCEEDED, orderSn, null);
+            enqueueOrderCreateResult(resultContext, TicketOrderMessageConstants.RESULT_SUCCEEDED, null);
             return orderSn;
             });
             orderCreateMetrics.recordStage(orderTransactionTimer, "order_transaction", "success");
@@ -397,7 +394,7 @@ public class OrderServiceImpl implements OrderService {
             // 关单事件和订单、Command 同事务追加，由 Canal Relay 负责 Broker 投递与位点恢复。
             appendOrderDelayCloseEvent(command, orderSn);
             // 成功命令与订单处于同一用户分片，状态更新随当前订单事务一起提交。
-            markOrderCommandSucceeded(command, orderSn);
+            markOrderCommandSucceeded(command);
             orderCreateMetrics.recordStage(commandCompleteTimer, "command_complete", "success");
         } catch (RuntimeException ex) {
             orderCreateMetrics.recordStage(commandCompleteTimer, "command_complete", "failed");
@@ -408,25 +405,24 @@ public class OrderServiceImpl implements OrderService {
     /**
      * 查询当前用户订单创建命令的权威状态。
      *
-     * @param commandId 稳定命令标识
+     * @param reservationId 稳定购票受理标识
      * @return 未找到、处理中、已成功或已失败的安全结果
      */
     @Override
-    public OrderCommandStatusRespDTO queryCommandStatus(String commandId) {
-        if (commandId == null || commandId.isBlank()) {
-            throw new ServiceException("订单命令标识不能为空");
+    public OrderCommandStatusRespDTO queryReservationOrderStatus(String reservationId) {
+        if (reservationId == null || reservationId.isBlank()) {
+            throw new ServiceException("购票受理标识不能为空");
         }
-        String normalized = commandId.trim();
+        String normalized = reservationId.trim();
         String userId = UserContext.getUserId();
-        OrderDO order = findByCommandId(normalized, userId);
+        OrderDO order = findByOrderSn(normalized, userId);
         if (order != null) {
             if (!Objects.equals(order.getUserId(), userId)) {
                 throw new ClientException("订单命令不存在或无权访问");
             }
             // 已落库订单永远优先于命令表，覆盖订单提交成功但命令成功标记尚未写入的短暂窗口。
             return OrderCommandStatusRespDTO.builder()
-                    .commandId(order.getCommandId())
-                    .actionId(order.getActionId())
+                    .reservationId(normalized)
                     .status(ORDER_COMMAND_SUCCEEDED)
                     .orderSn(order.getOrderSn())
                     .build();
@@ -434,19 +430,18 @@ public class OrderServiceImpl implements OrderService {
         OrderCommandDO command = findOrderCommand(normalized, userId);
         if (command == null) {
             return OrderCommandStatusRespDTO.builder()
-                    .commandId(normalized)
+                    .reservationId(normalized)
                     .status("NOT_FOUND")
                     .build();
         }
         if (!Objects.equals(command.getUserId(), userId)) {
             throw new ClientException("订单命令不存在或无权访问");
         }
-        // 查询始终带用户分片键，其他用户即使猜中 commandId 也无法读取订单号。
+        // 查询始终带用户分片键，其他用户即使猜中 reservationId 也无法读取订单号。
         return OrderCommandStatusRespDTO.builder()
-                .commandId(command.getCommandId())
-                .actionId(command.getActionId())
+                .reservationId(command.getReservationId())
                 .status(command.getStatus())
-                .orderSn(command.getOrderSn())
+                .orderSn(ORDER_COMMAND_SUCCEEDED.equals(command.getStatus()) ? command.getReservationId() : null)
                 .build();
     }
 
@@ -480,9 +475,6 @@ public class OrderServiceImpl implements OrderService {
                 throw new InvalidOrderCommandPayloadException("订单 Command 请求身份不一致");
             }
             TicketOrderCreateReqDTO target = new TicketOrderCreateReqDTO();
-            // actionId 和 commandId 以不可变外层字段为准，载荷只保存订单业务快照。
-            target.setActionId(command.getActionId());
-            target.setCommandId(command.getCommandId());
             target.setUserId(Long.parseLong(source.getUserId().trim()));
             target.setUsername(source.getUsername());
             target.setTrainId(source.getTrainId());
@@ -539,14 +531,14 @@ public class OrderServiceImpl implements OrderService {
     private void settleClaimedCommandFailure(OrderCommandDO command, RuntimeException exception) {
         executeInNewTransaction(() -> {
             // 若提交结果不明但订单已经存在，优先补齐成功终态，绝不能向票务侧发送失败释放座位。
-            OrderDO existing = findByCommandId(command.getCommandId(), command.getUserId());
+            OrderDO existing = findByOrderSn(command.getReservationId(), command.getUserId());
             if (existing != null) {
                 if (matchesCommand(existing, command)) {
                     // 订单已提交但 Command 终态未知时，同一事务补齐延迟关单和结果 CDC 事件。
                     appendOrderDelayCloseEvent(command, existing.getOrderSn());
-                    markOrderCommandSucceeded(command, existing.getOrderSn());
+                    markOrderCommandSucceeded(command);
                     enqueueOrderCreateResult(resultContext(command), TicketOrderMessageConstants.RESULT_SUCCEEDED,
-                            existing.getOrderSn(), null);
+                            null);
                     return existing.getOrderSn();
                 }
                 markClaimedCommandUnknown(command, "ORDER_FACT_CONFLICT");
@@ -575,18 +567,18 @@ public class OrderServiceImpl implements OrderService {
     public void reconcileUnknownOrderCommand(OrderCommandDO command) {
         executeInNewTransaction(() -> {
             // UNKNOWN 没有执行租约，多个实例可并发读取，但条件更新只允许一个实例完成对账。
-            OrderDO existing = findByCommandId(command.getCommandId(), command.getUserId());
+            OrderDO existing = findByOrderSn(command.getReservationId(), command.getUserId());
             if (existing == null || !matchesCommand(existing, command)) {
                 scheduleUnknownRecheck(command, existing == null ? "ORDER_FACT_NOT_FOUND" : "ORDER_FACT_CONFLICT");
                 return null;
             }
-            int updated = markUnknownCommandSucceeded(command, existing.getOrderSn());
+            int updated = markUnknownCommandSucceeded(command);
             if (updated == 1) {
                 // 对账成功后补齐 CDC Outbox；事务回滚时不会留下无订单的关单消息。
                 appendOrderDelayCloseEvent(command, existing.getOrderSn());
                 // 成功状态与结果事件共享本地事务，重复扫描不会生成另一条结果事件。
                 enqueueOrderCreateResult(resultContext(command), TicketOrderMessageConstants.RESULT_SUCCEEDED,
-                        existing.getOrderSn(), null);
+                        null);
                 return existing.getOrderSn();
             }
             return null;
@@ -599,12 +591,11 @@ public class OrderServiceImpl implements OrderService {
      * @param command 当前工作线程持有的租约
      * @param orderSn 已创建或幂等复用的订单号
      */
-    private void markOrderCommandSucceeded(OrderCommandDO command, String orderSn) {
+    private void markOrderCommandSucceeded(OrderCommandDO command) {
         Date now = new Date();
         // 所有者和单调 token 同时匹配才允许提交；租约过期后迟到事务会因更新零行而整体回滚。
         int updated = orderCommandMapper.update(null, fencedCommandUpdate(command)
                 .set("status", ORDER_COMMAND_SUCCEEDED)
-                .set("order_sn", orderSn)
                 .set("finish_time", now)
                 .set("payload_expire_time", new Date(now.getTime() + COMMAND_PAYLOAD_RETENTION_MILLIS))
                 .set("next_retry_time", null)
@@ -636,7 +627,7 @@ public class OrderServiceImpl implements OrderService {
         if (updated == 1) {
             // 票务服务只有消费到这个与 FAILED 原子提交的结果，才可以释放 PREPARED 座位。
             enqueueOrderCreateResult(resultContext(command), TicketOrderMessageConstants.RESULT_FAILED,
-                    null, failureCategory);
+                    failureCategory);
         }
     }
 
@@ -686,7 +677,7 @@ public class OrderServiceImpl implements OrderService {
         // userId 保证单分片路由，owner 和 token 阻止租约过期后的迟到线程覆盖新执行结果。
         return Wrappers.<OrderCommandDO>update()
                 .eq("user_id", command.getUserId())
-                .eq("command_id", command.getCommandId())
+                .eq("reservation_id", command.getReservationId())
                 .eq("status", ORDER_COMMAND_PROCESSING)
                 .eq("lease_owner", command.getLeaseOwner())
                 .eq("lease_token", command.getLeaseToken());
@@ -699,18 +690,17 @@ public class OrderServiceImpl implements OrderService {
      * @param orderSn 已存在订单号
      * @return 成功更新一行时返回 1
      */
-    private int markUnknownCommandSucceeded(OrderCommandDO command, String orderSn) {
+    private int markUnknownCommandSucceeded(OrderCommandDO command) {
         Date now = new Date();
         // UNKNOWN 对账不持租约，状态条件与 userId 路由足以保证只有一个实例推进终态。
         return orderCommandMapper.update(null, Wrappers.<OrderCommandDO>update()
                 .set("status", ORDER_COMMAND_SUCCEEDED)
-                .set("order_sn", orderSn)
                 .set("finish_time", now)
                 .set("payload_expire_time", new Date(now.getTime() + COMMAND_PAYLOAD_RETENTION_MILLIS))
                 .set("next_retry_time", null)
                 .set("failure_reason", null)
                 .eq("user_id", command.getUserId())
-                .eq("command_id", command.getCommandId())
+                .eq("reservation_id", command.getReservationId())
                 .eq("status", OrderCommandStatusEnum.UNKNOWN.name()));
     }
 
@@ -726,7 +716,7 @@ public class OrderServiceImpl implements OrderService {
                 .set("next_retry_time", new Date(System.currentTimeMillis() + COMMAND_UNKNOWN_RECHECK_MILLIS))
                 .set("failure_reason", abbreviateFailure(reason))
                 .eq("user_id", command.getUserId())
-                .eq("command_id", command.getCommandId())
+                .eq("reservation_id", command.getReservationId())
                 .eq("status", OrderCommandStatusEnum.UNKNOWN.name()));
     }
 
@@ -735,12 +725,11 @@ public class OrderServiceImpl implements OrderService {
      *
      * @param order 已存在订单
      * @param command 原始 Command
-     * @return action、用户和请求摘要全部一致时返回 true
+     * @return 用户和请求摘要全部一致时返回 true
      */
     private boolean matchesCommand(OrderDO order, OrderCommandDO command) {
-        // commandId 已用于查询，再校验其余不可变字段，防止错误复用冲突订单。
-        return Objects.equals(order.getActionId(), command.getActionId())
-                && Objects.equals(order.getUserId(), command.getUserId())
+        // reservationId 已用于查询，再校验用户和请求摘要，防止错误复用冲突订单。
+        return Objects.equals(order.getUserId(), command.getUserId())
                 && Objects.equals(order.getRequestFingerprint(), command.getRequestFingerprint());
     }
 
@@ -789,14 +778,13 @@ public class OrderServiceImpl implements OrderService {
     private void enqueueOrderCreateResult(
             OrderCreateResultContext resultContext,
             String status,
-            String orderSn,
             String failureCategory) {
         if (resultContext == null) {
             return;
         }
-        // 使用源消息标识作为业务去重键，订单服务重放时只会复用同一条不可变结果事件。
+        // reservationId 是业务去重键，订单服务重放时只会复用同一条不可变结果事件。
         TicketOrderCreateResultMessage message = resultMessage(
-                resultContext, resultContext.commandId(), status, orderSn, failureCategory);
+                resultContext, status, failureCategory);
         appendOrderCreateResultEvent(resultContext, message);
     }
 
@@ -807,16 +795,16 @@ public class OrderServiceImpl implements OrderService {
      * @param orderSn 已在当前事务创建或复用的待支付订单号
      */
     private void appendOrderDelayCloseEvent(OrderCommandDO command, String orderSn) {
-        if (command == null || !hasText(command.getUserId()) || !hasText(command.getCommandId())
+        if (command == null || !hasText(command.getUserId()) || !hasText(command.getReservationId())
                 || command.getRecoveryShard() == null || !hasText(orderSn)) {
             throw new IllegalArgumentException("延迟关单 CDC Outbox 缺少不可变路由信息");
         }
         // 载荷包含既有消息包装器同名字段，已在 Broker 中等待的旧消息和新事件共用票务消费语义。
-        String eventId = command.getCommandId() + ":delay-close";
+        String eventId = command.getReservationId() + ":delay-close";
         TicketOrderDelayCloseMessage message = TicketOrderDelayCloseMessage.builder()
                 .messageId(eventId)
                 .messageVersion(TicketOrderMessageConstants.DELAY_CLOSE_ORDER_VERSION)
-                .commandId(command.getCommandId())
+                .commandId(command.getReservationId())
                 .keys(orderSn)
                 .message(TicketOrderDelayCloseEvent.builder().orderSn(orderSn).build())
                 .uuid(eventId)
@@ -826,13 +814,13 @@ public class OrderServiceImpl implements OrderService {
         String uniqueName = rocketMqUniqueName == null ? "" : rocketMqUniqueName;
         OrderCdcOutboxEventDO event = OrderCdcOutboxEventDO.builder()
                 .userId(command.getUserId())
-                .commandId(command.getCommandId())
+                .commandId(command.getReservationId())
                 .recoveryShard(command.getRecoveryShard())
                 .namespace(TicketOrderMessageConstants.DELAY_CLOSE_ORDER_NAMESPACE)
                 .eventId(eventId)
                 .eventType(TicketOrderMessageConstants.DELAY_CLOSE_ORDER_EVENT_TYPE)
                 .aggregateId(orderSn)
-                .deduplicationKey(command.getCommandId())
+                .deduplicationKey(command.getReservationId())
                 .messageKey(orderSn)
                 .destinationTopic(TicketOrderMessageConstants.DELAY_CLOSE_ORDER_TOPIC + uniqueName)
                 .destinationTag(TicketOrderMessageConstants.DELAY_CLOSE_ORDER_TAG + uniqueName)
@@ -864,14 +852,14 @@ public class OrderServiceImpl implements OrderService {
         // Outbox 与订单、Command 同路由，保证终态和回传事实位于同一分库分表事务。
         OrderCdcOutboxEventDO event = OrderCdcOutboxEventDO.builder()
                 .userId(resultContext.userId())
-                .commandId(resultContext.commandId())
+                .commandId(resultContext.reservationId())
                 .recoveryShard(resultContext.recoveryShard())
                 .namespace(TicketOrderMessageConstants.CREATE_ORDER_RESULT_NAMESPACE)
                 .eventId(message.getMessageId())
                 .eventType(TicketOrderMessageConstants.CREATE_ORDER_RESULT_EVENT_TYPE)
                 .aggregateId(resultContext.reservationId())
-                .deduplicationKey(resultContext.sourceMessageId())
-                .messageKey(resultContext.commandId())
+                .deduplicationKey(resultContext.reservationId())
+                .messageKey(resultContext.reservationId())
                 .destinationTopic(TicketOrderMessageConstants.CREATE_ORDER_TOPIC)
                 .destinationTag(TicketOrderMessageConstants.CREATE_ORDER_RESULT_TAG)
                 .delayLevel(0)
@@ -931,27 +919,20 @@ public class OrderServiceImpl implements OrderService {
      * 构建返回给票务服务的不可变订单创建结果消息。
      *
      * @param resultContext 源消息和座位预留上下文
-     * @param commandId 已规范化的稳定建单命令标识
      * @param status 已确定的订单创建结果状态
-     * @param orderSn 成功时的订单号
      * @param failureCategory 失败时的稳定错误分类
      * @return 可写入 Outbox 或直接返回消费者的结果消息
      */
     private TicketOrderCreateResultMessage resultMessage(
             OrderCreateResultContext resultContext,
-            String commandId,
             String status,
-            String orderSn,
             String failureCategory) {
-        // 结果消息 ID 可由源消息稳定推导，Broker 重投时不会生成新的消费者 Inbox 主键。
+        // 结果消息 ID 可由 reservationId 稳定推导，Broker 重投时不会生成新的消费者 Inbox 主键。
         return TicketOrderCreateResultMessage.builder()
-                .messageId(resultContext.sourceMessageId() + ":result")
+                .messageId(resultContext.reservationId() + ":result")
                 .messageVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
-                .sourceMessageId(resultContext.sourceMessageId())
                 .reservationId(resultContext.reservationId())
-                .commandId(commandId)
                 .status(status)
-                .orderSn(orderSn)
                 .failureCategory(failureCategory)
                 .build();
     }
@@ -960,13 +941,12 @@ public class OrderServiceImpl implements OrderService {
      * 从持久化 Command 构造订单结果事件所需的稳定关联上下文。
      *
      * @param command 订单创建 Command
-     * @return 源消息、座位预留和命令标识上下文
+     * @return 座位预留和订单结果路由上下文
      */
     private OrderCreateResultContext resultContext(OrderCommandDO command) {
         // 所有关联标识都来自首次持久化的不可变字段，恢复执行不会生成新的消息或预留编号。
         return new OrderCreateResultContext(
-                command.getUserId(), command.getRecoveryShard(), command.getSourceMessageId(),
-                command.getReservationId(), command.getCommandId());
+                command.getUserId(), command.getRecoveryShard(), command.getReservationId());
     }
 
     /**
@@ -986,14 +966,12 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * 保存订单结果事件所需的源消息、预留座位和稳定命令标识。
+     * 保存订单结果事件所需的预留座位和稳定路由标识。
      */
     private record OrderCreateResultContext(
             String userId,
             Integer recoveryShard,
-            String sourceMessageId,
-            String reservationId,
-            String commandId) {
+            String reservationId) {
     }
 
     /**
@@ -1035,35 +1013,35 @@ public class OrderServiceImpl implements OrderService {
     }
 
     /**
-     * 读取同一用户分片内已经创建的订单命令。
+     * 读取同一用户分片内已经创建的订单。
      *
-     * @param commandId 稳定命令标识
+     * @param reservationId 稳定购票受理标识，同时也是订单号
      * @param userId 用户分片键
      * @return 已创建订单，不存在时返回 null
      */
-    private OrderDO findByCommandId(String commandId, String userId) {
+    private OrderDO findByOrderSn(String reservationId, String userId) {
         return orderMapper.selectOne(Wrappers.lambdaQuery(OrderDO.class)
                 .eq(OrderDO::getUserId, userId)
-                .eq(OrderDO::getCommandId, commandId));
+                .eq(OrderDO::getOrderSn, reservationId));
     }
 
     /**
-     * 按用户分片键和稳定命令读取命令记录。
+     * 按用户分片键和稳定预订标识读取命令记录。
      *
-     * @param commandId 稳定订单创建命令标识
+     * @param reservationId 稳定购票受理标识
      * @param userId 订单所属用户标识
      * @return 命令记录，不存在时返回 null
      */
-    private OrderCommandDO findOrderCommand(String commandId, String userId) {
+    private OrderCommandDO findOrderCommand(String reservationId, String userId) {
         return orderCommandMapper.selectOne(Wrappers.<OrderCommandDO>query()
                 // 状态和幂等查询不需要恢复载荷，避免无谓解密并加载乘客敏感信息。
-                .select("command_id", "action_id", "user_id", "request_fingerprint", "status", "order_sn")
+                .select("reservation_id", "user_id", "request_fingerprint", "status")
                 .eq("user_id", userId)
-                .eq("command_id", commandId));
+                .eq("reservation_id", reservationId));
     }
 
     /**
-     * 校验重复命令仍绑定同一 action、用户和不可变参数。
+     * 校验重复预订仍绑定同一用户和不可变参数。
      *
      * @param requestParam 当前创建参数
      * @param requestFingerprint 当前参数指纹
@@ -1074,8 +1052,7 @@ public class OrderServiceImpl implements OrderService {
             TicketOrderCreateReqDTO requestParam,
             String requestFingerprint,
             OrderDO existing) {
-        if (!Objects.equals(existing.getActionId(), requestParam.getActionId())
-                || !Objects.equals(existing.getRequestFingerprint(), requestFingerprint)
+        if (!Objects.equals(existing.getRequestFingerprint(), requestFingerprint)
                 || !Objects.equals(existing.getUserId(), String.valueOf(requestParam.getUserId()))) {
             throw new ServiceException("订单命令标识与原请求不一致");
         }

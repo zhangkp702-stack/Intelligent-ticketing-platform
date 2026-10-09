@@ -3,7 +3,9 @@ local seat_bits = {}
 for bit in string.gmatch(ARGV[2], '([^,]+)') do
     table.insert(seat_bits, tonumber(bit))
 end
-local segment_count = #KEYS / 2
+local segment_count = (#KEYS - 2) / 2
+local lease_index_key = KEYS[#KEYS - 1]
+local lease_payload_key = KEYS[#KEYS]
 if hold_id == nil or hold_id == '' then
     return -1
 end
@@ -23,6 +25,9 @@ for i = 1, segment_count do
         end
     end
 end
+
+redis.call('ZREM', lease_index_key, hold_id)
+redis.call('HDEL', lease_payload_key, hold_id)
 
 if owner_changed then
     return 2

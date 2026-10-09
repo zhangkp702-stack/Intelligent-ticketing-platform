@@ -78,7 +78,6 @@ class OrderCommandPersistenceServiceTests {
         OrderCommandDO inserted = commandCaptor.getValue();
         assertThat(result).isSameAs(inserted);
         assertThat(inserted.getStatus()).isEqualTo(OrderCommandStatusEnum.RECEIVED.name());
-        assertThat(inserted.getSourceMessageId()).isEqualTo("reservation-1");
         assertThat(inserted.getReservationId()).isEqualTo("reservation-1");
         assertThat(inserted.getUserId()).isEqualTo("1001");
         assertThat(inserted.getRecoveryShard()).isEqualTo(0);
@@ -111,16 +110,13 @@ class OrderCommandPersistenceServiceTests {
     }
 
     /**
-     * 验证相同 commandId 不能覆盖已经绑定的另一份请求快照。
+     * 验证相同 reservationId 不能覆盖已经绑定的另一份请求快照。
      */
     @Test
     void rejectsCommandIdBoundToDifferentPayload() {
         TicketOrderCreateCommandMessage message = commandMessage();
         OrderCommandDO conflicting = OrderCommandDO.builder()
-                .commandId(message.getCommandId())
-                .actionId(message.getActionId())
                 .userId(message.getRequest().getUserId())
-                .sourceMessageId(message.getMessageId())
                 .reservationId(message.getReservationId())
                 .messageVersion(message.getMessageVersion())
                 .requestFingerprint("different-fingerprint")
@@ -133,15 +129,15 @@ class OrderCommandPersistenceServiceTests {
     }
 
     /**
-     * 验证消息标识映射不一致时不会写入无法正确回传结果的任务。
+     * 验证缺少购票受理标识时不会写入无法正确回传结果的任务。
      */
     @Test
     void rejectsInconsistentMessageIdentity() {
         TicketOrderCreateCommandMessage message = commandMessage();
-        message.setMessageId("another-message");
+        message.setReservationId("");
 
         assertThatThrownBy(() -> persistenceService.persistReceivedCommand(message))
-                .hasMessageContaining("消息标识关系不一致");
+                .hasMessageContaining("订单创建消息缺少持久化 Command 所需字段");
     }
 
     /**
@@ -188,11 +184,8 @@ class OrderCommandPersistenceServiceTests {
                 .ticketOrderItems(List.of(item))
                 .build();
         return TicketOrderCreateCommandMessage.builder()
-                .messageId("reservation-1")
                 .messageVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
                 .reservationId("reservation-1")
-                .actionId("purchase-reservation-1")
-                .commandId("purchase-reservation-1:create-order")
                 .request(request)
                 .build();
     }

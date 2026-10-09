@@ -26,7 +26,7 @@ public interface OrderCommandExecutionService {
      * 异步唤醒一个已经持久化的订单创建任务。
      *
      * @param userId 用户分片键
-     * @param commandId 稳定订单创建命令标识
+     * @param reservationId 稳定购票受理标识
      */
-    void dispatchAsync(String userId, String commandId);
+    void dispatchAsync(String userId, String reservationId);
 }

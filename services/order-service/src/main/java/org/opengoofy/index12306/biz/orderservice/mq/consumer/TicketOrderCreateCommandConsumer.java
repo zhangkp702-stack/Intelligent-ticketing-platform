@@ -55,13 +55,12 @@ public class TicketOrderCreateCommandConsumer implements RocketMQListener<Ticket
             // Command 的本地事务提交是消息所有权转移边界；失败时抛出异常让 RocketMQ 重投。
             OrderCommandDO command = orderCommandPersistenceService.persistReceivedCommand(message);
             // 即时调度只是降低延迟，线程池拒绝或进程退出时仍由持久化恢复扫描重新发现任务。
-            orderCommandExecutionService.dispatchAsync(command.getUserId(), command.getCommandId());
-            log.info("ticket_order_create_command_persisted reservationId={}, commandId={}, status={}",
-                    message.getReservationId(), message.getCommandId(), command.getStatus());
+            orderCommandExecutionService.dispatchAsync(command.getUserId(), command.getReservationId());
+            log.info("ticket_order_create_command_persisted reservationId={}, status={}",
+                    message.getReservationId(), command.getStatus());
         } catch (RuntimeException exception) {
-            log.error("ticket_order_create_command_persist_failed messageId={}, commandId={}",
-                    message == null ? null : message.getMessageId(),
-                    message == null ? null : message.getCommandId(), exception);
+            log.error("ticket_order_create_command_persist_failed reservationId={}",
+                    message == null ? null : message.getReservationId(), exception);
             throw exception;
         }
     }

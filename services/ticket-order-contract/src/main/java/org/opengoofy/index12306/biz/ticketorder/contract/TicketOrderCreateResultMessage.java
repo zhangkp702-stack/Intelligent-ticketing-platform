@@ -39,20 +39,13 @@ public class TicketOrderCreateResultMessage {
     /** 协议版本。 */
     private Long messageVersion;
 
-    /** 对应的命令消息标识。 */
-    private String sourceMessageId;
-
-    /** 购票受理标识。 */
+    /**
+     * 购票受理标识，同时也是成功创建后的订单号。
+     */
     private String reservationId;
-
-    /** 稳定命令标识。 */
-    private String commandId;
 
     /** 结果状态，只允许 SUCCEEDED 或 FAILED。 */
     private String status;
-
-    /** 成功时的订单号。 */
-    private String orderSn;
 
     /** 失败时的稳定错误分类。 */
     private String failureCategory;

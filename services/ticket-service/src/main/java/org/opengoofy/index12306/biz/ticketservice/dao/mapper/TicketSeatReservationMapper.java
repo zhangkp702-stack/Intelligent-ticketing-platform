@@ -31,14 +31,23 @@ import java.util.List;
 public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReservationDO> {
 
     /**
-     * 查询订单全部有效座位占用记录。
+     * 按预订标识查询座位占用记录。
      *
-     * @param orderSn 已关闭订单号
-     * @return 订单关联的座位占用记录
+     * @param reservationId 座位占用标识，同时也是订单号
+     * @return 当前占用记录，不存在时返回空
+     */
+    @Select("SELECT * FROM t_ticket_seat_reservation WHERE reservation_id = #{reservationId} AND del_flag = 0")
+    TicketSeatReservationDO selectByReservationId(@Param("reservationId") String reservationId);
+
+    /**
+     * 查询旧协议订单关联的全部有效座位占用记录。
+     *
+     * @param orderSn 旧订单号
+     * @return 仍处于已绑定状态的历史座位占用记录
      */
     @Select("SELECT * FROM t_ticket_seat_reservation WHERE order_sn = #{orderSn} "
             + "AND reservation_status = 1 AND del_flag = 0 ORDER BY id")
-    List<TicketSeatReservationDO> selectByOrderSn(@Param("orderSn") String orderSn);
+    List<TicketSeatReservationDO> selectLegacyBoundByOrderSn(@Param("orderSn") String orderSn);
 
     /**
      * 锁定一条座位占用记录，串行化数据库座位释放与步骤状态更新。
@@ -69,7 +78,7 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
      * @return 仍有待处理释放步骤的座位占用记录
      */
     @Select("SELECT * FROM t_ticket_seat_reservation "
-            + "WHERE del_flag = 0 AND reservation_status = 1 AND order_sn IS NOT NULL "
+            + "WHERE del_flag = 0 AND reservation_status = 1 "
             + "AND update_time <= #{deadline} "
             + "AND (db_seat_release_status = 0 OR redis_bitmap_release_status = 0 OR token_rollback_status = 0) "
             + "ORDER BY update_time ASC, id ASC LIMIT #{limit}")
@@ -85,12 +94,26 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
      */
     @Select("SELECT * FROM t_ticket_seat_reservation "
             + "WHERE del_flag = 0 AND reservation_status IN (0, 2) "
-            + "AND command_id IS NOT NULL AND user_id IS NOT NULL AND update_time <= #{deadline} "
+            + "AND reservation_id IS NOT NULL AND user_id IS NOT NULL AND update_time <= #{deadline} "
             + "AND (reservation_status = 2 OR db_seat_release_status = 0 "
             + "OR redis_bitmap_release_status = 0 OR token_rollback_status = 0) "
             + "ORDER BY update_time ASC, id ASC LIMIT #{limit}")
     List<TicketSeatReservationDO> selectStalePreparedReservations(@Param("deadline") Date deadline,
                                                                    @Param("limit") int limit);
+
+    /**
+     * 查询尚未提交建单 Outbox 且已经超时的初始化或 Redis 预占记录。
+     *
+     * @param deadline 最后更新时间截止点
+     * @param limit 单次恢复上限
+     * @return 可通过本地 fencing 状态直接中止的预备阶段记录
+     */
+    @Select("SELECT * FROM t_ticket_seat_reservation "
+            + "WHERE del_flag = 0 AND reservation_status IN (-2, -1, 4) "
+            + "AND update_time <= #{deadline} "
+            + "ORDER BY update_time ASC, id ASC LIMIT #{limit}")
+    List<TicketSeatReservationDO> selectStaleUnpreparedReservations(@Param("deadline") Date deadline,
+                                                                     @Param("limit") int limit);
 
     /**
      * 查询仅由压测账号产生、未写入建单 Outbox 且已超时的孤儿预占记录。
@@ -117,7 +140,7 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
      * @return 已绑定订单释放积压数量
      */
     @Select("SELECT COUNT(1) FROM t_ticket_seat_reservation "
-            + "WHERE del_flag = 0 AND reservation_status = 1 AND order_sn IS NOT NULL "
+            + "WHERE del_flag = 0 AND reservation_status = 1 "
             + "AND update_time <= #{deadline} "
             + "AND (db_seat_release_status = 0 OR redis_bitmap_release_status = 0 OR token_rollback_status = 0)")
     long countStaleIncompleteReservations(@Param("deadline") Date deadline);
@@ -129,7 +152,7 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
      * @return 等待订单命令对账的 PREPARED 积压数量
      */
     @Select("SELECT COUNT(1) FROM t_ticket_seat_reservation "
-            + "WHERE del_flag = 0 AND reservation_status = 0 AND command_id IS NOT NULL AND command_id <> '' "
+            + "WHERE del_flag = 0 AND reservation_status = 0 AND reservation_id IS NOT NULL AND reservation_id <> '' "
             + "AND user_id IS NOT NULL AND user_id <> '' "
             + "AND update_time <= #{deadline}")
     long countStalePreparedReservations(@Param("deadline") Date deadline);
@@ -152,6 +175,6 @@ public interface TicketSeatReservationMapper extends BaseMapper<TicketSeatReserv
      */
     @Select("SELECT COUNT(1) FROM t_ticket_seat_reservation "
             + "WHERE del_flag = 0 AND reservation_status = 0 AND update_time <= #{deadline} "
-            + "AND (command_id IS NULL OR command_id = '' OR user_id IS NULL OR user_id = '')")
+            + "AND (reservation_id IS NULL OR reservation_id = '' OR user_id IS NULL OR user_id = '')")
     long countStalePreparedReservationsMissingReconcileKey(@Param("deadline") Date deadline);
 }

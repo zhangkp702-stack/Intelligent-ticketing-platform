@@ -67,12 +67,12 @@ public interface TicketOrderRemoteService {
     /**
      * 查询当前用户订单命令的权威状态。
      *
-     * @param commandId 稳定订单命令标识
-     * @return 命令状态和原订单号
+     * @param reservationId 购票受理标识，也是新订单号
+     * @return 建单状态和订单号
      */
-    @GetMapping("/api/order-service/operations/{commandId}")
-    Result<OrderCommandStatusRespDTO> queryCommandStatus(
-            @PathVariable("commandId") String commandId);
+    @GetMapping("/api/order-service/reservations/{reservationId}/order-status")
+    Result<OrderCommandStatusRespDTO> queryReservationOrderStatus(
+            @PathVariable("reservationId") String reservationId);
 
     /**
      * 车票订单关闭

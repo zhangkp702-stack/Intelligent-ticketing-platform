@@ -84,6 +84,12 @@ index12306:
       loadtest-orphan-release:
         enabled: false
       backlog-refresh-interval-millis: 15000
+    redis-seat-lease:
+      # 仅覆盖 Redis 预占到 MySQL PREPARED 的短期处理窗口，不作为已锁座订单的长期座位锁。
+      lease-millis: 120000
+      recovery-interval-millis: 5000
+      batch-size: 100
+      enabled: true
   ratelimiter:
     # 是否信任 X-Forwarded-For，仅当前面有可信反向代理会清洗重写该头时才能开启，否则可被伪造绕过限流
     trust-forwarded-header: false

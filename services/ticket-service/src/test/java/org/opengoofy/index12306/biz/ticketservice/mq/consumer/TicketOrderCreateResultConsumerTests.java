@@ -72,7 +72,7 @@ class TicketOrderCreateResultConsumerTests {
 
         consumer.onMessage(message);
 
-        verify(reservationReleaseService).bindOrder("reservation-1", "O123");
+        verify(reservationReleaseService).bindOrder("reservation-1");
         verify(reservationReleaseService, never()).releasePreparedReservation(anyString());
         verify(reliableEventStore).completeConsumption(any(ReliableInboxKey.class), any(ReliableEventLease.class),
                 any(Instant.class));
@@ -93,7 +93,7 @@ class TicketOrderCreateResultConsumerTests {
         consumer.onMessage(message);
 
         verify(reservationReleaseService).releasePreparedReservation("reservation-1");
-        verify(reservationReleaseService, never()).bindOrder(anyString(), anyString());
+        verify(reservationReleaseService, never()).bindOrder(anyString());
     }
 
     /**
@@ -106,11 +106,8 @@ class TicketOrderCreateResultConsumerTests {
         return TicketOrderCreateResultMessage.builder()
                 .messageId("source-1:result")
                 .messageVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
-                .sourceMessageId("source-1")
                 .reservationId("reservation-1")
-                .commandId("action-1:create-order")
                 .status(status)
-                .orderSn(TicketOrderMessageConstants.RESULT_SUCCEEDED.equals(status) ? "O123" : null)
                 .failureCategory(TicketOrderMessageConstants.RESULT_FAILED.equals(status) ? "ServiceException" : null)
                 .build();
     }
@@ -125,7 +122,7 @@ class TicketOrderCreateResultConsumerTests {
         ReliableEventKey eventKey = new ReliableEventKey(
                 TicketOrderMessageConstants.CREATE_ORDER_RESULT_NAMESPACE, message.getMessageId());
         return new ReliableInboxRecord(
-                new ReliableInboxKey(eventKey, "ticket-order-create-result-v1"),
+                new ReliableInboxKey(eventKey, "ticket-order-create-result-v2"),
                 TicketOrderMessageConstants.CREATE_ORDER_VERSION,
                 ReliableInboxStatus.PROCESSING,
                 1,

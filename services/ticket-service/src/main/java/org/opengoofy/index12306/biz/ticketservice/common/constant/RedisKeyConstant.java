@@ -140,6 +140,26 @@ public final class RedisKeyConstant {
     public static final String TRAIN_CARRIAGE_SEGMENT_SEAT_OWNER_BY_SERVICE_DATE = "index12306-ticket-service:seat_owner:{%s:%s:%d:%s}:%d";
 
     /**
+     * 车厢座位临时预占租约索引；score 为租约到期时间戳，与位图使用相同 hash tag。
+     */
+    public static final String TRAIN_CARRIAGE_SEAT_LEASE_INDEX = "index12306-ticket-service:seat_lease_index:{%s:%s:%d:%s}";
+
+    /**
+     * 车厢座位临时预占租约元数据；field 为 reservationId，value 为可重放的座位上下文。
+     */
+    public static final String TRAIN_CARRIAGE_SEAT_LEASE_PAYLOAD = "index12306-ticket-service:seat_lease_payload:{%s:%s:%d:%s}";
+
+    /**
+     * 历史未记录始发日期的车厢座位租约索引，保持与旧位图 hash tag 一致。
+     */
+    public static final String TRAIN_CARRIAGE_SEAT_LEASE_INDEX_LEGACY = "index12306-ticket-service:seat_lease_index:{%s:%d:%s}";
+
+    /**
+     * 历史未记录始发日期的车厢座位租约元数据，保持与旧位图 hash tag 一致。
+     */
+    public static final String TRAIN_CARRIAGE_SEAT_LEASE_PAYLOAD_LEGACY = "index12306-ticket-service:seat_lease_payload:{%s:%d:%s}";
+
+    /**
      * 座位策略百毫秒统计桶，同一库存维度的全部窗口桶共享一个 Hash Tag。
      */
     public static final String SEAT_SELECTION_STRATEGY_BUCKET = "index12306-ticket-service:seat_strategy:bucket:{%s}:%s:%d";

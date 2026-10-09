@@ -67,19 +67,16 @@ public class OrderCommandPersistenceServiceImpl implements OrderCommandPersisten
         String requestFingerprint = fingerprint(requestPayload);
 
         // 先读取同一用户分片；正常重投无需再次写库。
-        OrderCommandDO existing = findCommand(userId, message.getCommandId());
+        OrderCommandDO existing = findCommand(userId, message.getReservationId());
         if (existing != null) {
             return requireSameCommand(existing, message, requestFingerprint);
         }
 
         Date now = new Date();
         OrderCommandDO command = OrderCommandDO.builder()
-                .commandId(message.getCommandId())
-                .actionId(message.getActionId())
                 .userId(userId)
                 .recoveryShard(calculateRecoveryShard(userId))
                 .requestFingerprint(requestFingerprint)
-                .sourceMessageId(message.getMessageId())
                 .reservationId(message.getReservationId())
                 .messageVersion(message.getMessageVersion())
                 .requestPayload(requestPayload)
@@ -98,7 +95,7 @@ public class OrderCommandPersistenceServiceImpl implements OrderCommandPersisten
             return command;
         } catch (DuplicateKeyException exception) {
             // 并发重复投递由唯一键裁决，随后读取胜出记录并再次校验不可变字段。
-            OrderCommandDO concurrent = findCommand(userId, message.getCommandId());
+            OrderCommandDO concurrent = findCommand(userId, message.getReservationId());
             if (concurrent == null) {
                 throw exception;
             }
@@ -115,25 +112,14 @@ public class OrderCommandPersistenceServiceImpl implements OrderCommandPersisten
         if (message == null
                 || message.getMessageVersion() == null
                 || message.getMessageVersion() != TicketOrderMessageConstants.CREATE_ORDER_VERSION
-                || !hasText(message.getMessageId())
                 || !hasText(message.getReservationId())
-                || !hasText(message.getActionId())
-                || !hasText(message.getCommandId())
                 || message.getRequest() == null
                 || !hasText(message.getRequest().getUserId())
                 || message.getRequest().getTicketOrderItems() == null
                 || message.getRequest().getTicketOrderItems().isEmpty()) {
             throw new ServiceException("订单创建消息缺少持久化 Command 所需字段");
         }
-        // 外层标识必须形成唯一映射，防止重放载荷覆盖另一笔座位预留。
-        if (!Objects.equals(message.getMessageId(), message.getReservationId())
-                || !Objects.equals(message.getCommandId(), message.getActionId() + ":create-order")) {
-            throw new ServiceException("订单创建消息标识关系不一致");
-        }
-        if (message.getMessageId().length() > 128
-                || message.getReservationId().length() > 64
-                || message.getActionId().length() > 128
-                || message.getCommandId().length() > 160) {
+        if (message.getReservationId().length() > 64) {
             throw new ServiceException("订单创建消息标识超过 Command 字段长度限制");
         }
         try {
@@ -151,17 +137,16 @@ public class OrderCommandPersistenceServiceImpl implements OrderCommandPersisten
      * 按 userId 分片键读取稳定 Command。
      *
      * @param userId 用户分片键
-     * @param commandId 稳定 Command 标识
+     * @param reservationId 稳定购票受理标识
      * @return 已存在记录，不存在时返回 null
      */
-    private OrderCommandDO findCommand(String userId, String commandId) {
+    private OrderCommandDO findCommand(String userId, String reservationId) {
         // 查询始终携带 userId，避免 ShardingSphere 广播全部订单分片。
         return orderCommandMapper.selectOne(Wrappers.<OrderCommandDO>query()
                 // 幂等校验只读取身份摘要，避免普通重投无谓解密乘客请求载荷。
-                .select("command_id", "action_id", "user_id", "recovery_shard", "request_fingerprint",
-                        "source_message_id", "reservation_id", "message_version", "status")
+                .select("user_id", "recovery_shard", "request_fingerprint", "reservation_id", "message_version", "status")
                 .eq("user_id", userId)
-                .eq("command_id", commandId));
+                .eq("reservation_id", reservationId));
     }
 
     /**
@@ -177,9 +162,6 @@ public class OrderCommandPersistenceServiceImpl implements OrderCommandPersisten
             TicketOrderCreateCommandMessage message,
             String requestFingerprint) {
         if (!Objects.equals(existing.getUserId(), message.getRequest().getUserId().trim())
-                || !Objects.equals(existing.getCommandId(), message.getCommandId())
-                || !Objects.equals(existing.getActionId(), message.getActionId())
-                || !Objects.equals(existing.getSourceMessageId(), message.getMessageId())
                 || !Objects.equals(existing.getReservationId(), message.getReservationId())
                 || !Objects.equals(existing.getMessageVersion(), message.getMessageVersion())
                 || !Objects.equals(existing.getRecoveryShard(), calculateRecoveryShard(existing.getUserId()))

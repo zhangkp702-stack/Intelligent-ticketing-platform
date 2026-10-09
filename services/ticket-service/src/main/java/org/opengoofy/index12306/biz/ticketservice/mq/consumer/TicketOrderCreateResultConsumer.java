@@ -47,7 +47,7 @@ import java.util.UUID;
 )
 public class TicketOrderCreateResultConsumer implements RocketMQListener<TicketOrderCreateResultMessage> {
 
-    private static final String CONSUMER_NAME = "ticket-order-create-result-v1";
+    private static final String CONSUMER_NAME = "ticket-order-create-result-v2";
     private static final int MAX_CONSUME_ATTEMPTS = 16;
     private static final long LEASE_MILLIS = 120_000L;
 
@@ -86,8 +86,8 @@ public class TicketOrderCreateResultConsumer implements RocketMQListener<TicketO
             if (!reliableEventStore.completeConsumption(inbox.key(), inbox.lease(), Instant.now())) {
                 throw new IllegalStateException("订单创建结果 Inbox 消费围栏已失效");
             }
-            log.info("ticket_order_create_result_consumed reservationId={}, commandId={}, status={}, attempt={}",
-                    message.getReservationId(), message.getCommandId(), message.getStatus(), inbox.attemptCount());
+            log.info("ticket_order_create_result_consumed reservationId={}, status={}, attempt={}",
+                    message.getReservationId(), message.getStatus(), inbox.attemptCount());
         } catch (RuntimeException exception) {
             handleFailure(message, inbox, exception);
         }
@@ -100,8 +100,8 @@ public class TicketOrderCreateResultConsumer implements RocketMQListener<TicketO
      */
     private void applyResult(TicketOrderCreateResultMessage message) {
         if (TicketOrderMessageConstants.RESULT_SUCCEEDED.equals(message.getStatus())) {
-            // bindOrder 自带行锁与订单号一致性校验，可覆盖绑定成功但 Inbox 未完成的重复投递窗口。
-            reservationReleaseService.bindOrder(message.getReservationId(), message.getOrderSn());
+            // reservationId 已是订单号，bindOrder 只需推进预订状态，可覆盖 Inbox 未完成的重复投递窗口。
+            reservationReleaseService.bindOrder(message.getReservationId());
             return;
         }
         // 只有订单服务显式 FAILED 的结果才允许释放，PROCESSING 或协议异常绝不归还库存。
@@ -119,15 +119,12 @@ public class TicketOrderCreateResultConsumer implements RocketMQListener<TicketO
                 || message.getMessageVersion() == null
                 || message.getMessageVersion() != TicketOrderMessageConstants.CREATE_ORDER_VERSION
                 || !hasText(message.getMessageId())
-                || !hasText(message.getSourceMessageId())
-                || !hasText(message.getReservationId())
-                || !hasText(message.getCommandId())) {
+                || !hasText(message.getReservationId())) {
             return false;
         }
-        // 成功必须携带订单号；失败结果不信任可选错误文案，只根据稳定 FAILED 状态执行释放。
+        // 成功订单号由 reservationId 确定性推导；失败结果只根据稳定 FAILED 状态执行释放。
         return TicketOrderMessageConstants.RESULT_SUCCEEDED.equals(message.getStatus())
-                ? hasText(message.getOrderSn())
-                : TicketOrderMessageConstants.RESULT_FAILED.equals(message.getStatus());
+                || TicketOrderMessageConstants.RESULT_FAILED.equals(message.getStatus());
     }
 
     /**
@@ -146,13 +143,13 @@ public class TicketOrderCreateResultConsumer implements RocketMQListener<TicketO
         Optional<ReliableConsumptionResult> result = reliableEventStore.retryExternalConsumption(
                 inbox.key(), inbox.lease(), exception.getClass().getSimpleName(), safeMessage(exception), now, now);
         if (result.isEmpty()) {
-            log.warn("ticket_order_create_result_retry_fence_lost reservationId={}, commandId={}, exceptionType={}",
-                    message.getReservationId(), message.getCommandId(), exception.getClass().getSimpleName());
+            log.warn("ticket_order_create_result_retry_fence_lost reservationId={}, exceptionType={}",
+                    message.getReservationId(), exception.getClass().getSimpleName());
             return;
         }
         if (!result.get().retryScheduled()) {
-            log.error("ticket_order_create_result_retry_exhausted reservationId={}, commandId={}, attempt={}, exceptionType={}",
-                    message.getReservationId(), message.getCommandId(), inbox.attemptCount(),
+            log.error("ticket_order_create_result_retry_exhausted reservationId={}, attempt={}, exceptionType={}",
+                    message.getReservationId(), inbox.attemptCount(),
                     exception.getClass().getSimpleName());
             return;
         }

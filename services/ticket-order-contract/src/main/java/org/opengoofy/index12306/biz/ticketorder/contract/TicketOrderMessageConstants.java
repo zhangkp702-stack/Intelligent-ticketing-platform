@@ -40,7 +40,7 @@ public final class TicketOrderMessageConstants {
     public static final String CREATE_ORDER_RESULT_CONSUMER_GROUP = "index12306_ticket-service_create-order-result_cg${unique-name:}";
 
     /** 订单创建命令协议版本。 */
-    public static final long CREATE_ORDER_VERSION = 1L;
+    public static final long CREATE_ORDER_VERSION = 2L;
 
     /** Outbox 事件命名空间，与当前锁座事务保持一致。 */
     public static final String CREATE_ORDER_NAMESPACE = "ticket-order-creation";

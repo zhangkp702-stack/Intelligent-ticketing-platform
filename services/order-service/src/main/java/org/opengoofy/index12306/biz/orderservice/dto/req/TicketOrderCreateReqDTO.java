@@ -29,16 +29,6 @@ import java.util.List;
 public class TicketOrderCreateReqDTO {
 
     /**
-     * 业务动作标识；普通购票请求可以不传。
-     */
-    private String actionId;
-
-    /**
-     * 订单创建步骤的稳定命令标识。
-     */
-    private String commandId;
-
-    /**
      * 用户 ID
      */
     private Long userId;

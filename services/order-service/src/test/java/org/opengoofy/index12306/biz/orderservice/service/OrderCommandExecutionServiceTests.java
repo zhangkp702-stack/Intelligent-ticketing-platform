@@ -90,7 +90,7 @@ class OrderCommandExecutionServiceTests {
                 claimCaptor.getValue()).getSqlSet();
         assertThat(sqlSet).contains("attempt_count = attempt_count + 1", "lease_token = lease_token + 1");
         assertThat(claimCaptor.getValue().getSqlSegment())
-                .contains("user_id", "command_id", "attempt_count < max_attempts");
+                .contains("user_id", "reservation_id", "attempt_count < max_attempts");
     }
 
     /**
@@ -100,7 +100,7 @@ class OrderCommandExecutionServiceTests {
     void skipsExecutionWhenLeaseClaimLoses() {
         when(orderCommandMapper.update(isNull(), any())).thenReturn(0);
 
-        executionService.dispatchAsync("1001", "action-1:create-order");
+        executionService.dispatchAsync("1001", "reservation-1");
 
         verify(orderService, never()).executeClaimedOrderCommand(any());
         verify(orderCommandMapper, times(2)).update(isNull(), any());
@@ -112,12 +112,9 @@ class OrderCommandExecutionServiceTests {
     @Test
     void recoveryScanRoutesOneShardAndReconcilesUnknown() {
         OrderCommandDO unknown = OrderCommandDO.builder()
-                .commandId("action-1:create-order")
-                .actionId("action-1")
                 .userId("1001")
                 .recoveryShard(0)
                 .requestFingerprint("fingerprint")
-                .sourceMessageId("reservation-1")
                 .reservationId("reservation-1")
                 .status(OrderCommandStatusEnum.UNKNOWN.name())
                 .nextRetryTime(new Date(0L))
@@ -141,12 +138,9 @@ class OrderCommandExecutionServiceTests {
      */
     private OrderCommandDO claimedCommand() {
         return OrderCommandDO.builder()
-                .commandId("action-1:create-order")
-                .actionId("action-1")
                 .userId("1001")
                 .recoveryShard(0)
                 .requestFingerprint("fingerprint")
-                .sourceMessageId("reservation-1")
                 .reservationId("reservation-1")
                 .requestPayload("{}")
                 .status(OrderCommandStatusEnum.PROCESSING.name())

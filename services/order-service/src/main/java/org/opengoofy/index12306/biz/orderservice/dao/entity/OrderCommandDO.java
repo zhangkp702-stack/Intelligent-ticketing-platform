@@ -42,12 +42,6 @@ public class OrderCommandDO extends BaseDO {
     /** 主键。 */
     private Long id;
 
-    /** 稳定订单创建命令标识。 */
-    private String commandId;
-
-    /** 订单创建动作标识。 */
-    private String actionId;
-
     /** 发起命令的用户标识，同时作为订单分片键。 */
     private String userId;
 
@@ -57,10 +51,9 @@ public class OrderCommandDO extends BaseDO {
     /** 不可变订单参数的摘要。 */
     private String requestFingerprint;
 
-    /** 票务服务 Outbox 生成的源消息标识。 */
-    private String sourceMessageId;
-
-    /** 票务服务持有座位的预留标识。 */
+    /**
+     * 票务服务持有座位的预留标识，同时作为订单创建任务幂等键和最终订单号。
+     */
     private String reservationId;
 
     /** 订单创建消息协议版本。 */
@@ -92,9 +85,6 @@ public class OrderCommandDO extends BaseDO {
 
     /** 当前执行租约到期时间。 */
     private Date leaseExpireTime;
-
-    /** 成功创建订单时写入的订单号。 */
-    private String orderSn;
 
     /** 失败时保存的安全摘要，不暴露底层异常正文。 */
     private String failureReason;

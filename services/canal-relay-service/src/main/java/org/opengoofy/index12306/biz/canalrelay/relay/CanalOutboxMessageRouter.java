@@ -233,7 +233,7 @@ public class CanalOutboxMessageRouter {
                 payload, TicketOrderCreateCommandMessage.class, "订单创建 Outbox");
         validateCommand(message, eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
                 destinationTopic, destinationTag, delayLevel);
-        return new RelayCommand(namespace, eventId, aggregateId, message.getCommandId(),
+        return new RelayCommand(namespace, eventId, aggregateId, message.getReservationId(),
                 destinationTopic, destinationTag, delayLevel, message);
     }
 
@@ -268,7 +268,7 @@ public class CanalOutboxMessageRouter {
                 payload, TicketOrderCreateResultMessage.class, "订单创建结果 Outbox");
         validateResult(message, eventId, deduplicationKey, aggregateId, messageKey, eventVersion,
                 destinationTopic, destinationTag, delayLevel);
-        return new RelayCommand(namespace, eventId, aggregateId, message.getCommandId(),
+        return new RelayCommand(namespace, eventId, aggregateId, message.getReservationId(),
                 destinationTopic, destinationTag, delayLevel, message);
     }
 
@@ -348,12 +348,10 @@ public class CanalOutboxMessageRouter {
         if (message.getMessageVersion() == null
                 || message.getMessageVersion() != eventVersion
                 || message.getMessageVersion() != TicketOrderMessageConstants.CREATE_ORDER_VERSION
-                || !eventId.equals(message.getMessageId())
+                || !eventId.equals(message.getReservationId())
                 || !aggregateId.equals(message.getReservationId())
-                || !deduplicationKey.equals(message.getCommandId())
-                || !messageKey.equals(message.getCommandId())
-                || !hasText(message.getActionId())
-                || !(message.getActionId() + ":create-order").equals(message.getCommandId())
+                || !deduplicationKey.equals(message.getReservationId())
+                || !messageKey.equals(message.getReservationId())
                 || message.getRequest() == null
                 || !hasText(message.getRequest().getUserId())
                 || message.getRequest().getTicketOrderItems() == null
@@ -394,15 +392,13 @@ public class CanalOutboxMessageRouter {
                 || message.getMessageVersion() != eventVersion
                 || message.getMessageVersion() != TicketOrderMessageConstants.CREATE_ORDER_VERSION
                 || !eventId.equals(message.getMessageId())
-                || !deduplicationKey.equals(message.getSourceMessageId())
+                || !deduplicationKey.equals(message.getReservationId())
                 || !aggregateId.equals(message.getReservationId())
-                || !hasText(message.getCommandId())
-                || !messageKey.equals(message.getCommandId())
+                || !messageKey.equals(message.getReservationId())
                 || !TicketOrderMessageConstants.CREATE_ORDER_TOPIC.equals(destinationTopic)
                 || !TicketOrderMessageConstants.CREATE_ORDER_RESULT_TAG.equals(destinationTag)
                 || delayLevel != 0
-                || (!succeeded && !failed)
-                || (succeeded && !hasText(message.getOrderSn()))) {
+                || (!succeeded && !failed)) {
             throw new IllegalStateException("订单创建结果 Outbox 主键或结果字段不一致");
         }
     }

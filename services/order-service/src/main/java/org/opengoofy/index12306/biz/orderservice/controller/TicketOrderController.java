@@ -113,14 +113,14 @@ public class TicketOrderController {
     /**
      * 查询当前用户订单创建命令的权威结果。
      *
-     * @param commandId 稳定命令标识
-     * @return 命令状态和成功订单号
+     * @param reservationId 购票受理标识，也是新订单号
+     * @return 建单状态和成功订单号
      */
-    @GetMapping("/api/order-service/operations/{commandId}")
-    public Result<OrderCommandStatusRespDTO> queryCommandStatus(
-            @PathVariable("commandId") String commandId) {
-        // 服务层基于当前用户路由并校验归属，命令标识本身不构成授权凭据。
-        return Results.success(orderService.queryCommandStatus(commandId));
+    @GetMapping("/api/order-service/reservations/{reservationId}/order-status")
+    public Result<OrderCommandStatusRespDTO> queryReservationOrderStatus(
+            @PathVariable("reservationId") String reservationId) {
+        // 服务层基于当前用户路由并校验归属，reservationId 本身不构成授权凭据。
+        return Results.success(orderService.queryReservationOrderStatus(reservationId));
     }
 
     /**

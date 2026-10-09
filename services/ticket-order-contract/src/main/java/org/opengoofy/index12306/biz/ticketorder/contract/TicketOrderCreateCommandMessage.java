@@ -33,20 +33,13 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class TicketOrderCreateCommandMessage {
 
-    /** 消息唯一标识，通常对应 Outbox eventId。 */
-    private String messageId;
-
     /** 协议版本。 */
     private Long messageVersion;
 
-    /** 购票受理标识，用于座位占用和结果回传。 */
+    /**
+     * 购票受理标识，同时作为订单服务的幂等键和最终订单号。
+     */
     private String reservationId;
-
-    /** 业务动作标识。 */
-    private String actionId;
-
-    /** 稳定命令标识，订单服务以此执行幂等。 */
-    private String commandId;
 
     /** 可独立重放的建单请求。 */
     private TicketOrderCreateRequest request;

@@ -37,16 +37,6 @@ import java.util.Date;
 public class OrderDO extends BaseDO {
 
     /**
-     * 业务动作标识。
-     */
-    private String actionId;
-
-    /**
-     * 创建订单的稳定命令标识。
-     */
-    private String commandId;
-
-    /**
      * 创建订单不可变参数的 SHA-256 指纹。
      */
     private String requestFingerprint;

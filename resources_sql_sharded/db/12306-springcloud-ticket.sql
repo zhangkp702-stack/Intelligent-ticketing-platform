@@ -105,7 +105,7 @@ CREATE TABLE `t_ticket_seat_reservation`
     `user_id`                     varchar(64)  DEFAULT NULL COMMENT '发起购票的用户标识',
     `username`                    varchar(256) DEFAULT NULL COMMENT '发起购票的用户名',
     `order_sn`                    varchar(128) DEFAULT NULL COMMENT '订单号，待绑定阶段为空',
-    `reservation_status`          tinyint(1)   NOT NULL DEFAULT 1 COMMENT '生命周期：0待绑定订单 1已绑定订单 2正在失败释放 3已失败释放',
+    `reservation_status`          tinyint(1)   NOT NULL DEFAULT 1 COMMENT '生命周期：-2初始化 -1历史Redis已占位兼容态 0待绑定订单 1已绑定订单 2建单失败释放中 3建单失败已释放 4预备失败释放中 5预备失败已释放',
     `train_id`                    bigint(20)   NOT NULL COMMENT '列车ID',
     `riding_date`                 date         DEFAULT NULL COMMENT '乘车日期',
     `service_date`                date         DEFAULT NULL COMMENT '列车始发日期',

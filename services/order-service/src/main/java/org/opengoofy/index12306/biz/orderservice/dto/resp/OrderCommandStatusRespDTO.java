@@ -27,15 +27,8 @@ import lombok.Data;
 @Builder
 public class OrderCommandStatusRespDTO {
 
-    /**
-     * 稳定命令标识。
-     */
-    private String commandId;
-
-    /**
-     * 业务动作标识。
-     */
-    private String actionId;
+    /** 购票受理标识，同时也是成功订单号。 */
+    private String reservationId;
 
     /**
      * 命令状态：NOT_FOUND、PROCESSING、SUCCEEDED 或 FAILED。

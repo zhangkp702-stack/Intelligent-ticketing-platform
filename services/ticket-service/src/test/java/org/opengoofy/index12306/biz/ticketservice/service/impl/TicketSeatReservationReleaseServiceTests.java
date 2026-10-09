@@ -45,13 +45,15 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * 验证 reservation 状态机在 Redis owner 已变更时不会再次操作新用户的位图。
+ * 验证 reservation 从初始化、建单到失败释放的持久化状态迁移。
  */
 class TicketSeatReservationReleaseServiceTests {
 
@@ -62,15 +64,21 @@ class TicketSeatReservationReleaseServiceTests {
     void preparesReservationBeforeOrderCreation() {
         TicketSeatReservationMapper reservationMapper = mock(TicketSeatReservationMapper.class);
         TicketCdcOutboxEventMapper cdcOutboxEventMapper = mock(TicketCdcOutboxEventMapper.class);
-        when(reservationMapper.insert(any())).thenReturn(1);
+        TicketSeatReservationDO initial = TicketSeatReservationDO.builder()
+                .reservationId("reservation-a")
+                .userId("1001")
+                .trainId(1L)
+                .seatCount(1)
+                .reservationStatus(TicketSeatReservationReleaseService.RESERVATION_INIT)
+                .build();
+        when(reservationMapper.selectByReservationIdForUpdate("reservation-a")).thenReturn(initial);
+        when(reservationMapper.updateById(any())).thenReturn(1);
         when(cdcOutboxEventMapper.insertIgnore(any())).thenReturn(1);
         TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
                 reservationMapper, cdcOutboxEventMapper, mock(SeatService.class), mock(RedisSeatBitmapService.class),
                 mock(TicketInventoryRollbackService.class), mock(TransactionTemplate.class));
         TrainPurchaseTicketRespDTO ticket = ticket();
         TicketOrderCreateRemoteReqDTO orderRequest = TicketOrderCreateRemoteReqDTO.builder()
-                .actionId("purchase-a")
-                .commandId("purchase-a:create-order")
                 .userId("1001")
                 .ticketOrderItems(List.of(TicketOrderItemCreateRemoteReqDTO.builder()
                         .carriageNumber("01")
@@ -86,14 +94,13 @@ class TicketSeatReservationReleaseServiceTests {
                 .build();
 
         // PREPARED 和完整 MQ 建单事件必须由同一事务方法写入。
-        service.prepareReservation("reservation-a", "purchase-a", "purchase-a:create-order",
-                "1001", "alice", 1L, "A", "B", new Date(1L), new Date(1L), 1, List.of(ticket), orderRequest);
+        service.prepareReservation("reservation-a", "1001", "alice", 1L, "A", "B",
+                new Date(1L), new Date(1L), 1, List.of(ticket), orderRequest);
 
         ArgumentCaptor<TicketSeatReservationDO> captor = ArgumentCaptor.forClass(TicketSeatReservationDO.class);
-        verify(reservationMapper).insert(captor.capture());
+        verify(reservationMapper).updateById(captor.capture());
         TicketSeatReservationDO prepared = captor.getValue();
         assertEquals("reservation-a", prepared.getReservationId());
-        assertEquals("purchase-a:create-order", prepared.getCommandId());
         assertEquals("1001", prepared.getUserId());
         assertEquals(1, prepared.getSeatType());
         assertEquals(1, prepared.getSeatCount());
@@ -102,12 +109,41 @@ class TicketSeatReservationReleaseServiceTests {
         ArgumentCaptor<TicketCdcOutboxEventDO> eventCaptor = ArgumentCaptor.forClass(TicketCdcOutboxEventDO.class);
         verify(cdcOutboxEventMapper).insertIgnore(eventCaptor.capture());
         assertEquals("reservation-a", eventCaptor.getValue().getAggregateId());
-        assertEquals("purchase-a:create-order", eventCaptor.getValue().getDeduplicationKey());
+        assertEquals("reservation-a", eventCaptor.getValue().getDeduplicationKey());
         TicketOrderCreateCommandMessage message = JSON.parseObject(
                 eventCaptor.getValue().getPayload(), TicketOrderCreateCommandMessage.class);
-        assertEquals("reservation-a", message.getMessageId());
-        assertEquals("purchase-a:create-order", message.getCommandId());
+        assertEquals("reservation-a", message.getReservationId());
         assertEquals("1001", message.getRequest().getUserId());
+    }
+
+    /**
+     * Redis 占位前必须在独立事务中保存不含具体座位的 INIT 记录。
+     */
+    @Test
+    void createsInitialReservationBeforeRedisHold() {
+        TicketSeatReservationMapper reservationMapper = mock(TicketSeatReservationMapper.class);
+        TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        when(reservationMapper.insert(any())).thenReturn(1);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(mock(TransactionStatus.class));
+        });
+        TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
+                reservationMapper, mock(TicketCdcOutboxEventMapper.class), mock(SeatService.class),
+                mock(RedisSeatBitmapService.class), mock(TicketInventoryRollbackService.class), transactionTemplate);
+
+        service.createInitialReservation(
+                "reservation-a", "1001", "alice", 1L, "A", "B",
+                new Date(1L), new Date(1L), 1, 1);
+
+        ArgumentCaptor<TicketSeatReservationDO> captor = ArgumentCaptor.forClass(TicketSeatReservationDO.class);
+        verify(reservationMapper).insert(captor.capture());
+        TicketSeatReservationDO initial = captor.getValue();
+        assertEquals(TicketSeatReservationReleaseService.RESERVATION_INIT, initial.getReservationStatus());
+        assertEquals("[]", initial.getSeatPayload());
+        assertEquals(1, initial.getDbSeatReleaseStatus());
+        assertEquals(1, initial.getRedisBitmapReleaseStatus());
+        assertEquals(0, initial.getTokenRollbackStatus());
     }
 
     /**
@@ -131,10 +167,10 @@ class TicketSeatReservationReleaseServiceTests {
                 reservationMapper, mock(TicketCdcOutboxEventMapper.class), mock(SeatService.class),
                 mock(RedisSeatBitmapService.class), mock(TicketInventoryRollbackService.class), transactionTemplate);
 
-        // 绑定同时写入订单号和生命周期，避免关闭扫描读取到半完成关系。
-        service.bindOrder("reservation-a", "order-1");
+        // 订单号已在锁座前确定为 reservationId，绑定只推进生命周期。
+        service.bindOrder("reservation-a");
 
-        assertEquals("order-1", prepared.getOrderSn());
+        assertNull(prepared.getOrderSn());
         assertEquals(1, prepared.getReservationStatus());
         verify(reservationMapper).updateById(prepared);
     }
@@ -175,6 +211,79 @@ class TicketSeatReservationReleaseServiceTests {
     }
 
     /**
+     * INIT 超时后只能回滚统一库存，不应访问尚未产生的数据库座位或 Redis 位图。
+     */
+    @Test
+    void releasesInitialReservationWithoutSeatSnapshot() {
+        TicketSeatReservationMapper reservationMapper = mock(TicketSeatReservationMapper.class);
+        SeatService seatService = mock(SeatService.class);
+        RedisSeatBitmapService redisSeatBitmapService = mock(RedisSeatBitmapService.class);
+        TicketInventoryRollbackService inventoryRollbackService = mock(TicketInventoryRollbackService.class);
+        TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        TicketSeatReservationDO initial = TicketSeatReservationDO.builder()
+                .reservationId("reservation-a")
+                .reservationStatus(TicketSeatReservationReleaseService.RESERVATION_INIT)
+                .trainId(1L)
+                .serviceDate(new Date(1L))
+                .departure("A")
+                .arrival("B")
+                .seatType(1)
+                .seatCount(1)
+                .seatPayload("[]")
+                .dbSeatReleaseStatus(1)
+                .redisBitmapReleaseStatus(1)
+                .tokenRollbackStatus(0)
+                .build();
+        when(reservationMapper.selectByReservationIdForUpdate("reservation-a")).thenReturn(initial);
+        when(reservationMapper.updateById(any())).thenReturn(1);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(mock(TransactionStatus.class));
+        });
+        TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
+                reservationMapper, mock(TicketCdcOutboxEventMapper.class), seatService, redisSeatBitmapService,
+                inventoryRollbackService, transactionTemplate);
+
+        service.releaseUnpreparedReservation("reservation-a");
+
+        assertEquals(TicketSeatReservationReleaseService.RESERVATION_ABORTED, initial.getReservationStatus());
+        assertEquals(1, initial.getTokenRollbackStatus());
+        verify(inventoryRollbackService).rollbackInitialIfNecessary(
+                eq("1"), any(Date.class), eq("A"), eq("B"), eq(1), eq(1), eq("reservation-a"));
+        verify(seatService, never()).unlock(anyString(), any(Date.class), anyString(), anyString(), anyList());
+    }
+
+    /**
+     * 恢复任务已中止 INIT 时，迟到的库存扣减必须再执行一次幂等回滚。
+     */
+    @Test
+    void rollsBackLateInventoryDeductionAfterInitialReservationWasAborted() {
+        TicketSeatReservationMapper reservationMapper = mock(TicketSeatReservationMapper.class);
+        TicketInventoryRollbackService inventoryRollbackService = mock(TicketInventoryRollbackService.class);
+        TicketSeatReservationDO aborted = TicketSeatReservationDO.builder()
+                .reservationId("reservation-a")
+                .reservationStatus(TicketSeatReservationReleaseService.RESERVATION_ABORTED)
+                .trainId(1L)
+                .serviceDate(new Date(1L))
+                .departure("A")
+                .arrival("B")
+                .seatType(1)
+                .seatCount(1)
+                .build();
+        when(reservationMapper.selectByReservationId("reservation-a")).thenReturn(aborted);
+        TicketSeatReservationReleaseService service = new TicketSeatReservationReleaseService(
+                reservationMapper, mock(TicketCdcOutboxEventMapper.class), mock(SeatService.class),
+                mock(RedisSeatBitmapService.class), inventoryRollbackService, mock(TransactionTemplate.class));
+
+        ServiceException exception = assertThrows(ServiceException.class,
+                () -> service.ensureInitialActiveAfterInventoryDeduct("reservation-a"));
+
+        assertEquals("初始化座位预订已失效，请重新购票", exception.getMessage());
+        verify(inventoryRollbackService).rollbackInitialIfNecessary(
+                eq("1"), any(Date.class), eq("A"), eq("B"), eq(1), eq(1), eq("reservation-a"));
+    }
+
+    /**
      * 失败释放已经领取后，迟到订单成功不能再覆盖为 BOUND，必须交由对账告警处理。
      */
     @Test
@@ -195,7 +304,7 @@ class TicketSeatReservationReleaseServiceTests {
                 mock(RedisSeatBitmapService.class), mock(TicketInventoryRollbackService.class), transactionTemplate);
 
         ServiceException exception = assertThrows(ServiceException.class,
-                () -> service.bindOrder("reservation-a", "order-1"));
+                () -> service.bindOrder("reservation-a"));
 
         // RELEASING 不是合法绑定来源，避免失败释放与迟到成功并发时重新占用已回收库存。
         assertEquals("座位占用记录状态不允许绑定订单", exception.getMessage());
@@ -213,7 +322,7 @@ class TicketSeatReservationReleaseServiceTests {
         TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
         TicketSeatReservationDO reservation = reservation();
 
-        when(reservationMapper.selectByOrderSn("order-1")).thenReturn(List.of(reservation));
+        when(reservationMapper.selectLegacyBoundByOrderSn("order-1")).thenReturn(List.of(reservation));
         when(reservationMapper.selectByReservationIdForUpdate("reservation-a")).thenReturn(reservation);
         when(reservationMapper.updateById(any())).thenReturn(1);
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {

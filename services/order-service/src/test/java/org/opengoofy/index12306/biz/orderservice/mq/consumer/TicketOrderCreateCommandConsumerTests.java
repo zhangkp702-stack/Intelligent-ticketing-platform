@@ -60,7 +60,7 @@ class TicketOrderCreateCommandConsumerTests {
         TicketOrderCreateCommandMessage message = message();
         OrderCommandDO command = OrderCommandDO.builder()
                 .userId("10001")
-                .commandId(message.getCommandId())
+                .reservationId(message.getReservationId())
                 .status(OrderCommandStatusEnum.RECEIVED.name())
                 .build();
         when(orderCommandPersistenceService.persistReceivedCommand(message)).thenReturn(command);
@@ -68,7 +68,7 @@ class TicketOrderCreateCommandConsumerTests {
         consumer.onMessage(message);
 
         verify(orderCommandPersistenceService).persistReceivedCommand(message);
-        verify(orderCommandExecutionService).dispatchAsync("10001", message.getCommandId());
+        verify(orderCommandExecutionService).dispatchAsync("10001", message.getReservationId());
     }
 
     /**
@@ -84,7 +84,7 @@ class TicketOrderCreateCommandConsumerTests {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("database unavailable");
 
-        verify(orderCommandExecutionService, never()).dispatchAsync("10001", message.getCommandId());
+        verify(orderCommandExecutionService, never()).dispatchAsync("10001", message.getReservationId());
     }
 
     /**
@@ -113,11 +113,8 @@ class TicketOrderCreateCommandConsumerTests {
                 .ticketOrderItems(List.of(item))
                 .build();
         return TicketOrderCreateCommandMessage.builder()
-                .messageId("reservation-1")
                 .messageVersion(TicketOrderMessageConstants.CREATE_ORDER_VERSION)
                 .reservationId("reservation-1")
-                .actionId("action-1")
-                .commandId("action-1:create-order")
                 .request(request)
                 .build();
     }

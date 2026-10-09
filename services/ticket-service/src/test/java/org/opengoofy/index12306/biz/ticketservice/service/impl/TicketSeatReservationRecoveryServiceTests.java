@@ -122,7 +122,7 @@ class TicketSeatReservationRecoveryServiceTests {
 
         // 测试孤儿必须复用正式释放器，禁止测试代码直接修改数据库、Redis 或统一库存状态。
         verify(ticketSeatReservationReleaseService).releasePreparedReservation("reservation-prepared");
-        verify(ticketOrderRemoteService, never()).queryCommandStatus(any());
+        verify(ticketOrderRemoteService, never()).queryReservationOrderStatus(any());
     }
 
     /**
@@ -137,7 +137,7 @@ class TicketSeatReservationRecoveryServiceTests {
         TicketSeatReservationDO reservation = preparedReservation();
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(reservation));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenReturn(Results.success(commandStatus("SUCCEEDED", "order-1")));
         TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
                 orderCloseRollbackService, ticketSeatReservationReleaseService);
@@ -145,7 +145,7 @@ class TicketSeatReservationRecoveryServiceTests {
         service.recoverStalePreparedReservations();
 
         // 成功命令只补绑订单，不能再次创建订单或提前释放库存。
-        verify(ticketSeatReservationReleaseService).bindOrder("reservation-prepared", "order-1");
+        verify(ticketSeatReservationReleaseService).bindOrder("reservation-prepared");
         verify(ticketSeatReservationReleaseService, never()).releasePreparedReservation(any());
     }
 
@@ -160,7 +160,7 @@ class TicketSeatReservationRecoveryServiceTests {
         TicketSeatReservationReleaseService ticketSeatReservationReleaseService = mock(TicketSeatReservationReleaseService.class);
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(preparedReservation()));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenReturn(Results.success(commandStatus("FAILED", null)));
         TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
                 orderCloseRollbackService, ticketSeatReservationReleaseService);
@@ -169,7 +169,7 @@ class TicketSeatReservationRecoveryServiceTests {
 
         // 只有明确 FAILED 才进入释放服务，NOT_FOUND 和 PROCESSING 不属于可释放证据。
         verify(ticketSeatReservationReleaseService).releasePreparedReservation("reservation-prepared");
-        verify(ticketSeatReservationReleaseService, never()).bindOrder(any(), any());
+        verify(ticketSeatReservationReleaseService, never()).bindOrder(any());
     }
 
     /**
@@ -183,7 +183,7 @@ class TicketSeatReservationRecoveryServiceTests {
         TicketSeatReservationReleaseService ticketSeatReservationReleaseService = mock(TicketSeatReservationReleaseService.class);
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(preparedReservation()));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenReturn(Results.success(commandStatus("PROCESSING", null)));
         TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
                 orderCloseRollbackService, ticketSeatReservationReleaseService);
@@ -192,7 +192,7 @@ class TicketSeatReservationRecoveryServiceTests {
 
         // 未终态命令只能等待下一轮权威查询，不能猜测失败并释放真实库存。
         verify(ticketSeatReservationReleaseService, never()).releasePreparedReservation(any());
-        verify(ticketSeatReservationReleaseService, never()).bindOrder(any(), any());
+        verify(ticketSeatReservationReleaseService, never()).bindOrder(any());
     }
 
     /**
@@ -206,7 +206,7 @@ class TicketSeatReservationRecoveryServiceTests {
         TicketSeatReservationReleaseService ticketSeatReservationReleaseService = mock(TicketSeatReservationReleaseService.class);
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(preparedReservation()));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenThrow(new ServiceException("order service timeout"));
         TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
                 orderCloseRollbackService, ticketSeatReservationReleaseService);
@@ -215,7 +215,7 @@ class TicketSeatReservationRecoveryServiceTests {
 
         // 查询超时不产生任何释放或绑定副作用，下一轮仍可通过相同 commandId 对账。
         verify(ticketSeatReservationReleaseService, never()).releasePreparedReservation(any());
-        verify(ticketSeatReservationReleaseService, never()).bindOrder(any(), any());
+        verify(ticketSeatReservationReleaseService, never()).bindOrder(any());
     }
 
     /**
@@ -229,7 +229,7 @@ class TicketSeatReservationRecoveryServiceTests {
         TicketSeatReservationReleaseService ticketSeatReservationReleaseService = mock(TicketSeatReservationReleaseService.class);
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(preparedReservation()));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenReturn(Results.success(commandStatus("NOT_FOUND", null)));
         TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
                 orderCloseRollbackService, ticketSeatReservationReleaseService);
@@ -238,7 +238,7 @@ class TicketSeatReservationRecoveryServiceTests {
 
         // NOT_FOUND 不是订单服务持久化的 FAILED 终态，不能据此释放真实库存。
         verify(ticketSeatReservationReleaseService, never()).releasePreparedReservation(any());
-        verify(ticketSeatReservationReleaseService, never()).bindOrder(any(), any());
+        verify(ticketSeatReservationReleaseService, never()).bindOrder(any());
     }
 
     /**
@@ -253,12 +253,12 @@ class TicketSeatReservationRecoveryServiceTests {
         TicketSeatReservationDO reservation = preparedReservation();
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(reservation));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenReturn(Results.success(commandStatus("SUCCEEDED", "order-1")));
         doThrow(new ServiceException("bind interrupted"))
                 .doNothing()
                 .when(ticketSeatReservationReleaseService)
-                .bindOrder("reservation-prepared", "order-1");
+                .bindOrder("reservation-prepared");
         TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
                 orderCloseRollbackService, ticketSeatReservationReleaseService);
 
@@ -266,7 +266,7 @@ class TicketSeatReservationRecoveryServiceTests {
         service.recoverStalePreparedReservations();
 
         // 首次绑定异常不改变 PREPARED，第二轮仍以同一命令返回的订单号重试。
-        verify(ticketSeatReservationReleaseService, times(2)).bindOrder("reservation-prepared", "order-1");
+        verify(ticketSeatReservationReleaseService, times(2)).bindOrder("reservation-prepared");
         verify(ticketSeatReservationReleaseService, never()).releasePreparedReservation(any());
     }
 
@@ -283,7 +283,7 @@ class TicketSeatReservationRecoveryServiceTests {
         reservation.setReservationStatus(2);
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(reservation));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenReturn(Results.success(commandStatus("FAILED", null)));
         doThrow(new ServiceException("redis release interrupted"))
                 .doNothing()
@@ -297,7 +297,7 @@ class TicketSeatReservationRecoveryServiceTests {
 
         // RELEASING 状态的重试不会重新绑定订单，只会继续已领取的失败释放。
         verify(ticketSeatReservationReleaseService, times(2)).releasePreparedReservation("reservation-prepared");
-        verify(ticketSeatReservationReleaseService, never()).bindOrder(any(), any());
+        verify(ticketSeatReservationReleaseService, never()).bindOrder(any());
     }
 
     /**
@@ -314,7 +314,7 @@ class TicketSeatReservationRecoveryServiceTests {
         UserContext.setUser(UserInfoDTO.builder().userId("9000").username("caller").build());
         when(reservationMapper.selectStalePreparedReservations(any(Date.class), eq(10)))
                 .thenReturn(List.of(reservation));
-        when(ticketOrderRemoteService.queryCommandStatus("purchase-a:create-order"))
+        when(ticketOrderRemoteService.queryReservationOrderStatus("reservation-prepared"))
                 .thenAnswer(invocation -> {
                     // 查询阶段必须临时恢复 reservation 所属用户，不能沿用触发扫描的调用者身份。
                     assertThat(UserContext.getUserId()).isEqualTo("1001");
@@ -326,9 +326,33 @@ class TicketSeatReservationRecoveryServiceTests {
         service.recoverStalePreparedReservations();
 
         // 矛盾终态由人工处理，自动恢复既不绑定也不继续释放。
-        verify(ticketSeatReservationReleaseService, never()).bindOrder(any(), any());
+        verify(ticketSeatReservationReleaseService, never()).bindOrder(any());
         verify(ticketSeatReservationReleaseService, never()).releasePreparedReservation(any());
         assertThat(UserContext.getUserId()).isEqualTo("9000");
+    }
+
+    /**
+     * PREPARED 之前的超时记录没有订单命令，应直接进入本地 fencing 补偿而不是查询订单服务。
+     */
+    @Test
+    void releasesStaleUnpreparedReservationWithoutOrderQuery() {
+        TicketSeatReservationMapper reservationMapper = mock(TicketSeatReservationMapper.class);
+        TicketOrderRemoteService ticketOrderRemoteService = mock(TicketOrderRemoteService.class);
+        OrderCloseRollbackService orderCloseRollbackService = mock(OrderCloseRollbackService.class);
+        TicketSeatReservationReleaseService ticketSeatReservationReleaseService = mock(TicketSeatReservationReleaseService.class);
+        TicketSeatReservationDO initial = TicketSeatReservationDO.builder()
+                .reservationId("reservation-initial")
+                .reservationStatus(TicketSeatReservationReleaseService.RESERVATION_INIT)
+                .build();
+        when(reservationMapper.selectStaleUnpreparedReservations(any(Date.class), eq(10)))
+                .thenReturn(List.of(initial));
+        TicketSeatReservationRecoveryService service = service(reservationMapper, ticketOrderRemoteService,
+                orderCloseRollbackService, ticketSeatReservationReleaseService);
+
+        service.recoverStaleUnpreparedReservations();
+
+        verify(ticketSeatReservationReleaseService).releaseUnpreparedReservation("reservation-initial");
+        verify(ticketOrderRemoteService, never()).queryReservationOrderStatus(any());
     }
 
     /**
@@ -375,7 +399,6 @@ class TicketSeatReservationRecoveryServiceTests {
     private TicketSeatReservationDO preparedReservation() {
         return TicketSeatReservationDO.builder()
                 .reservationId("reservation-prepared")
-                .commandId("purchase-a:create-order")
                 .userId("1001")
                 .username("alice")
                 .reservationStatus(0)

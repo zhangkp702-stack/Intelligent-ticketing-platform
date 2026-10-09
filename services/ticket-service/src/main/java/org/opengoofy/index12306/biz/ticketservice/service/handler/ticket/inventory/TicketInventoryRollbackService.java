@@ -109,6 +109,32 @@ public class TicketInventoryRollbackService {
     }
 
     /**
+     * 回滚尚未产生具体座位和车厢摘要的初始化预订库存。
+     *
+     * @param trainId 列车标识
+     * @param serviceDate 列车始发日期
+     * @param departure 出发站
+     * @param arrival 到达站
+     * @param seatType 订单统一席别
+     * @param seatCount 订单乘车人数
+     * @param rollbackKey reservationId 幂等标识
+     */
+    public void rollbackInitialIfNecessary(String trainId, Date serviceDate, String departure, String arrival,
+                                           Integer seatType, Integer seatCount, String rollbackKey) {
+        if (serviceDate == null) {
+            throw new ServiceException("初始化预订缺少列车始发日期，无法回滚统一库存");
+        }
+        if (seatType == null || seatCount == null || seatCount <= 0) {
+            throw new ServiceException("初始化预订的席别或人数无效");
+        }
+        // INIT 尚未选择具体座位，也没有扣减车厢摘要，只回滚 reservationId 对应的统一区间库存。
+        List<RouteDTO> affectedRoutes = trainStationService.listTakeoutTrainStationRoute(
+                trainId, departure, arrival);
+        ticketInventoryService.rollbackInUnified(
+                trainId, serviceDate, affectedRoutes, seatType, seatCount, rollbackKey);
+    }
+
+    /**
      * 加载并缓存统一库存车厢摘要回滚脚本。
      *
      * @return Redis 回滚脚本

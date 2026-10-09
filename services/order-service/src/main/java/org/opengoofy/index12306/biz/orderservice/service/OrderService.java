@@ -83,10 +83,10 @@ public interface OrderService {
     /**
      * 查询当前用户稳定订单命令的权威结果。
      *
-     * @param commandId 订单创建命令标识
-     * @return 不存在、处理中、已成功或已失败的命令状态
+     * @param reservationId 购票受理标识，也是新订单号
+     * @return 不存在、处理中、已成功或已失败的建单状态
      */
-    OrderCommandStatusRespDTO queryCommandStatus(String commandId);
+    OrderCommandStatusRespDTO queryReservationOrderStatus(String reservationId);
 
     /**
      * 关闭火车票订单

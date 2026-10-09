@@ -25,8 +25,7 @@ import lombok.Data;
 @Data
 public class OrderCommandStatusRespDTO {
 
-    private String commandId;
-    private String actionId;
+    private String reservationId;
     private String status;
     private String orderSn;
 }

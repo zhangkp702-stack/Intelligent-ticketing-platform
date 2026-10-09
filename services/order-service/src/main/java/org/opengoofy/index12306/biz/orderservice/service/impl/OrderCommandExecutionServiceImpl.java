@@ -87,12 +87,12 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
      * 尝试异步执行刚持久化的 Command，线程池拒绝时保留数据库任务等待恢复扫描。
      *
      * @param userId 用户分片键
-     * @param commandId 稳定订单创建命令标识
+     * @param reservationId 稳定购票受理标识
      */
     @Override
-    public void dispatchAsync(String userId, String commandId) {
+    public void dispatchAsync(String userId, String reservationId) {
         // 即时任务只携带稳定路由键，不在内存队列复制包含乘客隐私的请求载荷。
-        submit(() -> executeOne(userId, commandId), userId, commandId);
+        submit(() -> executeOne(userId, reservationId), userId, reservationId);
     }
 
     /**
@@ -127,9 +127,8 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
     private List<OrderCommandDO> findRecoveryCandidates(int recoveryShard, Date now) {
         QueryWrapper<OrderCommandDO> query = Wrappers.<OrderCommandDO>query()
                 // 恢复列表不读取加密请求正文，只有成功持有执行租约的工作线程才解密载荷。
-                .select("command_id", "action_id", "user_id", "recovery_shard", "request_fingerprint",
-                        "source_message_id", "reservation_id", "status", "attempt_count", "max_attempts",
-                        "lease_token", "lease_expire_time", "next_retry_time", "order_sn")
+                .select("user_id", "recovery_shard", "request_fingerprint", "reservation_id", "status",
+                        "attempt_count", "max_attempts", "lease_token", "lease_expire_time", "next_retry_time")
                 .eq("recovery_shard", recoveryShard)
                 .and(scope -> scope
                         .nested(ready -> ready
@@ -156,24 +155,24 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
         if (OrderCommandStatusEnum.UNKNOWN.name().equals(command.getStatus())) {
             // UNKNOWN 可能已经提交订单，只允许先查询订单事实并补齐成功终态。
             submit(() -> orderService.reconcileUnknownOrderCommand(command),
-                    command.getUserId(), command.getCommandId());
+                    command.getUserId(), command.getReservationId());
             return;
         }
-        submit(() -> executeOne(command.getUserId(), command.getCommandId()),
-                command.getUserId(), command.getCommandId());
+        submit(() -> executeOne(command.getUserId(), command.getReservationId()),
+                command.getUserId(), command.getReservationId());
     }
 
     /**
      * 原子认领一个可执行任务，再把带租约围栏和解密载荷的记录交给订单事务。
      *
      * @param userId 用户分片键
-     * @param commandId 稳定订单创建命令标识
+     * @param reservationId 稳定购票受理标识
      */
-    private void executeOne(String userId, String commandId) {
-        OrderCommandDO claimed = claimCommand(userId, commandId);
+    private void executeOne(String userId, String reservationId) {
+        OrderCommandDO claimed = claimCommand(userId, reservationId);
         if (claimed == null) {
             // 最后一次执行期间宕机时没有机会写 UNKNOWN，此处补齐安全终态但绝不发布失败结果。
-            markExhaustedCommandUnknown(userId, commandId);
+            markExhaustedCommandUnknown(userId, reservationId);
             return;
         }
         try {
@@ -181,8 +180,8 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
             orderService.executeClaimedOrderCommand(claimed);
         } catch (RuntimeException exception) {
             // 状态收敛失败时保留 PROCESSING，租约过期后会再次恢复，不能在内存中吞掉任务。
-            log.error("order_command_execution_state_not_persisted userId={}, commandId={}, leaseToken={}",
-                    userId, commandId, claimed.getLeaseToken(), exception);
+            log.error("order_command_execution_state_not_persisted userId={}, reservationId={}, leaseToken={}",
+                    userId, reservationId, claimed.getLeaseToken(), exception);
         }
     }
 
@@ -190,10 +189,10 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
      * 使用条件更新竞争执行租约，并读取当前围栏令牌及加密请求载荷。
      *
      * @param userId 用户分片键
-     * @param commandId 稳定订单创建命令标识
+     * @param reservationId 稳定购票受理标识
      * @return 当前实例认领成功的完整 Command，竞争失败返回 null
      */
-    private OrderCommandDO claimCommand(String userId, String commandId) {
+    private OrderCommandDO claimCommand(String userId, String reservationId) {
         Date now = new Date();
         Date leaseExpireTime = new Date(now.getTime() + Math.max(1L, claimLeaseMillis));
         String claimOwner = executorInstanceId + "-" + UUID.randomUUID();
@@ -205,7 +204,7 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
                 .setSql("attempt_count = attempt_count + 1")
                 .setSql("lease_token = lease_token + 1")
                 .eq("user_id", userId)
-                .eq("command_id", commandId)
+                .eq("reservation_id", reservationId)
                 .apply("attempt_count < max_attempts")
                 .and(scope -> scope
                         .nested(ready -> ready
@@ -221,7 +220,7 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
         }
         return orderCommandMapper.selectOne(Wrappers.<OrderCommandDO>query()
                 .eq("user_id", userId)
-                .eq("command_id", commandId)
+                .eq("reservation_id", reservationId)
                 .eq("status", OrderCommandStatusEnum.PROCESSING.name())
                 .eq("lease_owner", claimOwner));
     }
@@ -230,9 +229,9 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
      * 把已耗尽次数且执行租约过期的任务转为 UNKNOWN，等待人工或订单事实对账。
      *
      * @param userId 用户分片键
-     * @param commandId 稳定订单创建命令标识
+     * @param reservationId 稳定购票受理标识
      */
-    private void markExhaustedCommandUnknown(String userId, String commandId) {
+    private void markExhaustedCommandUnknown(String userId, String reservationId) {
         Date now = new Date();
         Date nextCheckTime = new Date(now.getTime() + Math.max(1L, unknownRecheckMillis));
         // UNKNOWN 不产生失败结果，避免数据库提交结果不明时错误释放已经售出的座位。
@@ -243,7 +242,7 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
                 .set("lease_expire_time", null)
                 .set("failure_reason", "ATTEMPTS_EXHAUSTED")
                 .eq("user_id", userId)
-                .eq("command_id", commandId)
+                .eq("reservation_id", reservationId)
                 .apply("attempt_count >= max_attempts")
                 .and(scope -> scope
                         .nested(ready -> ready.in("status", OrderCommandStatusEnum.RECEIVED.name(),
@@ -258,14 +257,14 @@ public class OrderCommandExecutionServiceImpl implements OrderCommandExecutionSe
      *
      * @param task 不包含敏感载荷的执行任务
      * @param userId 用户分片键
-     * @param commandId 稳定订单创建命令标识
+     * @param reservationId 稳定购票受理标识
      */
-    private void submit(Runnable task, String userId, String commandId) {
+    private void submit(Runnable task, String userId, String reservationId) {
         try {
             // 拒绝策略不会阻塞 MQ 或扫描线程，数据库 Command 仍保留恢复所需的完整状态。
             orderCommandExecutor.execute(task);
         } catch (RuntimeException exception) {
-            log.warn("order_command_executor_rejected userId={}, commandId={}", userId, commandId, exception);
+            log.warn("order_command_executor_rejected userId={}, reservationId={}", userId, reservationId, exception);
         }
     }
 }
